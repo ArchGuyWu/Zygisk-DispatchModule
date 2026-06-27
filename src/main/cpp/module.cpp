@@ -5674,6 +5674,38 @@ static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
 }
 
+// --- CTaskGangHassleVehicle::CalcTargetOffset Hook ---
+typedef void (*fn_CalcTargetOffset_t)(void* self);
+static void* g_stub_CalcTargetOffset = nullptr;
+static fn_CalcTargetOffset_t g_orig_CalcTargetOffset = nullptr;
+
+static void proxy_CalcTargetOffset(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self) return;
+    
+    // Check offset 0x18 (target vehicle)
+    void** pVehicle = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (is_pointer_readable(pVehicle)) {
+        void* vehicle = *pVehicle;
+        if (!vehicle || !is_pointer_readable(vehicle)) {
+            LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is null or invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
+            return;
+        }
+    }
+    
+    // Check offset 0x10 (target entity)
+    void** pEntity = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (is_pointer_readable(pEntity)) {
+        void* entity = *pEntity;
+        if (entity && !is_pointer_readable(entity)) {
+            LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target entity is invalid (%p) at offset 0x10! Skipping calculation to prevent SIGSEGV.", entity);
+            return;
+        }
+    }
+    
+    SHADOWHOOK_CALL_PREV(proxy_CalcTargetOffset, self);
+}
+
 static void* g_stub_add_police_occupants = nullptr;
 static fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
 
@@ -6158,6 +6190,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_scan_for_attractors_in_range));
     if (g_stub_scan_for_attractors_in_range) LOGI("✅ Hooked CAttractorScanner::ScanForAttractorsInRange");
     else LOGE("❌ Failed to hook CAttractorScanner::ScanForAttractorsInRange: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskGangHassleVehicle::CalcTargetOffset (防止帮派骚扰载具任务中目标载具被销毁或为空时解引用闪退)
+    g_stub_CalcTargetOffset = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN22CTaskGangHassleVehicle16CalcTargetOffsetEv",
+        reinterpret_cast<void*>(proxy_CalcTargetOffset),
+        reinterpret_cast<void**>(&g_orig_CalcTargetOffset));
+    if (g_stub_CalcTargetOffset) LOGI("✅ Hooked CTaskGangHassleVehicle::CalcTargetOffset");
+    else LOGE("❌ Failed to hook CTaskGangHassleVehicle::CalcTargetOffset: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs

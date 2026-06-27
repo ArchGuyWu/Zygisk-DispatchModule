@@ -34,7 +34,7 @@ This module overwrites and optimizes the game's native AI dispatching algorithms
 
 ## 🛡️ Official Engine Bug Patches & Crash Prevention Deep-Dive
 
-In the original game (GTA SA DE Android), players frequently encounter random, high-frequency crashes (SIGSEGV) during interactions with police, pedestrians, or companion scenarios. Through deep reverse engineering, we pinpointed the core architectural defects in the official engine and developed a comprehensive **9-Hook Defense System** to eliminate these persistent memory stability issues.
+In the original game (GTA SA DE Android), players frequently encounter random, high-frequency crashes (SIGSEGV) during interactions with police, pedestrians, gang hassles, or companion scenarios. Through deep reverse engineering, we pinpointed the core architectural defects in the official engine and developed a comprehensive **10-Hook Defense System** to eliminate these persistent memory stability issues.
 
 ### 1. Root Cause Analysis & Vulnerability Pinpointing
 Using the most frequent companion/greet task crash (RVA `0x57ae40c`, corresponding to `CTaskComplexPartnerGreet::GetPartnerSequence`) as an example, the crashing instruction stream is decoded below:
@@ -99,8 +99,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 9-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion and pathfinding tasks:
+### 3. The 10-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, and gang hassle tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -115,6 +115,8 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CTaskComplexPartner::ControlSubTask` (Base hook covering all derived `Deal`, `Greet`, `Shove`, and `Chat` tasks)
 4.  **Pathfinding & Navigation Safeties** (`CreateSubTask` - 1 Hook):
     *   `CTaskComplexGoToPointAnyMeans::CreateSubTask` (Defensively filters and purges uninitialized or stale Ped/Vehicle references)
+5.  **Gang Hassle Target Security Hook** (`CalcTargetOffset` - 1 Hook):
+    *   `CTaskGangHassleVehicle::CalcTargetOffset` (Intercepts target coordinate offsets. If the target vehicle gets deleted or out of loading distance, the hook detects this before the native dereference at offset `0x498`, skipping the calculation gracefully and preventing SIGSEGV crashes)
 
 ---
 ## 🛠️ Tech Stack & Requirements

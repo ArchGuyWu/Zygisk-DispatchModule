@@ -34,7 +34,7 @@
 
 ## 🛡️ 官方引擎漏洞修复与防闪退深层剖析
 
-在游戏原版（GTA SA DE Android）中，玩家在与警方、行人或伴随任务交互时，经常会遇到随机且高频的闪退（SIGSEGV）。本模组通过深层逆向分析定位到了官方引擎的核心缺陷，并实现了一套 **9-Hook 协同防御系统** 彻底解决了这些长久以来的内存稳定性问题。
+在游戏原版（GTA SA DE Android）中，玩家在与警方、行人、帮派袭击或伴随任务交互时，经常会遇到随机且高频的闪退（SIGSEGV）。本模组通过深层逆向分析定位到了官方引擎的核心缺陷，并实现了一套 **10-Hook 协同防御系统** 彻底解决了这些长久以来的内存稳定性问题。
 
 ### 1. 缺陷深度分析与定位
 以最频发的伴随/打招呼任务闪退（RVA `0x57ae40c`，对应 `CTaskComplexPartnerGreet::GetPartnerSequence`）为例，崩溃时的底层汇编指令流如下：
@@ -99,8 +99,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 9-Hook 协同防御网 (9-Hook Defense System)
-模组挂钩了官方引擎内所有与伴随、寻路任务相关的核心生命周期方法，建立起立体的全方位防御网：
+### 3. 10-Hook 协同防御网 (10-Hook Defense System)
+模组挂钩了官方引擎内所有与伴随、寻路、帮派袭击任务相关的核心生命周期方法，建立起立体的全方位防御网：
 
 1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -115,6 +115,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CTaskComplexPartner::ControlSubTask` (作为基类挂钩，统一保护 `Deal` / `Greet` / `Shove` / `Chat` 所有派生子类)
 4.  **智能寻路安全重构** (`CreateSubTask` - 1 个 Hook)：
     *   `CTaskComplexGoToPointAnyMeans::CreateSubTask` (防御性地对内部未初始化或已失效的 Ped/Vehicle 指针进行净化过滤)
+5.  **帮派载具袭击计算拦截** (`CalcTargetOffset` - 1 个 Hook)：
+    *   `CTaskGangHassleVehicle::CalcTargetOffset` (主动拦截帮派载具骚扰任务中的目标偏移计算。若目标载具已被销毁或由于超出加载视距而置空，在进入原生汇编的解引用偏移 `0x498` 之前触发安全判定，完美跳过无效的矩阵/坐标计算并重设回退，阻止 SIGSEGV 闪退)
 
 ---
 
