@@ -4536,6 +4536,152 @@ static void emergency_vehicles_tick() {
     }
 }
 
+// =====================================================================
+// 🚗💨 [Civilian Avoidance Field]：给平民车辆施加“恐惧场”，让其智能避让紧急调度车辆
+// =====================================================================
+static bool is_emergency_vehicle_model(unsigned int model) {
+    return (model == 416 || model == 407 || 
+            model == 596 || model == 597 || model == 598 || model == 599 || 
+            model == 601 || model == 528 || model == 490 || model == 523);
+}
+
+static void apply_civilian_avoidance_field() {
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_GetMatrix) return;
+
+    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!pool) return;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return;
+
+    // 1. 搜集所有处于活跃行驶状态（有司机）的调度/应急车辆
+    struct ActiveEmergencyVeh {
+        void* veh;
+        CVector pos;
+        CVector dir; // 前向向量 (Up Vector)
+        CVector right; // 右向向量 (Right Vector)
+    };
+    std::vector<ActiveEmergencyVeh> active_evs;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_vehicle_pointer_valid(veh)) {
+                unsigned int model = get_entity_model_index(veh);
+                if (is_emergency_vehicle_model(model)) {
+                    if (is_vehicle_occupied_by_driver(veh)) {
+                        CVector ev_pos = get_entity_pos(veh);
+                        CVector ev_dir = {0.0f, 1.0f, 0.0f};
+                        CVector ev_right = {1.0f, 0.0f, 0.0f};
+                        CMatrix* mat = g_GetMatrix(veh);
+                        if (mat) {
+                            ev_dir = {mat->up_x, mat->up_y, mat->up_z};
+                            ev_right = {mat->right_x, mat->right_y, mat->right_z};
+                        }
+                        float len_d = sqrtf(ev_dir.x * ev_dir.x + ev_dir.y * ev_dir.y + ev_dir.z * ev_dir.z);
+                        if (len_d > 0.01f) {
+                            ev_dir.x /= len_d; ev_dir.y /= len_d; ev_dir.z /= len_d;
+                        } else {
+                            ev_dir = {0.0f, 1.0f, 0.0f};
+                        }
+                        float len_r = sqrtf(ev_right.x * ev_right.x + ev_right.y * ev_right.y + ev_right.z * ev_right.z);
+                        if (len_r > 0.01f) {
+                            ev_right.x /= len_r; ev_right.y /= len_r; ev_right.z /= len_r;
+                        } else {
+                            ev_right = {1.0f, 0.0f, 0.0f};
+                        }
+                        active_evs.push_back({veh, ev_pos, ev_dir, ev_right});
+                    }
+                }
+            }
+        }
+    }
+
+    if (active_evs.empty()) return;
+
+    // 2. 遍历所有非应急的平民车辆，施加“恐惧/避让”电磁场
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_vehicle_pointer_valid(veh)) {
+                unsigned int model = get_entity_model_index(veh);
+                if (!is_emergency_vehicle_model(model)) {
+                    CVector civ_pos = get_entity_pos(veh);
+                    
+                    // 寻找最近且可能产生阻碍的应急车辆
+                    for (const auto& ev : active_evs) {
+                        if (ev.veh == veh) continue;
+
+                        float dx = civ_pos.x - ev.pos.x;
+                        float dy = civ_pos.y - ev.pos.y;
+                        float dz = civ_pos.z - ev.pos.z;
+                        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+                        // 恐惧场作用范围：前方 25 米，横向 5 米
+                        if (dist < 25.0f && dist > 0.1f) {
+                            // 投影到应急车的前向向量和右向向量上
+                            float dot_forward = dx * ev.dir.x + dy * ev.dir.y + dz * ev.dir.z;
+                            float dot_right = dx * ev.right.x + dy * ev.right.y + dz * ev.right.z;
+
+                            // 如果平民车处于应急车的前方（dot_forward > 0），且横向距离较近（|dot_right| < 5.0m）
+                            if (dot_forward > 0.0f && dot_forward < 25.0f && fabsf(dot_right) < 5.0f) {
+                                // 计算避让方向（横向避让：向左或向右分流）
+                                float avoid_sign = (dot_right >= 0.0f) ? 1.0f : -1.0f;
+                                
+                                // 平民车越近，避让力度越强。使用渐进的平滑系数
+                                float intensity = (25.0f - dot_forward) / 25.0f; // 0.0 -> 1.0
+                                float side_shove = intensity * 0.45f; // 最大单次横移 0.45 米
+                                float fwd_shove = intensity * 0.15f; // 轻微向前推进，帮助其驶离
+                                
+                                CVector new_civ_pos = civ_pos;
+                                new_civ_pos.x += ev.right.x * avoid_sign * side_shove + ev.dir.x * fwd_shove;
+                                new_civ_pos.y += ev.right.y * avoid_sign * side_shove + ev.dir.y * fwd_shove;
+                                new_civ_pos.z += 0.05f; // 稍微抬升防止轮子陷入路面
+
+                                // 施加微弱的 Yaw 角度旋转，让其车头指向避让方向，看起来非常像在“打方向盘避让”！
+                                CMatrix* mat = g_GetMatrix(veh);
+                                if (mat) {
+                                    float rot_angle = avoid_sign * intensity * 0.08f; // 约 4.5 度偏角
+                                    float cos_a = cosf(rot_angle);
+                                    float sin_a = sinf(rot_angle);
+
+                                    float new_up_x = mat->up_x * cos_a - mat->right_x * sin_a;
+                                    float new_up_y = mat->up_y * cos_a - mat->right_y * sin_a;
+                                    float new_right_x = mat->up_x * sin_a + mat->right_x * cos_a;
+                                    float new_right_y = mat->up_y * sin_a + mat->right_y * cos_a;
+
+                                    mat->up_x = new_up_x;
+                                    mat->up_y = new_up_y;
+                                    mat->right_x = new_right_x;
+                                    mat->right_y = new_right_y;
+                                }
+
+                                if (g_GetCarToGoToCoors) {
+                                    g_GetCarToGoToCoors(veh, &civ_pos, 4, false);
+                                }
+                                set_entity_pos(veh, new_civ_pos);
+                                if (g_GetCarToGoToCoors) {
+                                    g_GetCarToGoToCoors(veh, &new_civ_pos, 4, false);
+                                }
+
+                                if (dist < 8.0f) {
+                                    LOGI("🚗💨 [Fear Field] Civilian vehicle %p panic-steered to avoid emergency vehicle %p (dist: %.1fm)", veh, ev.veh, dist);
+                                }
+                                break; // 响应最近的一个避让源即可
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 static void on_main_thread_tick() {
     int64_t cur_time = now_ms();
     if (cur_time - g_last_tick_time_ms < 250) {
@@ -4556,6 +4702,9 @@ static void on_main_thread_tick() {
 
     // 运行急救与消防车辆的自主脱困、避障与高级物理救援心跳
     emergency_vehicles_tick();
+
+    // 运行平民车辆智能避让恐惧场
+    apply_civilian_avoidance_field();
 
     // 周期性释放已到期的临时道路关闭
     {
