@@ -5416,7 +5416,7 @@ static void proxy_the_scripts_process() {
 }
 
 // =====================================================================
-// 🤝 [CTaskComplexPartnerGreet Hooks]：防止打招呼序列导致的 Sequence Manager 空指针闪退
+// 🤝 [CTaskComplexPartner & derived Hooks]：防止各种伴随/打招呼序列空指针、野指针或零值状态导致的 Sequence Manager 空指针闪退
 // =====================================================================
 static inline bool is_sequence_manager_safe() {
     if (!g_CSequenceManager_ms_instance || !*g_CSequenceManager_ms_instance) {
@@ -5427,43 +5427,188 @@ static inline bool is_sequence_manager_safe() {
     return (sequences != nullptr);
 }
 
+static inline bool is_partner_task_safe(void* self) {
+    if (!self || !is_task_vtable_safe(self)) {
+        return false;
+    }
+    return true;
+}
+
+static inline void sanitize_task_pointers(void* task, int max_size_bytes = 128) {
+    if (!task) return;
+    char* task_bytes = reinterpret_cast<char*>(task);
+    for (int offset = 8; offset < max_size_bytes; offset += 8) {
+        void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
+        void* ptr = *ptr_slot;
+        if (ptr) {
+            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+            if (addr >= 0x10000 && (addr & 7) == 0) {
+                void* vtable = *reinterpret_cast<void**>(ptr);
+                if (vtable == nullptr) {
+                    LOGW("⚠️ [sanitize_task_pointers] Found zero-filled object pointer %p at offset 0x%X in task %p. Clearing it!", ptr, offset, task);
+                    *ptr_slot = nullptr;
+                }
+            }
+        }
+    }
+}
+
+// --- GetPartnerSequence Hooks ---
 typedef void* (*fn_GetPartnerSequence_t)(void* self);
-static void* g_stub_get_partner_sequence = nullptr;
-static fn_GetPartnerSequence_t g_orig_get_partner_sequence = nullptr;
 
-static void* proxy_get_partner_sequence(void* self) {
+static void* g_stub_gps_deal = nullptr;
+static fn_GetPartnerSequence_t g_orig_gps_deal = nullptr;
+static void* proxy_gps_deal(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [GetPartnerSequence] Sequence manager unsafe! Returning nullptr to prevent crash.");
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [GetPartnerSequenceDeal] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    return SHADOWHOOK_CALL_PREV(proxy_get_partner_sequence, self);
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [GetPartnerSequenceDeal] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_gps_deal, self);
 }
 
+static void* g_stub_gps_greet = nullptr;
+static fn_GetPartnerSequence_t g_orig_gps_greet = nullptr;
+static void* proxy_gps_greet(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [GetPartnerSequenceGreet] unsafe self! Returning nullptr.");
+        return nullptr;
+    }
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [GetPartnerSequenceGreet] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_gps_greet, self);
+}
+
+static void* g_stub_gps_shove = nullptr;
+static fn_GetPartnerSequence_t g_orig_gps_shove = nullptr;
+static void* proxy_gps_shove(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [GetPartnerSequenceShove] unsafe self! Returning nullptr.");
+        return nullptr;
+    }
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [GetPartnerSequenceShove] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_gps_shove, self);
+}
+
+static void* g_stub_gps_chat = nullptr;
+static fn_GetPartnerSequence_t g_orig_gps_chat = nullptr;
+static void* proxy_gps_chat(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [GetPartnerSequenceChat] unsafe self! Returning nullptr.");
+        return nullptr;
+    }
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [GetPartnerSequenceChat] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_gps_chat, self);
+}
+
+
+// --- CreateFirstSubTask Hooks ---
 typedef void* (*fn_CreateFirstSubTask_t)(void* self, void* ped);
-static void* g_stub_create_first_sub_task = nullptr;
-static fn_CreateFirstSubTask_t g_orig_create_first_sub_task = nullptr;
 
-static void* proxy_create_first_sub_task(void* self, void* ped) {
+static void* g_stub_cfst_base = nullptr;
+static fn_CreateFirstSubTask_t g_orig_cfst_base = nullptr;
+static void* proxy_cfst_base(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [CreateFirstSubTask] Sequence manager unsafe! Returning nullptr to prevent crash.");
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [CreateFirstSubTaskBase] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    return SHADOWHOOK_CALL_PREV(proxy_create_first_sub_task, self, ped);
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [CreateFirstSubTaskBase] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_cfst_base, self, ped);
 }
 
-typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
-static void* g_stub_control_sub_task = nullptr;
-static fn_ControlSubTask_t g_orig_control_sub_task = nullptr;
-
-static void* proxy_control_sub_task(void* self, void* ped) {
+static void* g_stub_cfst_deal = nullptr;
+static fn_CreateFirstSubTask_t g_orig_cfst_deal = nullptr;
+static void* proxy_cfst_deal(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [ControlSubTask] Sequence manager unsafe! Returning nullptr to prevent crash.");
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [CreateFirstSubTaskDeal] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    return SHADOWHOOK_CALL_PREV(proxy_control_sub_task, self, ped);
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [CreateFirstSubTaskDeal] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_cfst_deal, self, ped);
+}
+
+static void* g_stub_cfst_greet = nullptr;
+static fn_CreateFirstSubTask_t g_orig_cfst_greet = nullptr;
+static void* proxy_cfst_greet(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [CreateFirstSubTaskGreet] unsafe self! Returning nullptr.");
+        return nullptr;
+    }
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [CreateFirstSubTaskGreet] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_cfst_greet, self, ped);
+}
+
+
+// --- ControlSubTask Hooks ---
+typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
+
+static void* g_stub_cst_base = nullptr;
+static fn_ControlSubTask_t g_orig_cst_base = nullptr;
+static void* proxy_cst_base(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_partner_task_safe(self)) {
+        LOGW("⚠️ [ControlSubTaskBase] unsafe self! Returning nullptr.");
+        return nullptr;
+    }
+    sanitize_task_pointers(self);
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [ControlSubTaskBase] Sequence manager unsafe! Returning nullptr.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_cst_base, self, ped);
+}
+
+// --- CTaskComplexGoToPointAnyMeans::CreateSubTask Hook ---
+typedef void* (*fn_GoToPointAnyMeans_CreateSubTask_t)(void* self, int subTaskId, CPed* ped);
+static void* g_stub_gotopointanymeans_createsubtask = nullptr;
+static fn_GoToPointAnyMeans_CreateSubTask_t g_orig_gotopointanymeans_createsubtask = nullptr;
+
+static void* proxy_gotopointanymeans_createsubtask(void* self, int subTaskId, CPed* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_task_vtable_safe(self)) {
+        LOGW("⚠️ [GoToPointAnyMeans::CreateSubTask] self %p is null or has unsafe vtable! Intercepting.", self);
+        return nullptr;
+    }
+    if (ped && !is_ped_pointer_valid_safe(ped)) {
+        LOGW("⚠️ [GoToPointAnyMeans::CreateSubTask] input ped %p is unsafe! Intercepting.", ped);
+        return nullptr;
+    }
+    sanitize_task_pointers(self);
+    return SHADOWHOOK_CALL_PREV(proxy_gotopointanymeans_createsubtask, self, subTaskId, ped);
 }
 
 // =====================================================================
@@ -5894,35 +6039,88 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CCarCtrl::ScriptGenerateOneEmergencyServicesCar: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CTaskComplexPartnerGreet::GetPartnerSequence (防止伴随打招呼 Sequence Manager 空指针闪退)
-    g_stub_get_partner_sequence = shadowhook_hook_sym_name(
+    // 🤝 [CTaskComplexPartner & derived Hooks Registration]
+
+    // 1. GetPartnerSequence Deal
+    g_stub_gps_deal = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN23CTaskComplexPartnerDeal18GetPartnerSequenceEv",
+        reinterpret_cast<void*>(proxy_gps_deal),
+        reinterpret_cast<void**>(&g_orig_gps_deal));
+    if (g_stub_gps_deal) LOGI("✅ Hooked CTaskComplexPartnerDeal::GetPartnerSequence");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerDeal::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 2. GetPartnerSequence Greet
+    g_stub_gps_greet = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN24CTaskComplexPartnerGreet18GetPartnerSequenceEv",
-        reinterpret_cast<void*>(proxy_get_partner_sequence),
-        reinterpret_cast<void**>(&g_orig_get_partner_sequence));
-    if (g_stub_get_partner_sequence) LOGI("✅ Hooked CTaskComplexPartnerGreet::GetPartnerSequence");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::GetPartnerSequence: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
+        reinterpret_cast<void*>(proxy_gps_greet),
+        reinterpret_cast<void**>(&g_orig_gps_greet));
+    if (g_stub_gps_greet) LOGI("✅ Hooked CTaskComplexPartnerGreet::GetPartnerSequence");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CTaskComplexPartnerGreet::CreateFirstSubTask (防止伴随打招呼 Sequence Manager 空指针闪退)
-    g_stub_create_first_sub_task = shadowhook_hook_sym_name(
+    // 3. GetPartnerSequence Shove
+    g_stub_gps_shove = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexPartnerShove18GetPartnerSequenceEv",
+        reinterpret_cast<void*>(proxy_gps_shove),
+        reinterpret_cast<void**>(&g_orig_gps_shove));
+    if (g_stub_gps_shove) LOGI("✅ Hooked CTaskComplexPartnerShove::GetPartnerSequence");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerShove::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 4. GetPartnerSequence Chat
+    g_stub_gps_chat = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN23CTaskComplexPartnerChat18GetPartnerSequenceEv",
+        reinterpret_cast<void*>(proxy_gps_chat),
+        reinterpret_cast<void**>(&g_orig_gps_chat));
+    if (g_stub_gps_chat) LOGI("✅ Hooked CTaskComplexPartnerChat::GetPartnerSequence");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerChat::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 5. CreateFirstSubTask Base
+    g_stub_cfst_base = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN19CTaskComplexPartner18CreateFirstSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_cfst_base),
+        reinterpret_cast<void**>(&g_orig_cfst_base));
+    if (g_stub_cfst_base) LOGI("✅ Hooked CTaskComplexPartner::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPartner::CreateFirstSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 6. CreateFirstSubTask Deal
+    g_stub_cfst_deal = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN23CTaskComplexPartnerDeal18CreateFirstSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_cfst_deal),
+        reinterpret_cast<void**>(&g_orig_cfst_deal));
+    if (g_stub_cfst_deal) LOGI("✅ Hooked CTaskComplexPartnerDeal::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerDeal::CreateFirstSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 7. CreateFirstSubTask Greet
+    g_stub_cfst_greet = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN24CTaskComplexPartnerGreet18CreateFirstSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_create_first_sub_task),
-        reinterpret_cast<void**>(&g_orig_create_first_sub_task));
-    if (g_stub_create_first_sub_task) LOGI("✅ Hooked CTaskComplexPartnerGreet::CreateFirstSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::CreateFirstSubTask: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
+        reinterpret_cast<void*>(proxy_cfst_greet),
+        reinterpret_cast<void**>(&g_orig_cfst_greet));
+    if (g_stub_cfst_greet) LOGI("✅ Hooked CTaskComplexPartnerGreet::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::CreateFirstSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CTaskComplexPartnerGreet::ControlSubTask (防止伴随打招呼 Sequence Manager 空指针闪退)
-    g_stub_control_sub_task = shadowhook_hook_sym_name(
+    // 8. ControlSubTask Base
+    g_stub_cst_base = shadowhook_hook_sym_name(
         TARGET_LIB,
-        "_ZN24CTaskComplexPartnerGreet12ControlSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_control_sub_task),
-        reinterpret_cast<void**>(&g_orig_control_sub_task));
-    if (g_stub_control_sub_task) LOGI("✅ Hooked CTaskComplexPartnerGreet::ControlSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::ControlSubTask: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
+        "_ZN19CTaskComplexPartner14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_cst_base),
+        reinterpret_cast<void**>(&g_orig_cst_base));
+    if (g_stub_cst_base) LOGI("✅ Hooked CTaskComplexPartner::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPartner::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 9. CTaskComplexGoToPointAnyMeans::CreateSubTask
+    g_stub_gotopointanymeans_createsubtask = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK29CTaskComplexGoToPointAnyMeans13CreateSubTaskEiP4CPed",
+        reinterpret_cast<void*>(proxy_gotopointanymeans_createsubtask),
+        reinterpret_cast<void**>(&g_orig_gotopointanymeans_createsubtask));
+    if (g_stub_gotopointanymeans_createsubtask) LOGI("✅ Hooked CTaskComplexGoToPointAnyMeans::CreateSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexGoToPointAnyMeans::CreateSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CTaskManager::ManageTasks (防止各种任务生命周期、清理或零值野指针导致的任务管理闪退)
     g_stub_manage_tasks = shadowhook_hook_sym_name(
