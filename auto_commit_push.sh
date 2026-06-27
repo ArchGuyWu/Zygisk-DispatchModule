@@ -39,8 +39,12 @@ fi
 echo "📝 Staging changes and committing..."
 git -C "$SCRIPT_DIR" add .
 
-# 自动生成包含当前时间和更改摘要的 Commit Message
-COMMIT_MSG="Auto-build & push: $(date '+%Y-%m-%d %H:%M:%S') - Code updates verified"
+# 自动生成或使用传入的参数作为 Commit Message
+if [ -n "${1:-}" ]; then
+    COMMIT_MSG="$1"
+else
+    COMMIT_MSG="Auto-build & push: $(date '+%Y-%m-%d %H:%M:%S') - Code updates verified"
+fi
 git -C "$SCRIPT_DIR" commit -m "$COMMIT_MSG"
 
 # 自动运行 git push 推送至远端仓库
