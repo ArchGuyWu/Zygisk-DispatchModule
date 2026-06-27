@@ -422,17 +422,16 @@ static inline bool is_pointer_readable(const void* ptr) {
             null_fd = -1;
         }
     }
-    // Fallback: use mincore to verify if the address page is mapped in memory
-    static size_t page_size = sysconf(_SC_PAGESIZE);
-    uintptr_t aligned_addr = addr & ~(page_size - 1);
-    unsigned char vec = 0;
-    int mc_ret = mincore(reinterpret_cast<void*>(aligned_addr), page_size, &vec);
-    if (mc_ret == -1) {
-        if (errno == ENOMEM) {
-            return false; // Definitely not mapped
-        }
+    // In-memory pipe fallback (extremely robust, immune to filesystem/persistent fd issues)
+    int pipefd[2];
+    if (pipe2(pipefd, O_CLOEXEC) == 0) {
+        long ret = write(pipefd[1], ptr, 1);
+        close(pipefd[0]);
+        close(pipefd[1]);
+        if (ret >= 0) return true;
+        if (errno == EFAULT) return false;
     }
-    return true;
+    return false;
 }
 
 static inline bool is_task_vtable_safe(void* task) {
