@@ -3501,15 +3501,19 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     if (!is_extremely_nearby && g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
                         void* event_group = get_ped_event_group(ped);
                         if (event_group) {
-                            char event_buf[256];
-                            memset(event_buf, 0, sizeof(event_buf));
-                            
-                            CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
-                            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
-                            
-                            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(target_criminal), start_pos, target_pos, false);
-                            g_CEventGroup_Add(event_group, event_buf, false);
-                            g_CEventGunShot_dtor(event_buf);
+                            // 📡 [Fix Pure Virtual Call / Use-After-Free] 动态分配 CEventGunShot 的堆内存。
+                            // 游戏中的 CEventGroup::Add 接受事件指针并在后续管理其生命周期（析构并 delete 释放）。
+                            // 在栈上分配会触发 UAF (Pure virtual function called!) 以及 Heap 损坏。
+                            void* event_mem = ::operator new(256);
+                            if (event_mem) {
+                                memset(event_mem, 0, 256);
+                                CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
+                                CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+                                
+                                g_CEventGunShot_ctor(event_mem, reinterpret_cast<CEntity*>(target_criminal), start_pos, target_pos, false);
+                                g_CEventGroup_Add(event_group, event_mem, false);
+                                // 注意：生命周期由 CEventGroup 接管，不在此处调用 dtor/delete 释放
+                            }
                             
                             // 动态赋予最优战术武器
                             if (g_GiveWeapon && g_SetCurrentWeapon) {
@@ -3802,17 +3806,22 @@ static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool forc
     if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
         void* event_group = get_ped_event_group(cop);
         if (event_group) {
-            char event_buf[256];
-            memset(event_buf, 0, sizeof(event_buf));
-            CVector cop_pos = get_entity_pos(cop);
-            CVector start_pos = cop_pos;
-            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
-            
-            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(criminal), start_pos, target_pos, false);
-            g_CEventGroup_Add(event_group, event_buf, false);
-            g_CEventGunShot_dtor(event_buf);
-            sound_sent = true;
-            LOGI("🎯 [Event-Driven Single Cop Sound Dispatch] Sent gunshot sound to cop %p towards criminal %p", cop, criminal);
+            // 📡 [Fix Pure Virtual Call / Use-After-Free] 动态分配 CEventGunShot 的堆内存。
+            // 游戏中的 CEventGroup::Add 接受事件指针并在后续管理其生命周期（析构并 delete 释放）。
+            // 在栈上分配会触发 UAF (Pure virtual function called!) 以及 Heap 损坏。
+            void* event_mem = ::operator new(256);
+            if (event_mem) {
+                memset(event_mem, 0, 256);
+                CVector cop_pos = get_entity_pos(cop);
+                CVector start_pos = cop_pos;
+                CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+                
+                g_CEventGunShot_ctor(event_mem, reinterpret_cast<CEntity*>(criminal), start_pos, target_pos, false);
+                g_CEventGroup_Add(event_group, event_mem, false);
+                // 注意：生命周期由 CEventGroup 接管，不在此处调用 dtor/delete 释放
+                sound_sent = true;
+                LOGI("🎯 [Event-Driven Single Cop Sound Dispatch] Sent gunshot sound to cop %p towards criminal %p", cop, criminal);
+            }
         }
     }
 
