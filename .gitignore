@@ -1,0 +1,13 @@
+# Build output
+build/
+.gradle/
+local.properties
+
+# Compiled artifacts and zips
+*.zip
+*.so
+
+# System & Debug logs
+tombstone_*
+*.log
+.DS_Store

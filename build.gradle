@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'com.example.policemod'
+    compileSdk 33
+    defaultConfig {
+        minSdk 26
+        targetSdk 33
+        
+        externalNativeBuild {
+            cmake {
+                // Zygisk 模块推荐使用 C++17 或更高版本，并隐藏默认符号可见性
+                cppFlags "-std=c++17 -fvisibility=hidden"
+                abiFilters "arm64-v8a", "armeabi-v7a"
+            }
+        }
+    }
+    
+    // 启用 prefab 功能，以便 CMake 可以使用我们声明的 ShadowHook 依赖
+    buildFeatures {
+        prefab true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.18.1"
+        }
+    }
+}
+
+dependencies {
+    // 引入 ShadowHook 库（通过 prefab 暴露给 CMake）
+    implementation 'com.bytedance.android:shadowhook:1.0.10'
+}
+
+/*
+ * 打包说明 (Packaging Instructions):
+ * 1. Zygisk 模块实际上是一个特定的 Zip 压缩包，通常可以通过编写自定义的 Gradle Task 进行打包。
+ * 2. Gradle 构建完成后，会在 build/intermediates/cmake/ 目录下生成 libpolicemod.so 文件。
+ * 3. 最终的 Zip 结构应该如下：
+ *    policemod.zip/
+ *    ├── module.prop
+ *    └── zygisk/
+ *        ├── arm64-v8a.so  (对应 libpolicemod.so)
+ *        ├── armeabi-v7a.so
+ *        ├── x86.so
+ *        └── x86_64.so
+ * 4. 你可以编写一个 `task zipZygiskModule(type: Zip)` 将 C++ 构建输出及 module.prop 打包成 Magisk/KernelSU 模块格式。
+ */
