@@ -25,8 +25,70 @@
     实时监测追踪车辆的角速度和侧滑角，在追击车辆于高速漂移或碰撞失控时，自动介入稳定车身。
 *   **高性能环境清理机制**：
     实时监控远端不活跃的行人、空置车辆及废弃警车并进行动态回收，确保高强度追捕场景下游戏帧率的平稳。
+*   **官方引擎漏洞修复与防闪退保护**：
+    主动拦截官方原版不稳定的异步 C++ 行为（如伴随/打招呼任务 `CTaskComplexPartner::GetPartnerSequence` 与寻路任务 `CTaskComplexGoToPointAnyMeans::CreateSubTask`）。集成深层指针对齐与零值安全检测器，在官方引擎即将崩溃前，动态清除已被虚空释放/填零的不安全任务与实体引用，使引擎能安全走向 native 空值回退逻辑，彻底根治原版的内存解引用闪退问题。
 *   **极量级 ECS 引擎**：
     底层采用零成本、高性能的实体组件系统 (ECS) 与事件驱动总线设计，与游戏引擎底层指针对接，实现 100% 零运行时开销。
+
+---
+
+## 🛡️ 官方引擎漏洞修复与防闪退深层剖析
+
+在游戏原版（GTA SA DE Android）中，玩家在与警方、行人或伴随任务交互时，经常会遇到随机且高频的闪退（SIGSEGV）。本模组通过深层逆向分析定位到了官方引擎的核心缺陷，并实现了一套 **9-Hook 协同防御系统** 彻底解决了这些长久以来的内存稳定性问题。
+
+### 1. 缺陷深度分析与定位
+以最频发的伴随/打招呼任务闪退（RVA `0x57ae40c`，对应 `CTaskComplexPartnerGreet::GetPartnerSequence`）为例，崩溃时的底层汇编指令流如下：
+
+| 虚拟地址 | 机器码 (小端) | ARM64 汇编指令 | 作用说明 |
+| :--- | :--- | :--- | :--- |
+| `0x73ee4f7404` | `f94002c8` | `ldr x8, [x22]` | 从伙伴任务对象指针 `x22` (`this`) 中加载虚函数表指针 (vtable) 到 `x8` |
+| `0x73ee4f7408` | `aa1603e0` | `mov x0, x22` | 将 `x22` 复制给 `x0` 作为 `this` 参数传递 |
+| `0x73ee4f740c` | `f9401108` | **[CRASH]** `ldr x8, [x8, #0x20]` | 试图读取虚表偏移 `0x20`（第 4 个虚函数），解引用引发 **SIGSEGV** 崩溃 |
+
+*   **根本原因**：对象指针 `x22` 并非空指针（`nullptr`），而是一个**已被析构并被内存管理器填零（Zero-filled）**的残余堆地址（如 `0x7361ce12f8`）。
+*   **闪退机制**：由于指针本身非零，官方原版的 C++ 空指针判断（如 `cbz x22`）被完美绕过。但由于整块内存已被填零，读出的虚表指针 `x8` 变为了 `0`。紧接着，`ldr x8, [x8, #0x20]` 强行解引用 `0x20` 处非法的内存空间，导致系统级闪退。
+
+### 2. 指针净化器防御机制 (Pointer Sanitizer)
+为了完美兼容游戏引擎本已具备的空值安全回退逻辑，模组引入了高度健壮的 **“动态指针净化器” (Pointer Sanitizer)**。在进入虚函数前，自动扫描 C++ 任务对象结构体内的所有成员槽位：
+
+```cpp
+static inline void sanitize_task_pointers(void* task, int max_size_bytes = 128) {
+    if (!task) return;
+    char* task_bytes = reinterpret_cast<char*>(task);
+    for (int offset = 8; offset < max_size_bytes; offset += 8) {
+        void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
+        void* ptr = *ptr_slot;
+        if (ptr) {
+            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+            if (addr >= 0x10000 && (addr & 7) == 0) {
+                void* vtable = *reinterpret_cast<void**>(ptr);
+                if (vtable == nullptr) { // 检测到已被虚空填零的对象引用
+                    *ptr_slot = nullptr; // 强制净化为干净的 nullptr
+                }
+            }
+        }
+    }
+}
+```
+
+当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
+
+### 3. 9-Hook 协同防御网 (9-Hook Defense System)
+模组挂钩了官方引擎内所有与伴随、寻路任务相关的核心生命周期方法，建立起立体的全方位防御网：
+
+1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
+    *   `CTaskComplexPartnerDeal::GetPartnerSequence`
+    *   `CTaskComplexPartnerGreet::GetPartnerSequence`
+    *   `CTaskComplexPartnerShove::GetPartnerSequence`
+    *   `CTaskComplexPartnerChat::GetPartnerSequence`
+2.  **子任务创建生命周期** (`CreateFirstSubTask` - 共 3 个 Hook)：
+    *   `CTaskComplexPartner::CreateFirstSubTask` (基类 Hook)
+    *   `CTaskComplexPartnerDeal::CreateFirstSubTask` (重写 Hook)
+    *   `CTaskComplexPartnerGreet::CreateFirstSubTask` (重写 Hook)
+3.  **伴随任务驱动控制** (`ControlSubTask` - 1 个 Hook)：
+    *   `CTaskComplexPartner::ControlSubTask` (作为基类挂钩，统一保护 `Deal` / `Greet` / `Shove` / `Chat` 所有派生子类)
+4.  **智能寻路安全重构** (`CreateSubTask` - 1 个 Hook)：
+    *   `CTaskComplexGoToPointAnyMeans::CreateSubTask` (防御性地对内部未初始化或已失效的 Ped/Vehicle 指针进行净化过滤)
 
 ---
 

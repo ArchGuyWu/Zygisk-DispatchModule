@@ -25,11 +25,72 @@ This module overwrites and optimizes the game's native AI dispatching algorithms
     Tracks vehicle angular velocity and slip angles in real-time. Automatically intervenes to stabilize out-of-control police units during high-speed chases.
 *   **Performance-optimized Ambient Cleanup**:
     Monitors and dynamically recycles distant peds, idle vehicles, and abandoned police units, maintaining native framerates under heavy dispatch scenarios.
+*   **Official Engine Bug Patches & Crash Prevention**:
+    Proactively intercepts unstable official C++ engine behaviors (such as companion/greet tasks `CTaskComplexPartner::GetPartnerSequence` and pathfinding tasks `CTaskComplexGoToPointAnyMeans::CreateSubTask`). Deploys a deep pointer-sanitizer that detects zero-filled, stale, or destructed official game tasks/entities, dynamically zeroing out unsafe references to bypass engine null-pointer dereferences (SIGSEGV) safely.
 *   **Modern ECS Engine**:
-    Built on a ultra-lightweight, zero-cost Entity-Component-System (ECS) and Event-Driven architecture designed for zero overhead interfacing with GTA engine pointers.
+    Built on an ultra-lightweight, zero-cost Entity-Component-System (ECS) and Event-Driven architecture designed for zero overhead interfacing with GTA engine pointers.
 
 ---
 
+## 🛡️ Official Engine Bug Patches & Crash Prevention Deep-Dive
+
+In the original game (GTA SA DE Android), players frequently encounter random, high-frequency crashes (SIGSEGV) during interactions with police, pedestrians, or companion scenarios. Through deep reverse engineering, we pinpointed the core architectural defects in the official engine and developed a comprehensive **9-Hook Defense System** to eliminate these persistent memory stability issues.
+
+### 1. Root Cause Analysis & Vulnerability Pinpointing
+Using the most frequent companion/greet task crash (RVA `0x57ae40c`, corresponding to `CTaskComplexPartnerGreet::GetPartnerSequence`) as an example, the crashing instruction stream is decoded below:
+
+| Virtual Address | Machine Code (LE) | ARM64 Assembly Instruction | Explanation / Impact |
+| :--- | :--- | :--- | :--- |
+| `0x73ee4f7404` | `f94002c8` | `ldr x8, [x22]` | Load virtual table pointer (vtable) from partner task object pointer `x22` (`this`) into `x8`. |
+| `0x73ee4f7408` | `aa1603e0` | `mov x0, x22` | Copy `x22` to `x0` to pass as the `this` parameter. |
+| `0x73ee4f740c` | `f9401108` | **[CRASH]** `ldr x8, [x8, #0x20]` | Dereference vtable offset `0x20` (index 4 for the virtual function), causing a **SIGSEGV**. |
+
+*   **Underlying Issue**: The object pointer `x22` is not a null pointer (`nullptr`). Instead, it is a **stale heap address that has been destructed and filled with zeros** by the game's allocator (e.g., `0x7361ce12f8`).
+*   **Crash Mechanism**: Because the pointer itself is non-zero, native C++ null-pointer safeguards (e.g., `cbz x22`) are bypassed. When the engine attempts to resolve the virtual method via the vtable, the loaded vtable address `x8` becomes `0` (since the object was zero-filled). The subsequent `ldr x8, [x8, #0x20]` dereferences `0x20`, causing an immediate null pointer dereference and application crash.
+
+### 2. Intelligent Pointer Sanitizer
+To leverage the engine's built-in, null-safe fallback logic rather than overriding entire subtasks blindly, we designed a robust **Pointer Sanitizer**. Before executing any virtual task methods, the sanitizer scans member pointer slots inside the C++ task objects:
+
+```cpp
+static inline void sanitize_task_pointers(void* task, int max_size_bytes = 128) {
+    if (!task) return;
+    char* task_bytes = reinterpret_cast<char*>(task);
+    for (int offset = 8; offset < max_size_bytes; offset += 8) {
+        void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
+        void* ptr = *ptr_slot;
+        if (ptr) {
+            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+            if (addr >= 0x10000 && (addr & 7) == 0) {
+                void* vtable = *reinterpret_cast<void**>(ptr);
+                if (vtable == nullptr) { // Detect zero-filled/destructed object reference
+                    *ptr_slot = nullptr; // Forcefully sanitize to a clean nullptr
+                }
+            }
+        }
+    }
+}
+```
+
+Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
+
+### 3. The 9-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion and pathfinding tasks:
+
+1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
+    *   `CTaskComplexPartnerDeal::GetPartnerSequence`
+    *   `CTaskComplexPartnerGreet::GetPartnerSequence`
+    *   `CTaskComplexPartnerShove::GetPartnerSequence`
+    *   `CTaskComplexPartnerChat::GetPartnerSequence`
+2.  **Subtask Initialization Safeguards** (`CreateFirstSubTask` - 3 Hooks):
+    *   `CTaskComplexPartner::CreateFirstSubTask` (Base class hook)
+    *   `CTaskComplexPartnerDeal::CreateFirstSubTask` (Overridden method hook)
+    *   `CTaskComplexPartnerGreet::CreateFirstSubTask` (Overridden method hook)
+3.  **Active Task Controller Hook** (`ControlSubTask` - 1 Hook):
+    *   `CTaskComplexPartner::ControlSubTask` (Base hook covering all derived `Deal`, `Greet`, `Shove`, and `Chat` tasks)
+4.  **Pathfinding & Navigation Safeties** (`CreateSubTask` - 1 Hook):
+    *   `CTaskComplexGoToPointAnyMeans::CreateSubTask` (Defensively filters and purges uninitialized or stale Ped/Vehicle references)
+
+---
 ## 🛠️ Tech Stack & Requirements
 
 *   **Platform**: Android (64-bit arm64-v8a)
