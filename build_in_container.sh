@@ -6,6 +6,15 @@
 # =============================================================
 set -euo pipefail
 
+# ANSI 终端色彩
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+PURPLE='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # 清除颜色
+
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 TOOLCHAIN_DIR="/opt/toolchain"
@@ -19,67 +28,94 @@ SHADOWHOOK_AAR="shadowhook-${SHADOWHOOK_VERSION}.aar"
 SHADOWHOOK_URL="https://repo1.maven.org/maven2/com/bytedance/android/shadowhook/${SHADOWHOOK_VERSION}/shadowhook-${SHADOWHOOK_VERSION}.aar"
 SHADOWHOOK_DIR="$PROJECT_DIR/third_party/shadowhook"
 
-TARGET_ABIS=("arm64-v8a")
-# 如需 32 位支持，取消注释：
-# TARGET_ABIS=("arm64-v8a" "armeabi-v7a")
+# 允许通过环境变量定制编译架构，例如：ABIS="arm64-v8a armeabi-v7a" ./build_in_container.sh
+if [ -n "${ABIS:-}" ]; then
+    read -r -a TARGET_ABIS <<< "$ABIS"
+else
+    TARGET_ABIS=("arm64-v8a")
+fi
 
-echo "========================================"
-echo "  Zygisk-DispatchModule Build System"
-echo "========================================"
+echo -e "${CYAN}====================================================${NC}"
+echo -e "${CYAN}       Zygisk-DispatchModule Build System           ${NC}"
+echo -e "${CYAN}====================================================${NC}"
 echo ""
 
 # ----- 1. 安装系统依赖 -----
-echo "[1/6] Installing build dependencies..."
+echo -e "${BLUE}[1/6] Setting up build dependencies...${NC}"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq cmake make wget unzip zip ca-certificates curl lld > /dev/null 2>&1
-echo "  ✅ Dependencies installed"
+
+NEEDS_INSTALL=0
+for cmd in cmake make wget unzip zip curl; do
+    if ! command -v "$cmd" &>/dev/null; then
+        NEEDS_INSTALL=1
+        break
+    fi
+done
+
+if ! command -v ld.lld &>/dev/null; then
+    NEEDS_INSTALL=1
+fi
+
+if [ "$NEEDS_INSTALL" -eq 1 ]; then
+    echo -e "  ${YELLOW}Installing missing dependencies (cmake, make, wget, unzip, zip, curl, lld)...${NC}"
+    apt-get update -qq
+    apt-get install -y -qq cmake make wget unzip zip ca-certificates curl lld > /dev/null 2>&1
+    echo -e "  ${GREEN}✓ Dependencies installed successfully${NC}"
+else
+    echo -e "  ${GREEN}✓ All dependencies already satisfied (skipped apt-get)${NC}"
+fi
 
 # ----- 2. 下载 Android NDK -----
-echo "[2/6] Setting up Android NDK ${NDK_VERSION}..."
+echo -e "${BLUE}[2/6] Setting up Android NDK ${NDK_VERSION}...${NC}"
 mkdir -p "$TOOLCHAIN_DIR"
 
 if [ -d "$NDK_DIR" ]; then
-    echo "  ✅ NDK already exists at $NDK_DIR"
+    echo -e "  ${GREEN}✓ NDK already exists at $NDK_DIR${NC}"
 else
-    echo "  Downloading NDK (this may take a while)..."
+    echo -e "  ${YELLOW}Downloading NDK (this may take a while)...${NC}"
     cd "$TOOLCHAIN_DIR"
     if [ ! -f "$NDK_ZIP" ]; then
-        wget -q --show-progress "$NDK_URL" -O "$NDK_ZIP"
+        # 稳健下载，避免因中断保存损坏文件
+        wget -q --show-progress "$NDK_URL" -O "${NDK_ZIP}.tmp"
+        mv "${NDK_ZIP}.tmp" "$NDK_ZIP"
     fi
-    echo "  Extracting NDK..."
+    echo -e "  ${YELLOW}Extracting NDK...${NC}"
     unzip -q -o "$NDK_ZIP"
-    echo "  ✅ NDK extracted"
+    echo -e "  ${GREEN}✓ NDK extracted successfully${NC}"
     # 清理 zip 节省空间
     rm -f "$NDK_ZIP"
 fi
 
 CMAKE_TOOLCHAIN="$PROJECT_DIR/android-arm64-toolchain.cmake"
 if [ ! -f "$CMAKE_TOOLCHAIN" ]; then
-    echo "  ❌ ERROR: CMake toolchain not found at $CMAKE_TOOLCHAIN"
+    echo -e "  ${RED}❌ ERROR: CMake toolchain not found at $CMAKE_TOOLCHAIN${NC}"
     exit 1
 fi
-echo "  ✅ CMake toolchain: $CMAKE_TOOLCHAIN"
+echo -e "  ${GREEN}✓ CMake toolchain ready: $CMAKE_TOOLCHAIN${NC}"
 
 # ----- 3. 下载 ShadowHook 源码 -----
 SHADOWHOOK_SRC_DIR="$PROJECT_DIR/third_party/shadowhook-src"
-echo "[3/6] Setting up ShadowHook Source ${SHADOWHOOK_VERSION}..."
+echo -e "${BLUE}[3/6] Setting up ShadowHook Source ${SHADOWHOOK_VERSION}...${NC}"
 mkdir -p "$PROJECT_DIR/third_party"
 
 if [ -d "$SHADOWHOOK_SRC_DIR/shadowhook/src/main/cpp" ]; then
-    echo "  ✅ ShadowHook source already exists at $SHADOWHOOK_SRC_DIR"
+    echo -e "  ${GREEN}✓ ShadowHook source already exists at $SHADOWHOOK_SRC_DIR${NC}"
 else
-    echo "  Downloading ShadowHook source zip..."
+    echo -e "  ${YELLOW}Downloading ShadowHook source zip...${NC}"
     SRC_ZIP="$PROJECT_DIR/third_party/shadowhook-src.zip"
     if [ ! -f "$SRC_ZIP" ]; then
-        curl -L -k -s -o "$SRC_ZIP" "https://github.com/bytedance/android-inline-hook/archive/refs/tags/v${SHADOWHOOK_VERSION}.zip"
+        # 稳健下载模式
+        curl -L -k -s -o "${SRC_ZIP}.tmp" "https://github.com/bytedance/android-inline-hook/archive/refs/tags/v${SHADOWHOOK_VERSION}.zip"
+        mv "${SRC_ZIP}.tmp" "$SRC_ZIP"
     fi
-    echo "  Extracting ShadowHook source..."
+    echo -e "  ${YELLOW}Extracting ShadowHook source...${NC}"
     cd "$PROJECT_DIR/third_party"
     unzip -q -o "shadowhook-src.zip"
+    # 如果已存在目标文件夹，确保清干净防止嵌套移动
+    rm -rf "$SHADOWHOOK_SRC_DIR"
     mv android-inline-hook-* "$SHADOWHOOK_SRC_DIR"
-    rm -f "$SRC_ZIP"
-    echo "  ✅ ShadowHook source ready"
+    rm -f "shadowhook-src.zip"
+    echo -e "  ${GREEN}✓ ShadowHook source ready${NC}"
 fi
 
 # ----- 4. 生成独立 CMakeLists.txt -----
@@ -159,9 +195,9 @@ CMAKEFILE
 echo "  ✅ CMakeLists.txt generated"
 
 # ----- 5. 编译 -----
-echo "[5/6] Compiling..."
+echo -e "${BLUE}[5/6] Compiling...${NC}"
 for abi in "${TARGET_ABIS[@]}"; do
-    echo "  Building for ${abi}..."
+    echo -e "  ${YELLOW}Building for ${abi}...${NC}"
     BUILD_ABI_DIR="${BUILD_DIR}/${abi}"
     mkdir -p "$BUILD_ABI_DIR"
 
@@ -177,16 +213,16 @@ for abi in "${TARGET_ABIS[@]}"; do
     cmake --build "$BUILD_ABI_DIR" -- -j$(nproc) 2>&1
 
     if [ -f "$BUILD_ABI_DIR/libpolicemod.so" ]; then
-        echo "  ✅ libpolicemod.so (${abi}) built successfully"
+        echo -e "  ${GREEN}✓ libpolicemod.so (${abi}) built successfully${NC}"
         ls -lh "$BUILD_ABI_DIR/libpolicemod.so"
     else
-        echo "  ❌ Build failed for ${abi}"
+        echo -e "  ${RED}❌ Build failed for ${abi}${NC}"
         exit 1
     fi
 done
 
 # ----- 6. 打包 Magisk 模块 -----
-echo "[6/6] Packaging Magisk module..."
+echo -e "${BLUE}[6/6] Packaging Magisk module...${NC}"
 OUTPUT_DIR="${BUILD_DIR}/module_output"
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
@@ -227,7 +263,7 @@ cp "$PROJECT_DIR/module.prop" "$OUTPUT_DIR/"
 mkdir -p "$OUTPUT_DIR/zygisk"
 for abi in "${TARGET_ABIS[@]}"; do
     cp "${BUILD_DIR}/${abi}/libpolicemod.so" "$OUTPUT_DIR/zygisk/${abi}.so"
-    echo "  Packed: zygisk/${abi}.so"
+    echo -e "  ${GREEN}Packed: zygisk/${abi}.so${NC}"
 done
 
 # 打包 zip
@@ -238,12 +274,12 @@ zip -r "$ZIP_PATH" . > /dev/null
 cd "$PROJECT_DIR"
 
 echo ""
-echo "========================================"
-echo "  ✅ BUILD COMPLETE"
-echo "========================================"
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}          BUILD COMPLETE                ${NC}"
+echo -e "${GREEN}========================================${NC}"
 echo ""
-echo "Output: $ZIP_PATH"
+echo -e "Output: ${CYAN}$ZIP_PATH${NC}"
 ls -lh "$ZIP_PATH"
 echo ""
-echo "Install: adb push Zygisk-PoliceDispatch.zip /sdcard/"
-echo "Then flash via Magisk/KernelSU app"
+echo -e "Install: ${YELLOW}adb push Zygisk-PoliceDispatch.zip /sdcard/${NC}"
+echo -e "Then flash via Magisk/KernelSU app"
