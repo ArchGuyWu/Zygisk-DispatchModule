@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 #
 # pack_module.sh - 将编译好的 .so 和 module.prop 打包成 Zygisk 模块 Zip
 #

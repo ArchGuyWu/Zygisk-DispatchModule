@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/data/data/com.termux/files/usr/bin/bash
 # =====================================================================
 # auto_commit_push.sh
 # 每次完整修改后，自动编译、打包、提交并推送至远端仓库

@@ -4545,6 +4545,10 @@ static bool is_emergency_vehicle_model(unsigned int model) {
             model == 601 || model == 528 || model == 490 || model == 523);
 }
 
+// 🚗💨 平民车辆避让时的惊慌按喇叭与急刹车冷却定时器
+static std::unordered_map<void*, int64_t> g_civilian_panic_timers;
+static int64_t g_last_cleanup_panic_timers = 0;
+
 static void apply_civilian_avoidance_field() {
     if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_GetMatrix) return;
 
@@ -4554,6 +4558,20 @@ static void apply_civilian_avoidance_field() {
     char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
     int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
     if (!byte_map) return;
+
+    int64_t now = now_ms();
+
+    // 垃圾回收：每 10 秒清理一次已经失效的车辆指针，防止 Map 无限膨胀
+    if (now - g_last_cleanup_panic_timers > 10000) {
+        g_last_cleanup_panic_timers = now;
+        for (auto it = g_civilian_panic_timers.begin(); it != g_civilian_panic_timers.end(); ) {
+            if (!is_vehicle_pointer_valid(it->first)) {
+                it = g_civilian_panic_timers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 
     // 1. 搜集所有处于活跃行驶状态（有司机）的调度/应急车辆
     struct ActiveEmergencyVeh {
@@ -4602,7 +4620,7 @@ static void apply_civilian_avoidance_field() {
 
     if (active_evs.empty()) return;
 
-    // 2. 遍历所有非应急的平民车辆，施加“恐惧/避让”电磁场
+    // 2. 遍历所有非应急、且有司机的平民车辆，施加“恐惧/避让”电磁场
     for (int i = 0; i < size; i++) {
         signed char flag = byte_map[i];
         if (flag >= 0) {
@@ -4610,7 +4628,7 @@ static void apply_civilian_avoidance_field() {
             void* veh = g_GetPoolVehicle(handle);
             if (veh && is_vehicle_pointer_valid(veh)) {
                 unsigned int model = get_entity_model_index(veh);
-                if (!is_emergency_vehicle_model(model)) {
+                if (!is_emergency_vehicle_model(model) && is_vehicle_occupied_by_driver(veh)) {
                     CVector civ_pos = get_entity_pos(veh);
                     
                     // 寻找最近且可能产生阻碍的应急车辆
@@ -4636,15 +4654,43 @@ static void apply_civilian_avoidance_field() {
                                 // 平民车越近，避让力度越强。使用渐进的平滑系数
                                 float intensity = (25.0f - dot_forward) / 25.0f; // 0.0 -> 1.0
                                 float side_shove = intensity * 0.45f; // 最大单次横移 0.45 米
-                                float fwd_shove = intensity * 0.15f; // 轻微向前推进，帮助其驶离
                                 
+                                // 惊慌按喇叭与原生急刹车尾灯细节：
+                                // 在避让时（进入前方 22 米内），给平民车施加一个无害的原生物理受击事件，以此触发原生的惊慌喇叭与急刹尾灯，真实感拉满！
+                                if (dot_forward < 22.0f) {
+                                    if (g_civilian_panic_timers.find(veh) == g_civilian_panic_timers.end() ||
+                                        now - g_civilian_panic_timers[veh] > 6000) {
+                                        g_civilian_panic_timers[veh] = now;
+                                        if (g_VehicleInflictDamage) {
+                                            CVector hit_pos = civ_pos;
+                                            g_VehicleInflictDamage(veh, nullptr, WEAPON_UNARMED, 0.0f, hit_pos);
+                                            LOGI("🚗🔊 [Fear Field - Panic] Triggered native alarm/horn/panic-brake on vehicle %p via 0-damage nudge (dist: %.1fm)", veh, dist);
+                                        }
+                                    }
+                                }
+
+                                CMatrix* mat = g_GetMatrix(veh);
+                                float civ_up_x = 0.0f;
+                                float civ_up_y = 0.0f;
+                                if (mat) {
+                                    civ_up_x = mat->up_x;
+                                    civ_up_y = mat->up_y;
+                                }
+
+                                // 刹车物理减速模拟：基于强度向车辆自身的后向向量（-mat->up）施加反向力
+                                float brake_shove = intensity * 0.35f; // 最大单次物理急刹车拖拽 0.35 米
+
                                 CVector new_civ_pos = civ_pos;
-                                new_civ_pos.x += ev.right.x * avoid_sign * side_shove + ev.dir.x * fwd_shove;
-                                new_civ_pos.y += ev.right.y * avoid_sign * side_shove + ev.dir.y * fwd_shove;
+                                // 1. 施加横向避让位移
+                                new_civ_pos.x += ev.right.x * avoid_sign * side_shove;
+                                new_civ_pos.y += ev.right.y * avoid_sign * side_shove;
+                                // 2. 施加物理急刹车拖拽（退后位置分量，降低实际前进速度）
+                                new_civ_pos.x -= civ_up_x * brake_shove;
+                                new_civ_pos.y -= civ_up_y * brake_shove;
+                                
                                 new_civ_pos.z += 0.05f; // 稍微抬升防止轮子陷入路面
 
                                 // 施加微弱的 Yaw 角度旋转，让其车头指向避让方向，看起来非常像在“打方向盘避让”！
-                                CMatrix* mat = g_GetMatrix(veh);
                                 if (mat) {
                                     float rot_angle = avoid_sign * intensity * 0.08f; // 约 4.5 度偏角
                                     float cos_a = cosf(rot_angle);
