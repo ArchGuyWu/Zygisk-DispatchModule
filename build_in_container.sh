@@ -32,7 +32,7 @@ echo ""
 echo "[1/6] Installing build dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq cmake make wget unzip zip ca-certificates curl > /dev/null 2>&1
+apt-get install -y -qq cmake make wget unzip zip ca-certificates curl lld > /dev/null 2>&1
 echo "  ✅ Dependencies installed"
 
 # ----- 2. 下载 Android NDK -----
