@@ -5579,8 +5579,8 @@ static void proxy_set_ped_pos(void* self, void* ped) {
         return;
     }
     void* clump = *clump_slot;
-    if (!clump || !is_pointer_readable(clump)) {
-        LOGW("⚠️ [SetPedPosition] ped->clump (%p) is null or unreadable! Skipping original to prevent crash.", clump);
+    if (clump && !is_pointer_readable(clump)) {
+        LOGW("⚠️ [SetPedPosition] ped->clump (%p) is invalid/unreadable! Skipping original to prevent crash.", clump);
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_set_ped_pos, self, ped);
