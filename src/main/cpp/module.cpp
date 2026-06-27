@@ -405,31 +405,28 @@ static inline bool is_pointer_readable(const void* ptr) {
     if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
         return false;
     }
-    static int null_fd = -1;
-    if (null_fd < 0) {
-        null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
-    }
-    if (null_fd >= 0) {
-        long ret = write(null_fd, ptr, 1);
-        if (ret >= 0) {
-            return true;
-        }
-        if (errno == EFAULT) {
+    thread_local static int pipe_fds[2] = {-1, -1};
+    if (pipe_fds[1] < 0) {
+        if (pipe2(pipe_fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+            pipe_fds[0] = -1;
+            pipe_fds[1] = -1;
             return false;
         }
-        if (errno == EBADF) {
-            close(null_fd);
-            null_fd = -1;
-        }
     }
-    // In-memory pipe fallback (extremely robust, immune to filesystem/persistent fd issues)
-    int pipefd[2];
-    if (pipe2(pipefd, O_CLOEXEC) == 0) {
-        long ret = write(pipefd[1], ptr, 1);
-        close(pipefd[0]);
-        close(pipefd[1]);
-        if (ret >= 0) return true;
-        if (errno == EFAULT) return false;
+    long ret = write(pipe_fds[1], ptr, 1);
+    if (ret >= 0) {
+        char dummy;
+        read(pipe_fds[0], &dummy, 1);
+        return true;
+    }
+    if (errno == EFAULT) {
+        return false;
+    }
+    if (errno == EBADF) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        pipe_fds[0] = -1;
+        pipe_fds[1] = -1;
     }
     return false;
 }
