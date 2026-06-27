@@ -2826,14 +2826,10 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                              current_pos.y + dy_aim * 5.0f,
                                                              current_pos.z + 0.15f
                                                          };
-                                                         if (g_GetCarToGoToCoors) {
-                                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                         }
+                                                         
                                                          set_entity_pos(veh, realigned_pos);
                                                          stabilize_motorcycle(veh);
-                                                         if (g_GetCarToGoToCoors) {
-                                                             g_GetCarToGoToCoors(veh, &realigned_pos, 4, false);
-                                                         }
+                                                         
                                                          command_vehicle_ai(veh, target_crime_pos, dist_vc);
                                                          LOGW("🔄🏍️ [Anti-Spin Guard - BIKE] Realignment Orbit Break. Pointed directly to crime scene (%.1fm) and teleported forward 5m.", dist_vc);
                                                      } else {
@@ -2880,13 +2876,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                  current_pos.z + 0.5f
                                                              };
                                                          }
-                                                         if (g_GetCarToGoToCoors) {
-                                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                         }
+                                                         
                                                          set_entity_pos(veh, reverse_pos);
-                                                         if (g_GetCarToGoToCoors) {
-                                                             g_GetCarToGoToCoors(veh, &reverse_pos, 4, false);
-                                                         }
+                                                         
                                                          command_vehicle_ai(veh, target_crime_pos, dist_vc);
                                                          LOGW("🔄 [Anti-Spin Guard] Circle spinning detected in far range (%.1fm, seen=%d). Forced reverse nudge & yaw break.", dist_vc, is_seen);
                                                      }}
@@ -2952,15 +2944,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                     current_pos.y + ly * side_nudge + dir_y * 0.8f,
                                                                     current_pos.z + height_lift
                                                                 };
-                                                                if (g_GetCarToGoToCoors) {
-                                                                    g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                }
                                                                 set_entity_pos(veh, detour_pos);
                                                                 if (is_bike) {
                                                                     stabilize_motorcycle(veh);
-                                                                }
-                                                                if (g_GetCarToGoToCoors) {
-                                                                    g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
                                                                 }LOGI("[dispatchCenter - ACC Bypass Ped] Vehicle %p blocked by TARGET CRIMINAL %p (dist=%.1f, speed=%.2f). Detoured (side=%.1f)", 
                                                                      veh, target_criminal, cop_dist, speed, side_sign);
                                                             } else {
@@ -2971,13 +2957,7 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                     current_pos.y - dir_y * push_back_dist,
                                                                     current_pos.z
                                                                 };
-                                                                if (g_GetCarToGoToCoors) {
-                                                                    g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                }
                                                                 set_entity_pos(veh, decel_pos);
-                                                                if (g_GetCarToGoToCoors) {
-                                                                    g_GetCarToGoToCoors(veh, &decel_pos, 4, false);
-                                                                }
                                                                 LOGI("[dispatchCenter - ACC Keep Ped] Fleet distance keep for %p behind TARGET CRIMINAL %p (dist=%.1f). Decelerated by %.2fm.", 
                                                                      veh, target_criminal, cop_dist, push_back_dist);
                                                             }
@@ -3022,16 +3002,12 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                                         current_pos.y + ly * side_nudge + dir_y * 0.8f,
                                                                                         current_pos.z + height_lift
                                                                                     };
-                                                                                    if (g_GetCarToGoToCoors) {
-                                                                                        g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                                    }
+                                                                                    
                                                                                     set_entity_pos(veh, detour_pos);
                                                                                     if (is_bike) {
                                                                                         stabilize_motorcycle(veh);
                                                                                     }
-                                                                                    if (g_GetCarToGoToCoors) {
-                                                                                        g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
-                                                                                    }LOGI("[dispatchCenter - ACC Bypass] Vehicle %p blocked by %p (dist=%.1f, speed=%.2f). Smooth detour nudge (side=%.1f) by 1.8m side, 0.8m forward.", 
+                                                                                    LOGI("[dispatchCenter - ACC Bypass] Vehicle %p blocked by %p (dist=%.1f, speed=%.2f). Smooth detour nudge (side=%.1f) by 1.8m side, 0.8m forward.", 
                                                                                          veh, other_veh, cop_dist, speed, side_sign);
                                                                                 } else {
                                                                                     // Default: decelerate/keep distance backward
@@ -3042,13 +3018,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                                         current_pos.y - dir_y * push_back_dist,
                                                                                         current_pos.z
                                                                                     };
-                                                                                    if (g_GetCarToGoToCoors) {
-                                                                                        g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                                    }
+                                                                                    
                                                                                     set_entity_pos(veh, decel_pos);
-                                                                                    if (g_GetCarToGoToCoors) {
-                                                                                        g_GetCarToGoToCoors(veh, &decel_pos, 4, false);
-                                                                                    }
+                                                                                    
                                                                                     LOGI("[dispatchCenter - ACC Keep] Fleet distance keep for %p behind %p (dist=%.1f). Decelerated backward by %.2fm.", 
                                                                                          veh, other_veh, cop_dist, push_back_dist);
                                                                                 }
@@ -3119,15 +3091,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                             current_pos.z + height_lift
                                                                         };
 
-                                                                        if (g_GetCarToGoToCoors) {
-                                                                            g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                        }
                                                                         set_entity_pos(veh, detour_pos);
                                                                         if (is_bike) {
                                                                             stabilize_motorcycle(veh);
-                                                                        }
-                                                                        if (g_GetCarToGoToCoors) {
-                                                                            g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
                                                                         }LOGW("🔥 [dispatchCenter - FireAvoidanceDetour] Vehicle %p blocked by fire (dist=%.1f) in front. Detouring to safe side (side_sign=%.1f).", veh, fire_dist, side_sign);
                                                                     }
                                                                 }
@@ -3218,16 +3184,12 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                             current_pos.y + dy_v * warp_factor,
                                             current_pos.z + dz_v * warp_factor + height_offset
                                         };
-                                        if (g_GetCarToGoToCoors) {
-                                            g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                        }
+                                        
                                         set_entity_pos(veh, warp_pos);
                                         if (is_bike) {
                                             stabilize_motorcycle(veh);
                                         }
-                                        if (g_GetCarToGoToCoors) {
-                                            g_GetCarToGoToCoors(veh, &warp_pos, 4, false);
-                                        }command_vehicle_ai(veh, target_crime_pos, dist_v);
+                                        command_vehicle_ai(veh, target_crime_pos, dist_v);
                                         LOGI("[dispatchCenter - Stage 2 Warp] Teleported vehicle %p forward 25m to break deadlock. (visible=%d, stuck_duration=%lld ms)", 
                                              veh, cop_visible, (long long)stuck_duration);
                                     }
@@ -3341,16 +3303,12 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                                          }
 
                                                                                          bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
-                                                                                         if (g_GetCarToGoToCoors) {
-                                                                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                                         }
+                                                                                         
                                                                                          set_entity_pos(veh, nudged_pos);
                                                                                          if (is_bike) {
                                                                                              stabilize_motorcycle(veh);
                                                                                          }
-                                                                                         if (g_GetCarToGoToCoors) {
-                                                                                             g_GetCarToGoToCoors(veh, &nudged_pos, 4, false);
-                                                                                         }
+                                                                                         
                                                                                          command_vehicle_ai(veh, target_crime_pos, dist_v);}
                                     }
                                 }
@@ -4230,13 +4188,7 @@ static void emergency_vehicles_tick() {
                                                 current_pos.z + 0.5f
                                             };
                                         }
-                                        if (g_GetCarToGoToCoors) {
-                                            g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                        }
                                         set_entity_pos(veh, reverse_pos);
-                                        if (g_GetCarToGoToCoors) {
-                                            g_GetCarToGoToCoors(veh, &reverse_pos, 4, false);
-                                        }
                                         LOGW("🔄 [Emergency Escaper - Anti-Spin] Circle spinning detected. Applied yaw rotation and nudged reverse (seen=%d)", is_seen);
                                         tracker.spin_count = 0;
                                         tracker.last_intervention_time = now_time;
@@ -4278,13 +4230,9 @@ static void emergency_vehicles_tick() {
                                                                                 current_pos.y + ly * 1.8f + dir_y * 0.8f,
                                                                                 current_pos.z
                                                                             };
-                                                                            if (g_GetCarToGoToCoors) {
-                                                                                g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                            }
+                                                                            
                                                                             set_entity_pos(veh, detour_pos);
-                                                                            if (g_GetCarToGoToCoors) {
-                                                                                g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
-                                                                            }
+                                                                            
                                                                             LOGI("[Emergency Escaper - ACC Bypass] Detoured blocked vehicle %p", veh);
                                                                         } else {
                                                                             // 减速退避保持距离
@@ -4295,13 +4243,9 @@ static void emergency_vehicles_tick() {
                                                                                 current_pos.y - dir_y * push_back_dist,
                                                                                 current_pos.z
                                                                             };
-                                                                            if (g_GetCarToGoToCoors) {
-                                                                                g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                            }
+                                                                            
                                                                             set_entity_pos(veh, decel_pos);
-                                                                            if (g_GetCarToGoToCoors) {
-                                                                                g_GetCarToGoToCoors(veh, &decel_pos, 4, false);
-                                                                            }
+                                                                            
                                                                         }
                                                                         break; // 每秒处理一个避让源
                                                                     }
@@ -4357,13 +4301,9 @@ static void emergency_vehicles_tick() {
                                                                     current_pos.y + ly * side_sign * 5.5f - dir_y * 1.5f,
                                                                     current_pos.z
                                                                 };
-                                                                if (g_GetCarToGoToCoors) {
-                                                                    g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                                }
+                                                                
                                                                 set_entity_pos(veh, detour_pos);
-                                                                if (g_GetCarToGoToCoors) {
-                                                                    g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
-                                                                }
+                                                                
                                                                 LOGI("🔥 [Emergency Escaper - Ambulance Fire Detour] Detoured around fire source.");
                                                             }
                                                         }
@@ -4440,13 +4380,7 @@ static void emergency_vehicles_tick() {
                                     current_pos.y + dir_y * 20.0f,
                                     current_pos.z + dir_z * 20.0f + 0.80f // 加上安全防陷落高度
                                 };
-                                if (g_GetCarToGoToCoors) {
-                                    g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                }
                                 set_entity_pos(veh, warp_pos);
-                                if (g_GetCarToGoToCoors) {
-                                    g_GetCarToGoToCoors(veh, &warp_pos, 4, false);
-                                }
                                 LOGI("🚒🚑 [Emergency Escaper - Stage 2 Warp] Unseen warped vehicle %p forward 20m", veh);
                             }
                             // STAGE 1: 3.5秒以上卡死：温柔物理推开 / 看不见时中等跃迁 12m
@@ -4519,13 +4453,7 @@ static void emergency_vehicles_tick() {
                                     nudged_pos.z = current_pos.z + dir_z * 12.0f + 0.75f;
                                 }
 
-                                if (g_GetCarToGoToCoors) {
-                                    g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                }
                                 set_entity_pos(veh, nudged_pos);
-                                if (g_GetCarToGoToCoors) {
-                                    g_GetCarToGoToCoors(veh, &nudged_pos, 4, false);
-                                }
                                 LOGI("   +- Applied Stage 1 Nudge (seen=%d)", is_seen);
                             }
                         }
@@ -4698,13 +4626,7 @@ static void apply_civilian_avoidance_field() {
                                     mat->right_y = new_right_y;
                                 }
 
-                                if (g_GetCarToGoToCoors) {
-                                    g_GetCarToGoToCoors(veh, &civ_pos, 4, false);
-                                }
                                 set_entity_pos(veh, new_civ_pos);
-                                if (g_GetCarToGoToCoors) {
-                                    g_GetCarToGoToCoors(veh, &new_civ_pos, 4, false);
-                                }
 
                                 if (dist < 8.0f) {
                                     LOGI("🚗💨 [Fear Field] Civilian vehicle %p panic-steered to avoid emergency vehicle %p (dist: %.1fm)", veh, ev.veh, dist);
