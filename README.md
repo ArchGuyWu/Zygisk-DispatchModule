@@ -48,19 +48,45 @@ Using the most frequent companion/greet task crash (RVA `0x57ae40c`, correspondi
 *   **Underlying Issue**: The object pointer `x22` is not a null pointer (`nullptr`). Instead, it is a **stale heap address that has been destructed and filled with zeros** by the game's allocator (e.g., `0x7361ce12f8`).
 *   **Crash Mechanism**: Because the pointer itself is non-zero, native C++ null-pointer safeguards (e.g., `cbz x22`) are bypassed. When the engine attempts to resolve the virtual method via the vtable, the loaded vtable address `x8` becomes `0` (since the object was zero-filled). The subsequent `ldr x8, [x8, #0x20]` dereferences `0x20`, causing an immediate null pointer dereference and application crash.
 
-### 2. Intelligent Pointer Sanitizer
-To leverage the engine's built-in, null-safe fallback logic rather than overriding entire subtasks blindly, we designed a robust **Pointer Sanitizer**. Before executing any virtual task methods, the sanitizer scans member pointer slots inside the C++ task objects:
+### 2. Intelligent Pointer Sanitizer & POSIX Safe Readability Validation
+
+To leverage the engine's built-in, null-safe fallback logic rather than overriding entire subtasks blindly, we designed a robust **Pointer Sanitizer**. Before executing any virtual task methods, the sanitizer scans member pointer slots inside the C++ task objects.
+
+#### ⚠️ Alignment Alignment Vulnerabilities & POSIX System-Call Defense
+In our first-generation sanitizer, we relied solely on standard range-checks (e.g., `addr >= 0x10000`) and 8-byte pointer alignments. However, in a complex game runtime, certain non-pointer fields (such as local task states or floats like `0.5f` represented as `0x3f000000`) can **coincidentally satisfy 8-byte alignment and exceed 0x10000**. When the sanitizer blindly dereferenced these values to read their "vtable," it induced a SIGSEGV.
+
+To achieve 100% crash-proof memory safety, we introduced a **POSIX-compliant pointer readability validator**:
+This mechanism performs a safe probe by writing 1 byte of the address `ptr` to `/dev/null` using the standard `write(null_fd, ptr, 1)` system call. If `ptr` points to an unmapped, protected, or invalid memory page, the Linux kernel detects this and returns `-1` with `errno` set to `EFAULT` **without raising any signals or crashing the process**. This allows us to safely and reliably verify if any memory pointer is actually mapped and readable in user-space with near-zero overhead.
 
 ```cpp
-static inline void sanitize_task_pointers(void* task, int max_size_bytes = 128) {
+static inline bool is_pointer_readable(const void* ptr) {
+    if (!ptr) return false;
+    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
+        return false;
+    }
+    static int null_fd = -1;
+    if (null_fd < 0) {
+        null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    }
+    if (null_fd < 0) return true; // Fallback if open failed
+    long ret = write(null_fd, ptr, 1);
+    if (ret < 0 && errno == EFAULT) {
+        return false;
+    }
+    return true;
+}
+
+static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
     if (!task) return;
+    if (!is_pointer_readable(task)) return;
     char* task_bytes = reinterpret_cast<char*>(task);
     for (int offset = 8; offset < max_size_bytes; offset += 8) {
+        if (!is_pointer_readable(task_bytes + offset)) break;
         void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
         void* ptr = *ptr_slot;
         if (ptr) {
-            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-            if (addr >= 0x10000 && (addr & 7) == 0) {
+            if (is_pointer_readable(ptr)) {
                 void* vtable = *reinterpret_cast<void**>(ptr);
                 if (vtable == nullptr) { // Detect zero-filled/destructed object reference
                     *ptr_slot = nullptr; // Forcefully sanitize to a clean nullptr

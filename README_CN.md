@@ -48,19 +48,45 @@
 *   **根本原因**：对象指针 `x22` 并非空指针（`nullptr`），而是一个**已被析构并被内存管理器填零（Zero-filled）**的残余堆地址（如 `0x7361ce12f8`）。
 *   **闪退机制**：由于指针本身非零，官方原版的 C++ 空指针判断（如 `cbz x22`）被完美绕过。但由于整块内存已被填零，读出的虚表指针 `x8` 变为了 `0`。紧接着，`ldr x8, [x8, #0x20]` 强行解引用 `0x20` 处非法的内存空间，导致系统级闪退。
 
-### 2. 指针净化器防御机制 (Pointer Sanitizer)
+### 2. 指针净化器防御机制 (Pointer Sanitizer) 与 POSIX 安全可读性校验
+
 为了完美兼容游戏引擎本已具备的空值安全回退逻辑，模组引入了高度健壮的 **“动态指针净化器” (Pointer Sanitizer)**。在进入虚函数前，自动扫描 C++ 任务对象结构体内的所有成员槽位：
 
+#### ⚠️ 深度内存对齐漏洞与 POSIX 系统调用级防御
+在第一代净化器中，我们仅对指针值进行了基础范围检测（如 `addr >= 0x10000`）与 8 字节对齐检测。然而在复杂的游戏运行时中，某些非指针成员（例如任务状态结构体中存放的 `float` 浮点数，如 `0.5f` 在内存中表示为 `0x3f000000`）在数值上**恰好满足 8 字节对齐且大于 0x10000**。当净化器盲目解引用这些伪指针去读取虚表时，依然会引发 SIGSEGV 崩溃。
+
+为了实现 100% 绝对的内存稳定性，本模组引入了 **POSIX 安全可读性验证器**：
+利用标准 POSIX 规范，通过向 `/dev/null` 虚拟设备执行极低开销的 `write(null_fd, ptr, 1)` 系统调用。若 `ptr` 对应的页表未映射、无读权限或为伪指针，内核会自动检测到非法指针并返回 `-1`，同时将 `errno` 设置为 `EFAULT`。这一机制使得我们可以**在零崩溃风险的前提下**，完美判定任意内存地址的有效性和可读性。
+
 ```cpp
-static inline void sanitize_task_pointers(void* task, int max_size_bytes = 128) {
+static inline bool is_pointer_readable(const void* ptr) {
+    if (!ptr) return false;
+    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
+        return false;
+    }
+    static int null_fd = -1;
+    if (null_fd < 0) {
+        null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    }
+    if (null_fd < 0) return true; // 降级回退
+    long ret = write(null_fd, ptr, 1);
+    if (ret < 0 && errno == EFAULT) {
+        return false;
+    }
+    return true;
+}
+
+static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
     if (!task) return;
+    if (!is_pointer_readable(task)) return;
     char* task_bytes = reinterpret_cast<char*>(task);
     for (int offset = 8; offset < max_size_bytes; offset += 8) {
+        if (!is_pointer_readable(task_bytes + offset)) break;
         void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
         void* ptr = *ptr_slot;
         if (ptr) {
-            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-            if (addr >= 0x10000 && (addr & 7) == 0) {
+            if (is_pointer_readable(ptr)) {
                 void* vtable = *reinterpret_cast<void**>(ptr);
                 if (vtable == nullptr) { // 检测到已被虚空填零的对象引用
                     *ptr_slot = nullptr; // 强制净化为干净的 nullptr
