@@ -5556,6 +5556,37 @@ static void* proxy_gps_chat(void* self) {
 }
 
 
+// --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---
+typedef void (*fn_SetPedPosition_t)(void* self, void* ped);
+
+static void* g_stub_set_ped_pos = nullptr;
+static fn_SetPedPosition_t g_orig_set_ped_pos = nullptr;
+static void proxy_set_ped_pos(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) {
+        LOGW("⚠️ [SetPedPosition] unsafe self! Skipping.");
+        return;
+    }
+    if (!ped || !is_pointer_readable(ped)) {
+        LOGW("⚠️ [SetPedPosition] null or unsafe ped! Skipping.");
+        return;
+    }
+    // Check if the pointer at ped + 0x648 is null or unreadable
+    char* ped_bytes = reinterpret_cast<char*>(ped);
+    void** clump_slot = reinterpret_cast<void**>(ped_bytes + 0x648);
+    if (!is_pointer_readable(clump_slot)) {
+        LOGW("⚠️ [SetPedPosition] ped + 0x648 slot unreadable! Skipping to prevent crash.");
+        return;
+    }
+    void* clump = *clump_slot;
+    if (!clump || !is_pointer_readable(clump)) {
+        LOGW("⚠️ [SetPedPosition] ped->clump (%p) is null or unreadable! Skipping original to prevent crash.", clump);
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_set_ped_pos, self, ped);
+}
+
+
 // --- CreateFirstSubTask Hooks ---
 typedef void* (*fn_CreateFirstSubTask_t)(void* self, void* ped);
 
@@ -6143,6 +6174,15 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_gps_chat));
     if (g_stub_gps_chat) LOGI("✅ Hooked CTaskComplexPartnerChat::GetPartnerSequence");
     else LOGE("❌ Failed to hook CTaskComplexPartnerChat::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // 4b. CTaskSimpleHoldEntity::SetPedPosition
+    g_stub_set_ped_pos = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN21CTaskSimpleHoldEntity14SetPedPositionEP4CPed",
+        reinterpret_cast<void*>(proxy_set_ped_pos),
+        reinterpret_cast<void**>(&g_orig_set_ped_pos));
+    if (g_stub_set_ped_pos) LOGI("✅ Hooked CTaskSimpleHoldEntity::SetPedPosition");
+    else LOGE("❌ Failed to hook CTaskSimpleHoldEntity::SetPedPosition: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // 5. CreateFirstSubTask Base
     g_stub_cfst_base = shadowhook_hook_sym_name(
