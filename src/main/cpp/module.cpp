@@ -409,10 +409,28 @@ static inline bool is_pointer_readable(const void* ptr) {
     if (null_fd < 0) {
         null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
     }
-    if (null_fd < 0) return true; // Fallback if open failed
-    long ret = write(null_fd, ptr, 1);
-    if (ret < 0 && errno == EFAULT) {
-        return false;
+    if (null_fd >= 0) {
+        long ret = write(null_fd, ptr, 1);
+        if (ret >= 0) {
+            return true;
+        }
+        if (errno == EFAULT) {
+            return false;
+        }
+        if (errno == EBADF) {
+            close(null_fd);
+            null_fd = -1;
+        }
+    }
+    // Fallback: use mincore to verify if the address page is mapped in memory
+    static size_t page_size = sysconf(_SC_PAGESIZE);
+    uintptr_t aligned_addr = addr & ~(page_size - 1);
+    unsigned char vec = 0;
+    int mc_ret = mincore(reinterpret_cast<void*>(aligned_addr), page_size, &vec);
+    if (mc_ret == -1) {
+        if (errno == ENOMEM) {
+            return false; // Definitely not mapped
+        }
     }
     return true;
 }
