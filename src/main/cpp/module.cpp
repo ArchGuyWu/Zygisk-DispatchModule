@@ -3507,8 +3507,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
                     eWeaponType chosen_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
 
-                    // 极近距离野生巡警，无声物理受击强行注入唤醒；非近距离才使用虚拟枪声事件
-                    if (!is_extremely_nearby && g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
+                    // 一律使用虚拟枪声事件进行静默、无穿帮唤醒（已集成 GMalloc，完全消除闪退风险）
+                    if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
                         void* event_group = get_ped_event_group(ped);
                         if (event_group) {
                             // 📡 [Fix Heap Corruption / Malloc Mismatch]
