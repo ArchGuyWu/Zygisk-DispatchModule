@@ -260,6 +260,16 @@ static fn_CEventGunShot_ctor_t g_CEventGunShot_ctor = nullptr;
 static fn_CEventGunShot_dtor_t g_CEventGunShot_dtor = nullptr;
 static fn_CEventGroup_Add_t    g_CEventGroup_Add = nullptr;
 
+// Unreal Engine 4 内存分配器接口与全局指针声明
+class FMalloc {
+public:
+    virtual ~FMalloc() {}
+    virtual void* Malloc(size_t Count, uint32_t Alignment = 0) = 0;
+    virtual void* Realloc(void* Original, size_t Count, uint32_t Alignment = 0) = 0;
+    virtual void Free(void* Original) = 0;
+};
+static FMalloc** g_p_GMalloc = nullptr;
+
 static fn_RegisterKill_t             g_RegisterKill = nullptr;
 static fn_GetWeaponLockOnTarget_t    g_GetWeaponLockOnTarget = nullptr;
 static fn_IsAlive_t                  g_IsAlive = nullptr;
@@ -3501,10 +3511,14 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     if (!is_extremely_nearby && g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
                         void* event_group = get_ped_event_group(ped);
                         if (event_group) {
-                            // 📡 [Fix Pure Virtual Call / Use-After-Free] 动态分配 CEventGunShot 的堆内存。
-                            // 游戏中的 CEventGroup::Add 接受事件指针并在后续管理其生命周期（析构并 delete 释放）。
-                            // 在栈上分配会触发 UAF (Pure virtual function called!) 以及 Heap 损坏。
-                            void* event_mem = ::operator new(256);
+                            // 📡 [Fix Heap Corruption / Malloc Mismatch]
+                            // 使用游戏引擎自带的 GMalloc 申请内存，完美对齐 native 释放，彻底杜绝堆损坏！
+                            void* event_mem = nullptr;
+                            if (g_p_GMalloc && *g_p_GMalloc) {
+                                event_mem = (*g_p_GMalloc)->Malloc(256, 16);
+                            } else {
+                                event_mem = ::operator new(256);
+                            }
                             if (event_mem) {
                                 memset(event_mem, 0, 256);
                                 CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
@@ -3806,10 +3820,14 @@ static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool forc
     if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
         void* event_group = get_ped_event_group(cop);
         if (event_group) {
-            // 📡 [Fix Pure Virtual Call / Use-After-Free] 动态分配 CEventGunShot 的堆内存。
-            // 游戏中的 CEventGroup::Add 接受事件指针并在后续管理其生命周期（析构并 delete 释放）。
-            // 在栈上分配会触发 UAF (Pure virtual function called!) 以及 Heap 损坏。
-            void* event_mem = ::operator new(256);
+            // 📡 [Fix Heap Corruption / Malloc Mismatch]
+            // 使用游戏引擎自带的 GMalloc 申请内存，完美对齐 native 释放，彻底杜绝堆损坏！
+            void* event_mem = nullptr;
+            if (g_p_GMalloc && *g_p_GMalloc) {
+                event_mem = (*g_p_GMalloc)->Malloc(256, 16);
+            } else {
+                event_mem = ::operator new(256);
+            }
             if (event_mem) {
                 memset(event_mem, 0, 256);
                 CVector cop_pos = get_entity_pos(cop);
@@ -5596,10 +5614,13 @@ static void hook_thread_func() {
     RESOLVE_SYM(lib, g_vtable_KillCriminal, "_ZTV24CTaskComplexKillCriminal", void*);
     RESOLVE_SYM(lib, g_vtable_EnterCar, "_ZTV20CTaskComplexEnterCar", void*);
 
-    // 解析假枪声事件相关符号 (禁用：避免手动内存分配/释放导致的跨分配器堆损坏)
-    // RESOLVE_SYM(lib, g_CEventGunShot_ctor, "_ZN13CEventGunShotC1EP7CEntity7CVectorS2_b", fn_CEventGunShot_ctor_t);
-    // RESOLVE_SYM(lib, g_CEventGunShot_dtor, "_ZN13CEventGunShotD1Ev", fn_CEventGunShot_dtor_t);
-    // RESOLVE_SYM(lib, g_CEventGroup_Add, "_ZN11CEventGroup3AddER6CEventb", fn_CEventGroup_Add_t);
+    // 解析假枪声事件相关符号
+    RESOLVE_SYM(lib, g_CEventGunShot_ctor, "_ZN13CEventGunShotC1EP7CEntity7CVectorS2_b", fn_CEventGunShot_ctor_t);
+    RESOLVE_SYM(lib, g_CEventGunShot_dtor, "_ZN13CEventGunShotD1Ev", fn_CEventGunShot_dtor_t);
+    RESOLVE_SYM(lib, g_CEventGroup_Add, "_ZN11CEventGroup3AddER6CEventb", fn_CEventGroup_Add_t);
+
+    // 解析游戏引擎自带的 GMalloc 内存分配器指针，确保完全使用 native 分配以彻底杜绝堆损坏
+    RESOLVE_SYM(lib, g_p_GMalloc, "GMalloc", FMalloc**);
 
     xdl_close(lib);
 
