@@ -5,6 +5,8 @@
 [![ShadowHook](https://img.shields.io/badge/Hook_Library-ShadowHook-orange.svg)](https://github.com/bytedance/android-inline-hook)
 [![License](https://img.shields.io/badge/License-MIT-red.svg)](LICENSE)
 
+**English Version** | [中文版本](README_CN.md)
+
 An advanced police dispatching and intelligent vehicle control module for **GTA: San Andreas – The Definitive Edition (Android)**, powered by **Zygisk** and **ShadowHook**.
 
 This module overwrites and optimizes the game's native AI dispatching algorithms to offer realistic police pursuits, robust anti-stuck pathfinding, regional quota consolidation, dynamic chasing quotas, and synchronized physics-momentum resetting during tactical teleportations/nudges.
