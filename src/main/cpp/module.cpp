@@ -930,6 +930,7 @@ static std::shared_ptr<CrimeEvent> get_primary_active_crime() {
 // 玩家协助追踪
 static std::atomic<CPed*> g_tracked_criminal{nullptr};
 static std::atomic<int64_t> g_last_assist_time_ms{0};
+static std::atomic<bool>    g_is_generating_custom_dispatch{false};    // 是否正在生成自定义调度车辆
 
 // 玩家在协助警察时造成的流弹/误伤优化追踪
 static std::atomic<bool>    g_player_stray_bullet_flag{false};         // 是否误伤了市民
@@ -4003,6 +4004,19 @@ static void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime) {
 }
 
 // =====================================================================
+// 📡 [trueDispatch Spawn Helper]：自定义调度车辆的生成包装器，保障正确的防拦截标识
+// =====================================================================
+static void dispatch_spawn_emergency_car(unsigned int model, CVector pos) {
+    g_is_generating_custom_dispatch.store(true);
+    if (g_ScriptGenEmergencyCar) {
+        g_ScriptGenEmergencyCar(model, pos);
+    } else if (g_GenOneEmergencyCar) {
+        g_GenOneEmergencyCar(model, pos);
+    }
+    g_is_generating_custom_dispatch.store(false);
+}
+
+// =====================================================================
 // 🚑🚒 [Emergency Vehicle Escaper]：救护车与消防车的高级物理脱困、导航与避障机制
 // =====================================================================
 static std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
@@ -5040,11 +5054,7 @@ static void on_main_thread_tick() {
 
                                 if (density >= 6 && !swat_already) {
                                     LOGI("Heavy combat density (>=6) -> Dispatching 1 SWAT Enforcer + 1 Police Car for case %llu", (unsigned long long)crime->case_id);
-                                    if (g_ScriptGenEmergencyCar) {
-                                        g_ScriptGenEmergencyCar(MODEL_SWAT_VAN, target_pos);
-                                    } else if (g_GenOneEmergencyCar) {
-                                        g_GenOneEmergencyCar(MODEL_SWAT_VAN, target_pos);
-                                    }
+                                    dispatch_spawn_emergency_car(MODEL_SWAT_VAN, target_pos);
 
                                     crime->pending_tasks.push_back({
                                         now_ms() + 250,
@@ -5059,11 +5069,7 @@ static void on_main_thread_tick() {
                                                 setup_dispatched_cops(veh1, criminal);
                                             }
 
-                                            if (g_ScriptGenEmergencyCar) {
-                                                g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            } else if (g_GenOneEmergencyCar) {
-                                                g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            }
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                             crime->pending_tasks.push_back({
                                                 now_ms() + 250,
@@ -5082,11 +5088,7 @@ static void on_main_thread_tick() {
                                 }
                                 else if (density >= 3 || (density >= 6 && swat_already)) {
                                     LOGI("Medium combat density -> Dispatching 2 Police Cars for case %llu", (unsigned long long)crime->case_id);
-                                    if (g_ScriptGenEmergencyCar) {
-                                        g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                    } else if (g_GenOneEmergencyCar) {
-                                        g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                    }
+                                    dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                     crime->pending_tasks.push_back({
                                         now_ms() + 250,
@@ -5100,11 +5102,7 @@ static void on_main_thread_tick() {
                                                 setup_dispatched_cops(veh1, criminal);
                                             }
 
-                                            if (g_ScriptGenEmergencyCar) {
-                                                g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            } else if (g_GenOneEmergencyCar) {
-                                                g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            }
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                             crime->pending_tasks.push_back({
                                                 now_ms() + 250,
@@ -5123,11 +5121,7 @@ static void on_main_thread_tick() {
                                 }
                                 else {
                                     LOGI("Light combat density -> Dispatching 1 Police Car for case %llu", (unsigned long long)crime->case_id);
-                                    if (g_ScriptGenEmergencyCar) {
-                                        g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                    } else if (g_GenOneEmergencyCar) {
-                                        g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                    }
+                                    dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                     crime->pending_tasks.push_back({
                                         now_ms() + 250,
@@ -5240,11 +5234,7 @@ static void on_main_thread_tick() {
 
                                         if (r == 3 && density >= 5 && !swat_already) {
                                             LOGI("Reinforcement #%d (Heavy SWAT) for case %llu: Dispatching SWAT Enforcer. (density=%d)", r, (unsigned long long)crime->case_id, density);
-                                            if (g_ScriptGenEmergencyCar) {
-                                                g_ScriptGenEmergencyCar(MODEL_SWAT_VAN, target_pos);
-                                            } else if (g_GenOneEmergencyCar) {
-                                                g_GenOneEmergencyCar(MODEL_SWAT_VAN, target_pos);
-                                            }
+                                            dispatch_spawn_emergency_car(MODEL_SWAT_VAN, target_pos);
 
                                             crime->pending_tasks.push_back({
                                                 now_ms() + 250,
@@ -5263,11 +5253,7 @@ static void on_main_thread_tick() {
                                         }
                                         else if (density >= 3) {
                                             LOGI("Reinforcement #%d (Medium) for case %llu: Deploying 2 Police Cars. (density=%d)", r, (unsigned long long)crime->case_id, density);
-                                            if (g_ScriptGenEmergencyCar) {
-                                                g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            } else if (g_GenOneEmergencyCar) {
-                                                g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            }
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                             crime->pending_tasks.push_back({
                                                 now_ms() + 250,
@@ -5280,11 +5266,7 @@ static void on_main_thread_tick() {
                                                         setup_dispatched_cops(veh1, criminal);
                                                     }
 
-                                                    if (g_ScriptGenEmergencyCar) {
-                                                        g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                                    } else if (g_GenOneEmergencyCar) {
-                                                        g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                                    }
+                                                    dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                                     crime->pending_tasks.push_back({
                                                         now_ms() + 250,
@@ -5304,11 +5286,7 @@ static void on_main_thread_tick() {
                                         }
                                         else {
                                             LOGI("Reinforcement #%d (Light) for case %llu: Deploying 1 Police Car. (density=%d)", r, (unsigned long long)crime->case_id, density);
-                                            if (g_ScriptGenEmergencyCar) {
-                                                g_ScriptGenEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            } else if (g_GenOneEmergencyCar) {
-                                                g_GenOneEmergencyCar(MODEL_POLICE_CAR, target_pos);
-                                            }
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                             crime->pending_tasks.push_back({
                                                 now_ms() + 250,
@@ -5447,11 +5425,26 @@ static void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm) {
 // =====================================================================
 // 🚑🚒 [Emergency Workaround]：移动端救护车与消防车因超长视距生成即秒删 Bug 的修复
 // =====================================================================
+static bool is_police_vehicle_model(unsigned int model) {
+    return (model == 596 || model == 597 || model == 598 || model == 599 ||  // Cop Cars (LSPD, SFPD, LVPD, Ranger)
+            model == 523 ||                                                 // Cop Bike
+            model == 427 || model == 601 ||                                 // SWAT Enforcer, SWAT Water Cannon
+            model == 490 || model == 528 ||                                 // FBI Rancher, FBI Truck
+            model == 433 || model == 432);                                  // Barracks (Army Truck), Rhino (Tank)
+}
+
 static void* g_stub_generate_one_emergency_car = nullptr;
 static fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
 
 static void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
+
+    if (is_police_vehicle_model(model)) {
+        if (!g_is_generating_custom_dispatch.load()) {
+            LOGI("🚫 [trueDispatch] Intercepted native cheap cop spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", model, pos.x, pos.y, pos.z);
+            return; // Intercept and quietly block native spawning
+        }
+    }
 
     if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
         CVector player_pos = g_FindPlayerCoors(0);
@@ -5484,6 +5477,13 @@ static fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nul
 
 static void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
+
+    if (is_police_vehicle_model(model)) {
+        if (!g_is_generating_custom_dispatch.load()) {
+            LOGI("🚫 [trueDispatch] Intercepted native cheap cop script spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", model, pos.x, pos.y, pos.z);
+            return; // Intercept and quietly block native spawning
+        }
+    }
 
     if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
         CVector player_pos = g_FindPlayerCoors(0);
