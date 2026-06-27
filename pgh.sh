@@ -19,6 +19,7 @@ ADD_OUTPUT=$(pueue add -- "gh $*")
 # 3. 提取任务 ID
 TASK_ID=$(echo "$ADD_OUTPUT" | grep -oE "id [0-9]+" | awk '{print $2}')
 
-# 4. 阻塞等待任务完成并实时输出日志
+# 4. 阻塞等待任务完成，微调等待 I/O 刷盘并输出日志
 pueue wait "$TASK_ID" >/dev/null 2>&1
+sleep 0.2
 pueue log "$TASK_ID" | sed -n '/output:/,$p' | tail -n +2
