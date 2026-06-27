@@ -5803,8 +5803,8 @@ static void* proxy_ccgf_control(void* self, void* ped) {
         return nullptr;
     }
     void* leader = *leader_slot;
-    if (!leader || !is_pointer_readable(leader)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] leader (%p) is null or unreadable! Returning nullptr to prevent crash.", leader);
+    if (leader && !is_pointer_readable(leader)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] leader (%p) is invalid/unreadable! Returning nullptr to prevent crash.", leader);
         return nullptr;
     }
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
@@ -5824,8 +5824,8 @@ static void proxy_CalcTargetOffset(void* self) {
     void** pVehicle = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
     if (is_pointer_readable(pVehicle)) {
         void* vehicle = *pVehicle;
-        if (!vehicle || !is_pointer_readable(vehicle)) {
-            LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is null or invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
+        if (vehicle && !is_pointer_readable(vehicle)) {
+            LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
             return;
         }
     }
