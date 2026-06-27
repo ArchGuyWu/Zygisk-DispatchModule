@@ -28,6 +28,29 @@ SHADOWHOOK_AAR="shadowhook-${SHADOWHOOK_VERSION}.aar"
 SHADOWHOOK_URL="https://repo1.maven.org/maven2/com/bytedance/android/shadowhook/${SHADOWHOOK_VERSION}/shadowhook-${SHADOWHOOK_VERSION}.aar"
 SHADOWHOOK_DIR="$PROJECT_DIR/third_party/shadowhook"
 
+# 检测当前是否运行在 proot-distro 容器内 (Ubuntu)
+IS_IN_CONTAINER=0
+if [ -f /etc/os-release ] && grep -qi "ubuntu" /etc/os-release; then
+    IS_IN_CONTAINER=1
+fi
+
+if [ "$IS_IN_CONTAINER" -eq 0 ]; then
+    echo -e "${YELLOW}[INFO] Detecting running outside container (Termux Host).${NC}"
+    echo -e "${YELLOW}[INFO] Auto-bootstrapping build environment inside proot-distro container (isolated mode)...${NC}"
+    
+    if ! command -v proot-distro &>/dev/null; then
+        echo -e "${RED}❌ ERROR: proot-distro is not installed on Termux host!${NC}"
+        echo -e "Please run: pkg install proot-distro"
+        exit 1
+    fi
+    
+    CONTAINER_NAME="ubuntu-build"
+    WORKSPACE_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+    
+    # 自动以 --isolated 隔离模式及绑定工作区执行自身
+    exec proot-distro login --isolated --bind "$WORKSPACE_DIR:/workspace" "$CONTAINER_NAME" -- bash "/workspace/Zygisk-DispatchModule/$(basename "$0")" "$@"
+fi
+
 # 允许通过环境变量定制编译架构，例如：ABIS="arm64-v8a armeabi-v7a" ./build_in_container.sh
 if [ -n "${ABIS:-}" ]; then
     read -r -a TARGET_ABIS <<< "$ABIS"
