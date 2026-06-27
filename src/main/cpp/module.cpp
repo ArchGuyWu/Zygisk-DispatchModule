@@ -246,6 +246,11 @@ static fn_GiveWeapon_t               g_GiveWeapon = nullptr;
 static fn_SetCurrentWeapon_t         g_SetCurrentWeapon = nullptr;
 static fn_GiveWeaponAtStartOfFight_t g_GiveWeaponAtStartOfFight = nullptr;
 
+// 火源检测与避让系统全局变量与类型定义
+static void* g_FireManager = nullptr;
+typedef void* (*fn_FindNearestFire_t)(void* fire_manager_this, const CVector& pos, bool bCheckScriptFires, bool bCheckNormalFires);
+static fn_FindNearestFire_t g_FindNearestFire = nullptr;
+
 // 假枪声所需函数指针与类型定义
 typedef void (*fn_CEventGunShot_ctor_t)(void*, CEntity*, CVector, CVector, bool);
 typedef void (*fn_CEventGunShot_dtor_t)(void*);
@@ -388,6 +393,33 @@ static bool is_gang_or_criminal(int ped_type) {
         || ped_type == PED_TYPE_CRIMINAL;
 }
 
+// 极其鲁棒的火源 3D 坐标安全提取函数（双偏移兼容 + 异常坐标边界过滤）
+static bool get_fire_position(void* fire, CVector& out_pos) {
+    if (!fire) return false;
+    
+    // 1. 尝试标准 32位 偏移 4 (GTA 经典引擎 CFire Layout: 4字节标志位后即为 CVector 坐标)
+    CVector* pPos4 = reinterpret_cast<CVector*>(reinterpret_cast<char*>(fire) + 4);
+    if (std::isfinite(pPos4->x) && std::isfinite(pPos4->y) && std::isfinite(pPos4->z) &&
+        pPos4->x >= -3500.0f && pPos4->x <= 3500.0f &&
+        pPos4->y >= -3500.0f && pPos4->y <= 3500.0f &&
+        pPos4->z >= -50.0f && pPos4->z <= 1000.0f) {
+        out_pos = *pPos4;
+        return true;
+    }
+    
+    // 2. 尝试 64位 对齐/填充 偏移 8 (部分移动端编译器 8 字节对齐安全回退)
+    CVector* pPos8 = reinterpret_cast<CVector*>(reinterpret_cast<char*>(fire) + 8);
+    if (std::isfinite(pPos8->x) && std::isfinite(pPos8->y) && std::isfinite(pPos8->z) &&
+        pPos8->x >= -3500.0f && pPos8->x <= 3500.0f &&
+        pPos8->y >= -3500.0f && pPos8->y <= 3500.0f &&
+        pPos8->z >= -50.0f && pPos8->z <= 1000.0f) {
+        out_pos = *pPos8;
+        return true;
+    }
+    
+    return false;
+}
+
 // 验证载具指针在 Vehicle Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
 static bool is_vehicle_pointer_valid(void* target_veh) {
     if (!target_veh || !g_ms_pVehiclePool || !g_GetPoolVehicle) return false;
@@ -421,6 +453,43 @@ static void cleanup_invalid_vehicles(std::vector<void*>& vec, std::mutex& mtx) {
         }
     }
 }
+
+#define MODEL_POLICE_BIKE 523
+
+static unsigned short get_entity_model_index(void* entity) {
+    if (!entity) return 0;
+    return *reinterpret_cast<unsigned short*>(reinterpret_cast<char*>(entity) + 0x3A);
+}
+
+static void stabilize_motorcycle(void* veh) {
+    if (!veh || !g_GetMatrix) return;
+    CMatrix* mat = g_GetMatrix(veh);
+    if (!mat) return;
+
+    float heading_x = mat->up_x;
+    float heading_y = mat->up_y;
+    float len = sqrtf(heading_x * heading_x + heading_y * heading_y);
+    if (len < 0.001f) {
+        heading_x = 0.0f;
+        heading_y = 1.0f;
+        len = 1.0f;
+    }
+    float norm_up_x = heading_x / len;
+    float norm_up_y = heading_y / len;
+
+    mat->up_x = norm_up_x;
+    mat->up_y = norm_up_y;
+    mat->up_z = 0.0f;
+
+    mat->at_x = 0.0f;
+    mat->at_y = 0.0f;
+    mat->at_z = 1.0f;
+
+    mat->right_x = norm_up_y;
+    mat->right_y = -norm_up_x;
+    mat->right_z = 0.0f;
+}
+
 
 // 统一验证实体 (CPed/CVehicle) 的有效性，保障野指针安全
 static bool is_entity_pointer_valid(void* entity) {
@@ -1671,6 +1740,9 @@ static bool is_cop_visible_to_player(void* veh, float current_x, float current_y
     return false;
 }
 
+// 前向声明，解决编译循环依赖问题
+static bool is_vehicle_occupied_by_driver(void* veh);
+
 // 指派 CTaskComplexEnterCar 任务，让其上车
 static void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
     if (!cop || !is_ped_pointer_valid_safe(cop) || !vehicle || !is_vehicle_pointer_valid_safe(vehicle) || !g_TaskNew || !g_TaskEnterCar_ctor || !g_SetTask) return;
@@ -1681,6 +1753,14 @@ static void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
 
     void* task_manager = reinterpret_cast<void*>(reinterpret_cast<char*>(intelligence) + 8);
     
+    // 司乘关系/抢驾驶位冲突保护 (Seat Conflict Guard)
+    // 如果我们想让警员作为司机上车，但该警车上已经有了现役司机（另一个警员），
+    // 为了防止警员强行将同僚拽下车开走，我们强制将其改为作为乘客上车！
+    if (as_driver && is_vehicle_occupied_by_driver(vehicle)) {
+        as_driver = false;
+        LOGW("👮 [make_cop_enter_vehicle - SeatConflictGuard] Vehicle %p already has a driver. Forcing cop %p to enter as passenger to maintain good driver-passenger relationship!", vehicle, cop);
+    }
+
     void* task = g_TaskNew(256);
     if (task) {
         g_TaskEnterCar_ctor(task, reinterpret_cast<CVehicle*>(vehicle), as_driver, false, false, false);
@@ -1853,6 +1933,20 @@ static void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
         }
     }
     return nullptr;
+}
+
+// 验证该警车原先绑定的驾驶员是否依然存活
+static bool is_alive_bound_driver_exists(void* vehicle) {
+    for (const auto& binding : g_cop_vehicle_bindings) {
+        if (binding.vehicle == vehicle && binding.as_driver) {
+            if (binding.cop && is_ped_pointer_valid_safe(binding.cop)) {
+                if (g_IsAlive && g_IsAlive(binding.cop)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 static std::vector<void*> g_spawned_cop_vehicles;
@@ -2546,8 +2640,10 @@ static void make_cops_attack_criminal(CPed* criminal) {
                             }
                             int64_t elapsed = now_ms() - first_seen;
 
-                            // 复合下车判定：距离接近 (32米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或彻底超时 (行驶超12秒)
-                            bool should_exit = (v_dist < 32.0f) || 
+                            bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                            float exit_dist = is_bike ? 18.0f : 32.0f;
+                            // 复合下车判定：距离接近 (摩托车18米/轿车32米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或彻底超时 (行驶超12秒)
+                            bool should_exit = (v_dist < exit_dist) || 
                                                (elapsed > 6000 && v_dist < 60.0f) || 
                                                (elapsed > 12000);
 
@@ -2585,7 +2681,13 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                 if (already_dispatched) {
                                     CVector current_pos = get_entity_pos(veh);
                                     int64_t now_time = now_ms();
-                                    bool trigger_intervention = false;
+                                    bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                    if (is_bike && g_GetMatrix) {
+                                        CMatrix* mat = g_GetMatrix(veh);
+                                        if (mat && mat->at_z < 0.8f) { // Tilting > 36.8 degrees
+                                            stabilize_motorcycle(veh);
+                                        }
+                                    }
 
                                     StuckTracker tracker;
                                     bool found_stuck = false;
@@ -2689,59 +2791,105 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                     }
                                                 } else {
                                                      // B. Far range: Force reverse nudge and physical 120-degree yaw rotation to break physical circling loop
-                                                     bool is_seen = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
-                                                     float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
-                                                     if (g_GetMatrix) {
-                                                         CMatrix* mat = g_GetMatrix(veh);
-                                                         if (mat) {
-                                                             f_x = mat->up_x;
-                                                             f_y = mat->up_y;
-                                                             f_z = mat->up_z;
+                                                     bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                     if (is_bike) {
+                                                         float dx_aim = target_crime_pos.x - current_pos.x;
+                                                         float dy_aim = target_crime_pos.y - current_pos.y;
+                                                         float dist_aim_2d = sqrtf(dx_aim * dx_aim + dy_aim * dy_aim);
+                                                         if (dist_aim_2d > 0.01f) {
+                                                             dx_aim /= dist_aim_2d;
+                                                             dy_aim /= dist_aim_2d;
+                                                         } else {
+                                                             dx_aim = 0.0f;
+                                                             dy_aim = 1.0f;
+                                                         }
 
-                                                             if (!is_seen) {
-                                                                 // 物理朝向旋转 120 度打破画圆惯性：cos = -0.5, sin = 0.866
-                                                                 float new_up_x = mat->up_x * (-0.5f) - mat->up_y * 0.866f;
-                                                                 float new_up_y = mat->up_x * 0.866f + mat->up_y * (-0.5f);
-                                                                 float new_right_x = mat->right_x * (-0.5f) - mat->right_y * 0.866f;
-                                                                 float new_right_y = mat->right_x * 0.866f + mat->right_y * (-0.5f);
+                                                         if (g_GetMatrix) {
+                                                             CMatrix* mat = g_GetMatrix(veh);
+                                                             if (mat) {
+                                                                 mat->up_x = dx_aim;
+                                                                 mat->up_y = dy_aim;
+                                                                 mat->up_z = 0.0f;
 
-                                                                 mat->up_x = new_up_x;
-                                                                 mat->up_y = new_up_y;
-                                                                 mat->right_x = new_right_x;
-                                                                 mat->right_y = new_right_y;
+                                                                 mat->at_x = 0.0f;
+                                                                 mat->at_y = 0.0f;
+                                                                 mat->at_z = 1.0f;
+
+                                                                 mat->right_x = dy_aim;
+                                                                 mat->right_y = -dx_aim;
+                                                                 mat->right_z = 0.0f;
                                                              }
                                                          }
-                                                     }
-                                                     float f_len = sqrtf(f_x * f_x + f_y * f_y + f_z * f_z);
-                                                     if (f_len > 0.01f) {
-                                                         f_x /= f_len; f_y /= f_len; f_z /= f_len;
-                                                     } else {
-                                                         f_x = 0.0f; f_y = 1.0f; f_z = 0.0f;
-                                                     }
-                                                     CVector reverse_pos;
-                                                     if (is_seen) {
-                                                         reverse_pos = {
-                                                             current_pos.x - f_x * 3.5f,
-                                                             current_pos.y - f_y * 3.5f,
-                                                             current_pos.z + 0.3f
+
+                                                         CVector realigned_pos = {
+                                                             current_pos.x + dx_aim * 5.0f,
+                                                             current_pos.y + dy_aim * 5.0f,
+                                                             current_pos.z + 0.15f
                                                          };
+                                                         if (g_GetCarToGoToCoors) {
+                                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
+                                                         }
+                                                         set_entity_pos(veh, realigned_pos);
+                                                         stabilize_motorcycle(veh);
+                                                         if (g_GetCarToGoToCoors) {
+                                                             g_GetCarToGoToCoors(veh, &realigned_pos, 4, false);
+                                                         }
+                                                         command_vehicle_ai(veh, target_crime_pos, dist_vc);
+                                                         LOGW("🔄🏍️ [Anti-Spin Guard - BIKE] Realignment Orbit Break. Pointed directly to crime scene (%.1fm) and teleported forward 5m.", dist_vc);
                                                      } else {
-                                                         reverse_pos = {
-                                                             current_pos.x - f_x * 4.5f,
-                                                             current_pos.y - f_y * 4.5f,
-                                                             current_pos.z + 0.5f
-                                                         };
-                                                     }
-                                                     if (g_GetCarToGoToCoors) {
-                                                         g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                                     }
-                                                     set_entity_pos(veh, reverse_pos);
-                                                     if (g_GetCarToGoToCoors) {
-                                                         g_GetCarToGoToCoors(veh, &reverse_pos, 4, false);
-                                                     }
-                                                     command_vehicle_ai(veh, target_crime_pos, dist_vc);
-                                                     LOGW("🔄 [Anti-Spin Guard] Circle spinning detected in far range (%.1fm, seen=%d). Forced reverse nudge & yaw break.", dist_vc, is_seen);
-                                                 }
+                                                         bool is_seen = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
+                                                         float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
+                                                         if (g_GetMatrix) {
+                                                             CMatrix* mat = g_GetMatrix(veh);
+                                                             if (mat) {
+                                                                 f_x = mat->up_x;
+                                                                 f_y = mat->up_y;
+                                                                 f_z = mat->up_z;
+
+                                                                 if (!is_seen) {
+                                                                     // 物理朝向旋转 120 度打破画圆惯性：cos = -0.5, sin = 0.866
+                                                                     float new_up_x = mat->up_x * (-0.5f) - mat->up_y * 0.866f;
+                                                                     float new_up_y = mat->up_x * 0.866f + mat->up_y * (-0.5f);
+                                                                     float new_right_x = mat->right_x * (-0.5f) - mat->right_y * 0.866f;
+                                                                     float new_right_y = mat->right_x * 0.866f + mat->right_y * (-0.5f);
+
+                                                                     mat->up_x = new_up_x;
+                                                                     mat->up_y = new_up_y;
+                                                                     mat->right_x = new_right_x;
+                                                                     mat->right_y = new_right_y;
+                                                                 }
+                                                             }
+                                                         }
+                                                         float f_len = sqrtf(f_x * f_x + f_y * f_y + f_z * f_z);
+                                                         if (f_len > 0.01f) {
+                                                             f_x /= f_len; f_y /= f_len; f_z /= f_len;
+                                                         } else {
+                                                             f_x = 0.0f; f_y = 1.0f; f_z = 0.0f;
+                                                         }
+                                                         CVector reverse_pos;
+                                                         if (is_seen) {
+                                                             reverse_pos = {
+                                                                 current_pos.x - f_x * 3.5f,
+                                                                 current_pos.y - f_y * 3.5f,
+                                                                 current_pos.z + 0.3f
+                                                             };
+                                                         } else {
+                                                             reverse_pos = {
+                                                                 current_pos.x - f_x * 4.5f,
+                                                                 current_pos.y - f_y * 4.5f,
+                                                                 current_pos.z + 0.5f
+                                                             };
+                                                         }
+                                                         if (g_GetCarToGoToCoors) {
+                                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
+                                                         }
+                                                         set_entity_pos(veh, reverse_pos);
+                                                         if (g_GetCarToGoToCoors) {
+                                                             g_GetCarToGoToCoors(veh, &reverse_pos, 4, false);
+                                                         }
+                                                         command_vehicle_ai(veh, target_crime_pos, dist_vc);
+                                                         LOGW("🔄 [Anti-Spin Guard] Circle spinning detected in far range (%.1fm, seen=%d). Forced reverse nudge & yaw break.", dist_vc, is_seen);
+                                                     }}
                                                 tracker.spin_count = 0;
                                                 tracker.last_intervention_time = now_time;
                                             }
@@ -2796,19 +2944,24 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                 float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
                                                                 float lx = -dir_y * side_sign;
                                                                 float ly = dir_x * side_sign;
+                                                                bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                float side_nudge = is_bike ? 0.8f : 1.8f;
+                                                                float height_lift = is_bike ? 0.05f : 0.0f;
                                                                 CVector detour_pos = {
-                                                                    current_pos.x + lx * 1.8f + dir_x * 0.8f,
-                                                                    current_pos.y + ly * 1.8f + dir_y * 0.8f,
-                                                                    current_pos.z
+                                                                    current_pos.x + lx * side_nudge + dir_x * 0.8f,
+                                                                    current_pos.y + ly * side_nudge + dir_y * 0.8f,
+                                                                    current_pos.z + height_lift
                                                                 };
                                                                 if (g_GetCarToGoToCoors) {
                                                                     g_GetCarToGoToCoors(veh, &current_pos, 4, false);
                                                                 }
                                                                 set_entity_pos(veh, detour_pos);
+                                                                if (is_bike) {
+                                                                    stabilize_motorcycle(veh);
+                                                                }
                                                                 if (g_GetCarToGoToCoors) {
                                                                     g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
-                                                                }
-                                                                LOGI("[dispatchCenter - ACC Bypass Ped] Vehicle %p blocked by TARGET CRIMINAL %p (dist=%.1f, speed=%.2f). Detoured (side=%.1f)", 
+                                                                }LOGI("[dispatchCenter - ACC Bypass Ped] Vehicle %p blocked by TARGET CRIMINAL %p (dist=%.1f, speed=%.2f). Detoured (side=%.1f)", 
                                                                      veh, target_criminal, cop_dist, speed, side_sign);
                                                             } else {
                                                                 float push_back_dist = 8.5f - cop_dist;
@@ -2861,19 +3014,24 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                                     float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
                                                                                     float lx = -dir_y * side_sign;
                                                                                     float ly = dir_x * side_sign;
+                                                                                    bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                    float side_nudge = is_bike ? 0.8f : 1.8f;
+                                                                                    float height_lift = is_bike ? 0.05f : 0.0f;
                                                                                     CVector detour_pos = {
-                                                                                        current_pos.x + lx * 1.8f + dir_x * 0.8f,
-                                                                                        current_pos.y + ly * 1.8f + dir_y * 0.8f,
-                                                                                        current_pos.z
+                                                                                        current_pos.x + lx * side_nudge + dir_x * 0.8f,
+                                                                                        current_pos.y + ly * side_nudge + dir_y * 0.8f,
+                                                                                        current_pos.z + height_lift
                                                                                     };
                                                                                     if (g_GetCarToGoToCoors) {
                                                                                         g_GetCarToGoToCoors(veh, &current_pos, 4, false);
                                                                                     }
                                                                                     set_entity_pos(veh, detour_pos);
+                                                                                    if (is_bike) {
+                                                                                        stabilize_motorcycle(veh);
+                                                                                    }
                                                                                     if (g_GetCarToGoToCoors) {
                                                                                         g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
-                                                                                    }
-                                                                                    LOGI("[dispatchCenter - ACC Bypass] Vehicle %p blocked by %p (dist=%.1f, speed=%.2f). Smooth detour nudge (side=%.1f) by 1.8m side, 0.8m forward.", 
+                                                                                    }LOGI("[dispatchCenter - ACC Bypass] Vehicle %p blocked by %p (dist=%.1f, speed=%.2f). Smooth detour nudge (side=%.1f) by 1.8m side, 0.8m forward.", 
                                                                                          veh, other_veh, cop_dist, speed, side_sign);
                                                                                 } else {
                                                                                     // Default: decelerate/keep distance backward
@@ -2897,6 +3055,80 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                                 break; // Handle one roadblock vehicle per tick to avoid jitter
                                                                             }
                                                                         }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // =====================================================================
+                                            // 🔥 [dispatchCenter - Fire Source Detection & Avoidance] 火源自动检测与避让系统
+                                            // =====================================================================
+                                            if (g_FireManager && g_FindNearestFire) {
+                                                void* nearest_fire = g_FindNearestFire(g_FireManager, current_pos, true, true);
+                                                if (nearest_fire) {
+                                                    CVector fire_pos;
+                                                    if (get_fire_position(nearest_fire, fire_pos)) {
+                                                        float fx = fire_pos.x - current_pos.x;
+                                                        float fy = fire_pos.y - current_pos.y;
+                                                        float fz = fire_pos.z - current_pos.z;
+                                                        float fire_dist = sqrtf(fx * fx + fy * fy + fz * fz);
+
+                                                        if (fire_dist < 15.0f) {
+                                                            // A. 被火源包围/受困紧急逃生 (距离过近且处于低速/停滞状态)
+                                                            if (fire_dist < 6.5f && speed < 2.0f) {
+                                                                if (!vector_contains(vehicles_emptied_snapshot, veh)) {
+                                                                    if (g_GetCarToGoToCoors) {
+                                                                        g_GetCarToGoToCoors(veh, &current_pos, 4, false); // 瞬间急刹
+                                                                    }
+                                                                    if (g_TellOccupantsToLeaveCar) {
+                                                                        g_TellOccupantsToLeaveCar(veh); // 强令离开，防烧死
+                                                                    }
+                                                                    if (g_VehicleInflictDamage) {
+                                                                        g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, current_pos);
+                                                                    }
+                                                                    vehicles_emptied_snapshot.push_back(veh);
+                                                                    pending_vehicles_emptied.push_back(veh);
+                                                                    if (veh == g_active_crime.spawned_vehicle) {
+                                                                        g_active_crime.occupants_ordered_out = true;
+                                                                    }
+                                                                    LOGW("🔥 [dispatchCenter - FireEmergencyExit] TRAPPED BY FIRE! Vehicle %p is too close to fire (dist=%.1f, speed=%.2f). Safe bulk exit triggered!", veh, fire_dist, speed);
+                                                                }
+                                                            } 
+                                                            // B. 正常行驶中火源主动避让 (火源处于行进路线上)
+                                                            else {
+                                                                float dot_p = fx * dir_x + fy * dir_y + fz * dir_z;
+                                                                if (dot_p > 0.0f && dot_p < 15.0f) { // 火源在车头15米内
+                                                                    float lat_dist_sq = (fire_dist * fire_dist) - (dot_p * dot_p);
+                                                                    if (lat_dist_sq < 25.0f) { // 横向偏离在5.0米内 (直接物理阻挡)
+                                                                        // 计算垂直向量决定往哪侧闪避
+                                                                        float lx = -dir_y;
+                                                                        float ly = dir_x;
+                                                                        float side_dot = fx * lx + fy * ly;
+                                                                        float side_sign = (side_dot > 0.0f) ? -1.0f : 1.0f; // 避开火源那一侧
+
+                                                                        // 计算安全的避让偏离点并微调位置重设 autopilot
+                                                                        bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                        float side_nudge = is_bike ? 2.5f : 5.5f;
+                                                                        float height_lift = is_bike ? 0.05f : 0.0f;
+                                                                        CVector detour_pos = {
+                                                                            current_pos.x + lx * side_sign * side_nudge - dir_x * 1.5f,
+                                                                            current_pos.y + ly * side_sign * side_nudge - dir_y * 1.5f,
+                                                                            current_pos.z + height_lift
+                                                                        };
+
+                                                                        if (g_GetCarToGoToCoors) {
+                                                                            g_GetCarToGoToCoors(veh, &current_pos, 4, false);
+                                                                        }
+                                                                        set_entity_pos(veh, detour_pos);
+                                                                        if (is_bike) {
+                                                                            stabilize_motorcycle(veh);
+                                                                        }
+                                                                        if (g_GetCarToGoToCoors) {
+                                                                            g_GetCarToGoToCoors(veh, &detour_pos, 4, false);
+                                                                        }LOGW("🔥 [dispatchCenter - FireAvoidanceDetour] Vehicle %p blocked by fire (dist=%.1f) in front. Detouring to safe side (side_sign=%.1f).", veh, fire_dist, side_sign);
                                                                     }
                                                                 }
                                                             }
@@ -2979,19 +3211,23 @@ static void make_cops_attack_criminal(CPed* criminal) {
 
                                         float warp_factor = 25.0f / dist_v;
                                         if (warp_factor > 0.8f) warp_factor = 0.5f; 
+                                        bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                        float height_offset = is_bike ? 0.15f : 0.8f;
                                         CVector warp_pos = {
                                             current_pos.x + dx_v * warp_factor,
                                             current_pos.y + dy_v * warp_factor,
-                                            current_pos.z + dz_v * warp_factor + 0.8f 
+                                            current_pos.z + dz_v * warp_factor + height_offset
                                         };
                                         if (g_GetCarToGoToCoors) {
                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
                                         }
                                         set_entity_pos(veh, warp_pos);
+                                        if (is_bike) {
+                                            stabilize_motorcycle(veh);
+                                        }
                                         if (g_GetCarToGoToCoors) {
                                             g_GetCarToGoToCoors(veh, &warp_pos, 4, false);
-                                        }
-                                        command_vehicle_ai(veh, target_crime_pos, dist_v);
+                                        }command_vehicle_ai(veh, target_crime_pos, dist_v);
                                         LOGI("[dispatchCenter - Stage 2 Warp] Teleported vehicle %p forward 25m to break deadlock. (visible=%d, stuck_duration=%lld ms)", 
                                              veh, cop_visible, (long long)stuck_duration);
                                     }
@@ -3068,47 +3304,54 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                         if (dist_v > 5.0f) {
                                             CVector nudged_pos;
                                                                                          if (cop_visible) {
-                                                 // Pull away backwards! Calculate current forward vector from matrix
-                                                 float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
-                                                 if (g_GetMatrix) {
-                                                     CMatrix* mat = g_GetMatrix(veh);
-                                                     if (mat) {
-                                                         f_x = mat->up_x;
-                                                         f_y = mat->up_y;
-                                                         f_z = mat->up_z;
-                                                     }
-                                                 }
-                                                 float f_len = sqrtf(f_x * f_x + f_y * f_y + f_z * f_z);
-                                                if (f_len > 0.01f) {
-                                                    f_x /= f_len; f_y /= f_len; f_z /= f_len;
-                                                } else {
-                                                    f_x = 0.0f; f_y = 1.0f; f_z = 0.0f;
-                                                }
-                                                // Nudge backwards by 3.5 meters, lift by 0.6 meters
-                                                nudged_pos.x = current_pos.x - f_x * 3.5f;
-                                                nudged_pos.y = current_pos.y - f_y * 3.5f;
-                                                nudged_pos.z = current_pos.z + 0.60f;
-                                                LOGI("   +- Nudged vehicle %p BACKWARDS 3.5m and elevated 0.6m to pull away from obstacles (visible).", veh);
-                                            } else {
-                                                // Unseen: Nudge towards destination forward by 12.0m to cross walls quickly
-                                                float nx = dx_v / dist_v;
-                                                float ny = dy_v / dist_v;
-                                                float nz = dz_v / dist_v;
-                                                nudged_pos.x = current_pos.x + nx * 12.0f;
-                                                nudged_pos.y = current_pos.y + ny * 12.0f;
-                                                nudged_pos.z = current_pos.z + nz * 0.1f + 0.75f;
-                                                LOGI("   +- Nudged vehicle %p FORWARD 12.0m (unseen warp) to bypass obstacles.", veh);
-                                            }
+                                                                                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                             // Pull away backwards! Calculate current forward vector from matrix
+                                                                                             float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
+                                                                                             if (g_GetMatrix) {
+                                                                                                 CMatrix* mat = g_GetMatrix(veh);
+                                                                                                 if (mat) {
+                                                                                                     f_x = mat->up_x;
+                                                                                                     f_y = mat->up_y;
+                                                                                                     f_z = mat->up_z;
+                                                                                                 }
+                                                                                             }
+                                                                                             float f_len = sqrtf(f_x * f_x + f_y * f_y + f_z * f_z);
+                                                                                             if (f_len > 0.01f) {
+                                                                                                 f_x /= f_len; f_y /= f_len; f_z /= f_len;
+                                                                                             } else {
+                                                                                                 f_x = 0.0f; f_y = 1.0f; f_z = 0.0f;
+                                                                                             }
+                                                                                             // Nudge backwards by 3.5 meters, lift by 0.60m or 0.12m for bike
+                                                                                             float height_lift = is_bike ? 0.12f : 0.60f;
+                                                                                             nudged_pos.x = current_pos.x - f_x * 3.5f;
+                                                                                             nudged_pos.y = current_pos.y - f_y * 3.5f;
+                                                                                             nudged_pos.z = current_pos.z + height_lift;
+                                                                                             LOGI("   +- Nudged vehicle %p BACKWARDS 3.5m and elevated %.2fm to pull away from obstacles (visible).", veh, height_lift);
+                                                                                         } else {
+                                                                                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                             // Unseen: Nudge towards destination forward by 12.0m to cross walls quickly
+                                                                                             float nx = dx_v / dist_v;
+                                                                                             float ny = dy_v / dist_v;
+                                                                                             float nz = dz_v / dist_v;
+                                                                                             float height_lift = is_bike ? 0.15f : 0.75f;
+                                                                                             nudged_pos.x = current_pos.x + nx * 12.0f;
+                                                                                             nudged_pos.y = current_pos.y + ny * 12.0f;
+                                                                                             nudged_pos.z = current_pos.z + nz * 0.1f + height_lift;
+                                                                                             LOGI("   +- Nudged vehicle %p FORWARD 12.0m (unseen warp) and elevated %.2fm to bypass obstacles.", veh, height_lift);
+                                                                                         }
 
-                                            if (g_GetCarToGoToCoors) {
-                                                g_GetCarToGoToCoors(veh, &current_pos, 4, false);
-                                            }
-                                            set_entity_pos(veh, nudged_pos);
-                                            if (g_GetCarToGoToCoors) {
-                                                g_GetCarToGoToCoors(veh, &nudged_pos, 4, false);
-                                            }
-                                            command_vehicle_ai(veh, target_crime_pos, dist_v);
-                                        }
+                                                                                         bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                         if (g_GetCarToGoToCoors) {
+                                                                                             g_GetCarToGoToCoors(veh, &current_pos, 4, false);
+                                                                                         }
+                                                                                         set_entity_pos(veh, nudged_pos);
+                                                                                         if (is_bike) {
+                                                                                             stabilize_motorcycle(veh);
+                                                                                         }
+                                                                                         if (g_GetCarToGoToCoors) {
+                                                                                             g_GetCarToGoToCoors(veh, &nudged_pos, 4, false);
+                                                                                         }
+                                                                                         command_vehicle_ai(veh, target_crime_pos, dist_v);}
                                     }
                                 }
 
@@ -4683,6 +4926,10 @@ static void hook_thread_func() {
     RESOLVE_SYM(lib, g_ms_pPedPool, "_ZN6CPools11ms_pPedPoolE", void*);
     RESOLVE_SYM(lib, g_ms_pVehiclePool, "_ZN6CPools15ms_pVehiclePoolE", void*);
 
+    // 解析火源检测相关符号
+    RESOLVE_SYM(lib, g_FireManager, "gFireManager", void*);
+    RESOLVE_SYM(lib, g_FindNearestFire, "_ZN12CFireManager15FindNearestFireERK7CVectorbb", fn_FindNearestFire_t);
+
     // 解析摄像机/视野判定相关符号
     RESOLVE_SYM(lib, g_TheCamera, "TheCamera", void*);
     RESOLVE_SYM(lib, g_GetGameCamPosition, "_ZN7CCamera18GetGameCamPositionEv", fn_GetGameCamPosition_t);
@@ -5325,6 +5572,22 @@ void init_ecs_systems() {
                     bool is_driver = false;
                     void* bound_veh = find_bound_vehicle_of_cop(cop, is_driver);
                     if (bound_veh) {
+                        // 驾驶员生存性晋升系统 (Driver Survivability Promotion)
+                        // 如果当前警员是乘客，但该车原绑定的驾驶员已经殉职/不存在，则自动将该警员晋升为驾驶员！
+                        if (!is_driver && !is_alive_bound_driver_exists(bound_veh)) {
+                            is_driver = true;
+                            // 同步更新绑定关系
+                            {
+                                std::lock_guard<std::mutex> lock(g_bindings_mutex);
+                                for (auto& binding : g_cop_vehicle_bindings) {
+                                    if (binding.cop == cop) {
+                                        binding.as_driver = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            LOGW("👮 [ECS - DriverPromotion] Passenger cop %p promoted to DRIVER for vehicle %p because the bound driver is deceased/missing.", cop, bound_veh);
+                        }
                         make_cop_enter_vehicle(cop, bound_veh, is_driver);
                     }
                 }
