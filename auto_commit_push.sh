@@ -43,12 +43,8 @@ git -C "$SCRIPT_DIR" add .
 COMMIT_MSG="Auto-build & push: $(date '+%Y-%m-%d %H:%M:%S') - Code updates verified"
 git -C "$SCRIPT_DIR" commit -m "$COMMIT_MSG"
 
-echo "📤 Pushing to remote origin master..."
-# 由于配置了 post-commit 钩子，git commit 会自动触发推送，
-# 如果没有触发或为了双重保险，我们显式调用 git push：
-if ! git -C "$SCRIPT_DIR" push origin master; then
-    echo "⚠️ Git push failed or was already completed by git hooks."
-fi
+# 自动运行 git push 推送至远端仓库
+git -C "$SCRIPT_DIR" push origin master
 
 echo "========================================================="
 echo "🎉 SUCCESS: Complete build & remote push achieved!"
