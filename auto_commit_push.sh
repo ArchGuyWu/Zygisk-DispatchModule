@@ -18,24 +18,9 @@ if [ -z "$(git -C "$SCRIPT_DIR" status --porcelain)" ]; then
     exit 0
 fi
 
-echo "🚀 Changes detected. Starting complete build verification inside isolated container..."
+echo "🚀 Changes detected. Staging changes and committing directly to trigger remote CI/CD..."
 
-# 2. 清理旧编译文件以保证“完整干净修改”
-if [ -d "$SCRIPT_DIR/build" ]; then
-    echo "🧹 Cleaning previous build directory..."
-    rm -rf "$SCRIPT_DIR/build"
-fi
-
-# 3. 运行隔离容器进行编译打包
-echo "🏗️  Compiling in container '${CONTAINER_NAME}'..."
-if proot-distro login --isolated --bind "$WORKSPACE_DIR:/workspace" "$CONTAINER_NAME" -- bash "/workspace/Zygisk-DispatchModule/build_in_container.sh"; then
-    echo "✅ Build completed successfully!"
-else
-    echo "❌ ERROR: Container build failed! Aborting auto-commit."
-    exit 1
-fi
-
-# 4. Git 提交与推送
+# 2. Git 提交与推送
 echo "📝 Staging changes and committing..."
 git -C "$SCRIPT_DIR" add .
 
