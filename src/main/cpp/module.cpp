@@ -32,6 +32,7 @@
 #include <string>
 #include <cinttypes>
 #include <set>
+#include <errno.h>
 
 #include "zygisk/zygisk.hpp"
 #include "shadowhook.h"
@@ -398,14 +399,30 @@ static bool is_vehicle_pointer_valid_safe(void* target_veh) {
     return false;
 }
 
+static inline bool is_pointer_readable(const void* ptr) {
+    if (!ptr) return false;
+    uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
+        return false;
+    }
+    static int null_fd = -1;
+    if (null_fd < 0) {
+        null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    }
+    if (null_fd < 0) return true; // Fallback if open failed
+    long ret = write(null_fd, ptr, 1);
+    if (ret < 0 && errno == EFAULT) {
+        return false;
+    }
+    return true;
+}
+
 static inline bool is_task_vtable_safe(void* task) {
     if (!task) return true;
-    uintptr_t addr = reinterpret_cast<uintptr_t>(task);
-    if (addr < 0x10000 || (addr & 7) != 0) return false;
+    if (!is_pointer_readable(task)) return false;
     void* vtable = *reinterpret_cast<void**>(task);
     if (!vtable) return false;
-    uintptr_t vtable_addr = reinterpret_cast<uintptr_t>(vtable);
-    if (vtable_addr < 0x10000 || (vtable_addr & 7) != 0) return false;
+    if (!is_pointer_readable(vtable)) return false;
     if (g_vtable_CTask && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTask) + 16)) return false;
     if (g_vtable_CTaskSimple && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskSimple) + 16)) return false;
     if (g_vtable_CTaskComplex && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskComplex) + 16)) return false;
@@ -5434,15 +5451,16 @@ static inline bool is_partner_task_safe(void* self) {
     return true;
 }
 
-static inline void sanitize_task_pointers(void* task, int max_size_bytes = 128) {
+static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
     if (!task) return;
+    if (!is_pointer_readable(task)) return;
     char* task_bytes = reinterpret_cast<char*>(task);
     for (int offset = 8; offset < max_size_bytes; offset += 8) {
+        if (!is_pointer_readable(task_bytes + offset)) break;
         void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
         void* ptr = *ptr_slot;
         if (ptr) {
-            uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-            if (addr >= 0x10000 && (addr & 7) == 0) {
+            if (is_pointer_readable(ptr)) {
                 void* vtable = *reinterpret_cast<void**>(ptr);
                 if (vtable == nullptr) {
                     LOGW("⚠️ [sanitize_task_pointers] Found zero-filled object pointer %p at offset 0x%X in task %p. Clearing it!", ptr, offset, task);
