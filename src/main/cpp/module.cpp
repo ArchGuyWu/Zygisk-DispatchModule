@@ -5722,6 +5722,36 @@ static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
 }
 
+// --- CTaskComplexGangFollower::ControlSubTask Hook ---
+typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
+
+static void* g_stub_ccgf_control = nullptr;
+static fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
+static void* proxy_ccgf_control(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe self!");
+        return nullptr;
+    }
+    if (!ped || !is_pointer_readable(ped)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe ped!");
+        return nullptr;
+    }
+    char* self_bytes = reinterpret_cast<char*>(self);
+    void** leader_slot = reinterpret_cast<void**>(self_bytes + 0x18);
+    if (!is_pointer_readable(leader_slot)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] self + 0x18 slot unreadable!");
+        return nullptr;
+    }
+    void* leader = *leader_slot;
+    if (!leader || !is_pointer_readable(leader)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] leader (%p) is null or unreadable! Returning nullptr to prevent crash.", leader);
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
+}
+
+
 // --- CTaskGangHassleVehicle::CalcTargetOffset Hook ---
 typedef void (*fn_CalcTargetOffset_t)(void* self);
 static void* g_stub_CalcTargetOffset = nullptr;
@@ -6247,6 +6277,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_scan_for_attractors_in_range));
     if (g_stub_scan_for_attractors_in_range) LOGI("✅ Hooked CAttractorScanner::ScanForAttractorsInRange");
     else LOGE("❌ Failed to hook CAttractorScanner::ScanForAttractorsInRange: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexGangFollower::ControlSubTask (防止帮派跟从者任务中 leader/目标 ped 为空时解引用闪退)
+    g_stub_ccgf_control = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexGangFollower14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_ccgf_control),
+        reinterpret_cast<void**>(&g_orig_ccgf_control));
+    if (g_stub_ccgf_control) LOGI("✅ Hooked CTaskComplexGangFollower::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexGangFollower::ControlSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CTaskGangHassleVehicle::CalcTargetOffset (防止帮派骚扰载具任务中目标载具被销毁或为空时解引用闪退)
