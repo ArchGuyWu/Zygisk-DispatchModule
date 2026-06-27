@@ -5677,6 +5677,65 @@ static void* proxy_gotopointanymeans_createsubtask(void* self, int subTaskId, CP
     return SHADOWHOOK_CALL_PREV(proxy_gotopointanymeans_createsubtask, self, subTaskId, ped);
 }
 
+// --- CTaskComplexTurnToFaceEntityOrCoord Hook ---
+typedef void* (*fn_TurnToFaceEntity_CreateFirstSubTask_t)(void* self, void* ped);
+static void* g_stub_turntofaceentity_createfirstsubtask = nullptr;
+static fn_TurnToFaceEntity_CreateFirstSubTask_t g_orig_turntofaceentity_createfirstsubtask = nullptr;
+
+typedef void* (*fn_TurnToFaceEntity_ControlSubTask_t)(void* self, void* ped);
+static void* g_stub_turntofaceentity_controlsubtask = nullptr;
+static fn_TurnToFaceEntity_ControlSubTask_t g_orig_turntofaceentity_controlsubtask = nullptr;
+
+static void sanitize_turntofaceentity_target(void* self) {
+    if (!self) return;
+    char* self_bytes = reinterpret_cast<char*>(self);
+    void** entity_slot = reinterpret_cast<void**>(self_bytes + 0x18);
+    if (is_pointer_readable(entity_slot)) {
+        void* entity = *entity_slot;
+        if (entity) {
+            if (!is_pointer_readable(entity)) {
+                LOGW("⚠️ [TurnToFaceEntity] Intercepted unreadable target entity %p. Clearing it.", entity);
+                *entity_slot = nullptr;
+            } else {
+                void** entity_vtable = reinterpret_cast<void**>(entity);
+                if (!is_pointer_readable(entity_vtable) || *entity_vtable == nullptr) {
+                    LOGW("⚠️ [TurnToFaceEntity] Intercepted freed/zero-filled target entity %p. Clearing it.", entity);
+                    *entity_slot = nullptr;
+                }
+            }
+        }
+    }
+}
+
+static void* proxy_turntofaceentity_createfirstsubtask(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_task_vtable_safe(self)) {
+        LOGW("⚠️ [TurnToFaceEntity::CreateFirstSubTask] self %p is null or has unsafe vtable! Intercepting.", self);
+        return nullptr;
+    }
+    if (ped && !is_ped_pointer_valid_safe(ped)) {
+        LOGW("⚠️ [TurnToFaceEntity::CreateFirstSubTask] input ped %p is unsafe! Intercepting.", ped);
+        return nullptr;
+    }
+    sanitize_turntofaceentity_target(self);
+    return SHADOWHOOK_CALL_PREV(proxy_turntofaceentity_createfirstsubtask, self, ped);
+}
+
+static void* proxy_turntofaceentity_controlsubtask(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_task_vtable_safe(self)) {
+        LOGW("⚠️ [TurnToFaceEntity::ControlSubTask] self %p is null or has unsafe vtable! Intercepting.", self);
+        return nullptr;
+    }
+    if (ped && !is_ped_pointer_valid_safe(ped)) {
+        LOGW("⚠️ [TurnToFaceEntity::ControlSubTask] input ped %p is unsafe! Intercepting.", ped);
+        return nullptr;
+    }
+    sanitize_turntofaceentity_target(self);
+    return SHADOWHOOK_CALL_PREV(proxy_turntofaceentity_controlsubtask, self, ped);
+}
+
+
 // =====================================================================
 // 🛠️ [CTaskManager & CAttractorScanner Safety Hooks]
 // =====================================================================
@@ -6297,6 +6356,26 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_CalcTargetOffset));
     if (g_stub_CalcTargetOffset) LOGI("✅ Hooked CTaskGangHassleVehicle::CalcTargetOffset");
     else LOGE("❌ Failed to hook CTaskGangHassleVehicle::CalcTargetOffset: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexTurnToFaceEntityOrCoord::CreateFirstSubTask (防止面对实体/坐标任务中目标实体被销毁或为空时解引用闪退)
+    g_stub_turntofaceentity_createfirstsubtask = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN35CTaskComplexTurnToFaceEntityOrCoord18CreateFirstSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_turntofaceentity_createfirstsubtask),
+        reinterpret_cast<void**>(&g_orig_turntofaceentity_createfirstsubtask));
+    if (g_stub_turntofaceentity_createfirstsubtask) LOGI("✅ Hooked CTaskComplexTurnToFaceEntityOrCoord::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexTurnToFaceEntityOrCoord::CreateFirstSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask (防止面对实体/坐标任务中目标实体被销毁或为空时解引用闪退)
+    g_stub_turntofaceentity_controlsubtask = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN35CTaskComplexTurnToFaceEntityOrCoord14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_turntofaceentity_controlsubtask),
+        reinterpret_cast<void**>(&g_orig_turntofaceentity_controlsubtask));
+    if (g_stub_turntofaceentity_controlsubtask) LOGI("✅ Hooked CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
