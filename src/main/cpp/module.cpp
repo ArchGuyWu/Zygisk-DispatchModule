@@ -39,6 +39,7 @@
 #include "sh_nothing_bin.h"
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 #include <random>
 #include <functional>
 
@@ -313,6 +314,11 @@ static fn_TaskEnterCar_ctor_t        g_TaskEnterCar_ctor = nullptr;
 static void*                         g_vtable_KillCriminal = nullptr;
 static void*                         g_vtable_EnterCar = nullptr;
 
+static void*                         g_vtable_CTask = nullptr;
+static void*                         g_vtable_CTaskSimple = nullptr;
+static void*                         g_vtable_CTaskComplex = nullptr;
+static void*                         g_vtable_CEvent = nullptr;
+
 typedef void (*fn_AddTaskPrimaryMaybeInGroup_t)(void* ped_intel_this, CTask* task, bool writeToEventLog);
 static fn_AddTaskPrimaryMaybeInGroup_t g_AddTaskPrimaryMaybeInGroup = nullptr;
 
@@ -390,6 +396,20 @@ static bool is_vehicle_pointer_valid_safe(void* target_veh) {
         }
     }
     return false;
+}
+
+static inline bool is_task_vtable_safe(void* task) {
+    if (!task) return true;
+    uintptr_t addr = reinterpret_cast<uintptr_t>(task);
+    if (addr < 0x10000 || (addr & 7) != 0) return false;
+    void* vtable = *reinterpret_cast<void**>(task);
+    if (!vtable) return false;
+    uintptr_t vtable_addr = reinterpret_cast<uintptr_t>(vtable);
+    if (vtable_addr < 0x10000 || (vtable_addr & 7) != 0) return false;
+    if (g_vtable_CTask && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTask) + 16)) return false;
+    if (g_vtable_CTaskSimple && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskSimple) + 16)) return false;
+    if (g_vtable_CTaskComplex && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskComplex) + 16)) return false;
+    return true;
 }
 
 static bool is_firearm(eCrimeType crime) {
@@ -1773,7 +1793,7 @@ static void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
         LOGW("👮 [make_cop_enter_vehicle - SeatConflictGuard] Vehicle %p already has a driver. Forcing cop %p to enter as passenger to maintain good driver-passenger relationship!", vehicle, cop);
     }
 
-    void* task = g_TaskNew(256);
+    void* task = g_TaskNew(512);
     if (task) {
         g_TaskEnterCar_ctor(task, reinterpret_cast<CVehicle*>(vehicle), as_driver, false, false, false);
         g_SetTask(task_manager, reinterpret_cast<CTask*>(task), 1, false);
@@ -3513,23 +3533,14 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
                         void* event_group = get_ped_event_group(ped);
                         if (event_group) {
-                            // 📡 [Fix Heap Corruption / Malloc Mismatch]
-                            // 使用游戏引擎自带的 GMalloc 申请内存，完美对齐 native 释放，彻底杜绝堆损坏！
-                            void* event_mem = nullptr;
-                            if (g_p_GMalloc && *g_p_GMalloc) {
-                                event_mem = (*g_p_GMalloc)->Malloc(256, 16);
-                            } else {
-                                event_mem = ::operator new(256);
-                            }
-                            if (event_mem) {
-                                memset(event_mem, 0, 256);
-                                CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
-                                CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
-                                
-                                g_CEventGunShot_ctor(event_mem, reinterpret_cast<CEntity*>(target_criminal), start_pos, target_pos, false);
-                                g_CEventGroup_Add(event_group, event_mem, false);
-                                // 注意：生命周期由 CEventGroup 接管，不在此处调用 dtor/delete 释放
-                            }
+                            alignas(16) char event_buf[256];
+                            memset(event_buf, 0, sizeof(event_buf));
+                            CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
+                            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+                            
+                            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(target_criminal), start_pos, target_pos, false);
+                            g_CEventGroup_Add(event_group, event_buf, false);
+                            g_CEventGunShot_dtor(event_buf);
                             
                             // 动态赋予最优战术武器
                             if (g_GiveWeapon && g_SetCurrentWeapon) {
@@ -3822,26 +3833,17 @@ static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool forc
     if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
         void* event_group = get_ped_event_group(cop);
         if (event_group) {
-            // 📡 [Fix Heap Corruption / Malloc Mismatch]
-            // 使用游戏引擎自带的 GMalloc 申请内存，完美对齐 native 释放，彻底杜绝堆损坏！
-            void* event_mem = nullptr;
-            if (g_p_GMalloc && *g_p_GMalloc) {
-                event_mem = (*g_p_GMalloc)->Malloc(256, 16);
-            } else {
-                event_mem = ::operator new(256);
-            }
-            if (event_mem) {
-                memset(event_mem, 0, 256);
-                CVector cop_pos = get_entity_pos(cop);
-                CVector start_pos = cop_pos;
-                CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
-                
-                g_CEventGunShot_ctor(event_mem, reinterpret_cast<CEntity*>(criminal), start_pos, target_pos, false);
-                g_CEventGroup_Add(event_group, event_mem, false);
-                // 注意：生命周期由 CEventGroup 接管，不在此处调用 dtor/delete 释放
-                sound_sent = true;
-                LOGI("🎯 [Event-Driven Single Cop Sound Dispatch] Sent gunshot sound to cop %p towards criminal %p", cop, criminal);
-            }
+            alignas(16) char event_buf[256];
+            memset(event_buf, 0, sizeof(event_buf));
+            CVector cop_pos = get_entity_pos(cop);
+            CVector start_pos = cop_pos;
+            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+            
+            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(criminal), start_pos, target_pos, false);
+            g_CEventGroup_Add(event_group, event_buf, false);
+            g_CEventGunShot_dtor(event_buf);
+            sound_sent = true;
+            LOGI("🎯 [Event-Driven Single Cop Sound Dispatch] Sent gunshot sound to cop %p towards criminal %p", cop, criminal);
         }
     }
 
@@ -5464,6 +5466,51 @@ static void* proxy_control_sub_task(void* self, void* ped) {
     return SHADOWHOOK_CALL_PREV(proxy_control_sub_task, self, ped);
 }
 
+// =====================================================================
+// 🛠️ [CTaskManager & CAttractorScanner Safety Hooks]
+// =====================================================================
+typedef void (*fn_ManageTasks_t)(void* self);
+static void* g_stub_manage_tasks = nullptr;
+static fn_ManageTasks_t g_orig_manage_tasks = nullptr;
+
+static void proxy_manage_tasks(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self) {
+        // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
+        // Total 11 slots of pointers starting at offset 0 of CTaskManager.
+        for (int i = 0; i < 11; ++i) {
+            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+            void* task = *task_slot;
+            if (task && !is_task_vtable_safe(task)) {
+                LOGW("⚠️ [CTaskManager::ManageTasks] Found unsafe/zeroed task %p at slot %d inside CTaskManager %p. Clearing it to prevent crash.", task, i, self);
+                *task_slot = nullptr;
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
+}
+
+typedef void (*fn_ScanForAttractorsInRange_t)(void* self, void* ped);
+static void* g_stub_scan_for_attractors_in_range = nullptr;
+static fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
+
+static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_ped_pointer_valid_safe(ped)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (intel) {
+        for (int offset = 0x8; offset <= 0x28; offset += 8) {
+            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + offset);
+            void* task = *task_slot;
+            if (task && !is_task_vtable_safe(task)) {
+                LOGW("⚠️ [ScanForAttractorsInRange] Intercepted unsafe/destructing task %p at offset 0x%X in CPedIntelligence %p. Clearing it to prevent crash.", task, offset, intel);
+                *task_slot = nullptr;
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
+}
+
 static void* g_stub_add_police_occupants = nullptr;
 static fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
 
@@ -5585,6 +5632,50 @@ static void proxy_tell_occupants_leave_car(void* vehicle) {
 } while(0)
 
 // =====================================================================
+// 🛠️ [Pure Virtual Function Safe Patching]
+// =====================================================================
+extern "C" void* safe_pure_virtual_stub() {
+    return nullptr;
+}
+
+static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, void* pure_virtual_target, void* stub_func) {
+    if (!vtable_symbol || !pure_virtual_target || !stub_func) return;
+    
+    void** slots = reinterpret_cast<void**>(vtable_symbol);
+    uintptr_t page_size = sysconf(_SC_PAGESIZE);
+    
+    // Calculate page range for 64 slots (64 * 8 = 512 bytes, at most 2 pages)
+    uintptr_t start_addr = reinterpret_cast<uintptr_t>(slots);
+    uintptr_t end_addr = reinterpret_cast<uintptr_t>(slots + 64);
+    uintptr_t page_start = start_addr & ~(page_size - 1);
+    uintptr_t page_end = (end_addr + page_size - 1) & ~(page_size - 1);
+    size_t length = page_end - page_start;
+    
+    // Change permission of the entire range
+    if (mprotect(reinterpret_cast<void*>(page_start), length, PROT_READ | PROT_WRITE) != 0) {
+        LOGE("❌ mprotect failed for %s range [%p, %p]: %s", name, reinterpret_cast<void*>(page_start), reinterpret_cast<void*>(page_start + length), strerror(errno));
+        return;
+    }
+    
+    int patched_count = 0;
+    for (int i = 0; i < 64; ++i) {
+        if (slots[i] == pure_virtual_target) {
+            slots[i] = stub_func;
+            patched_count++;
+        }
+    }
+    
+    // Restore read-only permission
+    mprotect(reinterpret_cast<void*>(page_start), length, PROT_READ);
+    
+    if (patched_count > 0) {
+        LOGI("✅ Patched %d pure virtual slot(s) to safe_pure_virtual_stub in %s (%p)", patched_count, name, vtable_symbol);
+    } else {
+        LOGI("ℹ️ No pure virtual slot(s) found/patched in %s (%p)", name, vtable_symbol);
+    }
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -5610,6 +5701,10 @@ static void hook_thread_func() {
     LOGI("%s opened via xdl successfully", TARGET_LIB);
 
     LOGI("Resolving symbols...");
+    RESOLVE_SYM(lib, g_vtable_CTask, "_ZTV5CTask", void*);
+    RESOLVE_SYM(lib, g_vtable_CTaskSimple, "_ZTV11CTaskSimple", void*);
+    RESOLVE_SYM(lib, g_vtable_CTaskComplex, "_ZTV12CTaskComplex", void*);
+    RESOLVE_SYM(lib, g_vtable_CEvent, "_ZTV6CEvent", void*);
     RESOLVE_SYM(lib, g_FindPlayerPed, "_Z13FindPlayerPedi", fn_FindPlayerPed_t);
     RESOLVE_SYM(lib, g_FindPlayerCoors, "_Z15FindPlayerCoorsi", fn_FindPlayerCoors_t);
     RESOLVE_SYM(lib, g_GetPedType, "_ZNK4CPed10GetPedTypeEv", fn_GetPedType_t);
@@ -5828,6 +5923,41 @@ static void hook_thread_func() {
     if (g_stub_control_sub_task) LOGI("✅ Hooked CTaskComplexPartnerGreet::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::ControlSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskManager::ManageTasks (防止各种任务生命周期、清理或零值野指针导致的任务管理闪退)
+    g_stub_manage_tasks = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN12CTaskManager11ManageTasksEv",
+        reinterpret_cast<void*>(proxy_manage_tasks),
+        reinterpret_cast<void**>(&g_orig_manage_tasks));
+    if (g_stub_manage_tasks) LOGI("✅ Hooked CTaskManager::ManageTasks");
+    else LOGE("❌ Failed to hook CTaskManager::ManageTasks: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CAttractorScanner::ScanForAttractorsInRange (防止行人周期性查找吸引子时任务析构纯虚函数闪退)
+    g_stub_scan_for_attractors_in_range = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN17CAttractorScanner24ScanForAttractorsInRangeERK4CPed",
+        reinterpret_cast<void*>(proxy_scan_for_attractors_in_range),
+        reinterpret_cast<void**>(&g_orig_scan_for_attractors_in_range));
+    if (g_stub_scan_for_attractors_in_range) LOGI("✅ Hooked CAttractorScanner::ScanForAttractorsInRange");
+    else LOGE("❌ Failed to hook CAttractorScanner::ScanForAttractorsInRange: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Patch base class pure virtual slots to neutral stubs
+    void* pure_virtual_target = dlsym(RTLD_DEFAULT, "__cxa_pure_virtual");
+    if (!pure_virtual_target) {
+        pure_virtual_target = xdl_sym(lib, "__cxa_pure_virtual", nullptr);
+    }
+    if (pure_virtual_target) {
+        LOGI("Found __cxa_pure_virtual at %p, scanning and patching base vtables...", pure_virtual_target);
+        patch_vtable_pure_virtuals("_ZTV5CTask", g_vtable_CTask, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV11CTaskSimple", g_vtable_CTaskSimple, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV12CTaskComplex", g_vtable_CTaskComplex, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV6CEvent", g_vtable_CEvent, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+    } else {
+        LOGW("⚠️ __cxa_pure_virtual symbol not found! Vtable safety patch could not be applied.");
+    }
 
     LOGI("=== All hooks installed ===");
     LOGI("=== Police Intervention System ACTIVE ===");
