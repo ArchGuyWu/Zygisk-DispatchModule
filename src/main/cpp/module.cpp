@@ -5596,10 +5596,10 @@ static void hook_thread_func() {
     RESOLVE_SYM(lib, g_vtable_KillCriminal, "_ZTV24CTaskComplexKillCriminal", void*);
     RESOLVE_SYM(lib, g_vtable_EnterCar, "_ZTV20CTaskComplexEnterCar", void*);
 
-    // 解析假枪声事件相关符号
-    RESOLVE_SYM(lib, g_CEventGunShot_ctor, "_ZN13CEventGunShotC1EP7CEntity7CVectorS2_b", fn_CEventGunShot_ctor_t);
-    RESOLVE_SYM(lib, g_CEventGunShot_dtor, "_ZN13CEventGunShotD1Ev", fn_CEventGunShot_dtor_t);
-    RESOLVE_SYM(lib, g_CEventGroup_Add, "_ZN11CEventGroup3AddER6CEventb", fn_CEventGroup_Add_t);
+    // 解析假枪声事件相关符号 (禁用：避免手动内存分配/释放导致的跨分配器堆损坏)
+    // RESOLVE_SYM(lib, g_CEventGunShot_ctor, "_ZN13CEventGunShotC1EP7CEntity7CVectorS2_b", fn_CEventGunShot_ctor_t);
+    // RESOLVE_SYM(lib, g_CEventGunShot_dtor, "_ZN13CEventGunShotD1Ev", fn_CEventGunShot_dtor_t);
+    // RESOLVE_SYM(lib, g_CEventGroup_Add, "_ZN11CEventGroup3AddER6CEventb", fn_CEventGroup_Add_t);
 
     xdl_close(lib);
 
