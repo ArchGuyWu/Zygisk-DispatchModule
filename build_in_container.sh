@@ -6,7 +6,7 @@
 # =============================================================
 set -euo pipefail
 
-PROJECT_DIR="/workspace/Zygisk-DispatchModule"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$PROJECT_DIR/build"
 TOOLCHAIN_DIR="/opt/toolchain"
 NDK_VERSION="r27c"

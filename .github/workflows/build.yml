@@ -1,0 +1,28 @@
+name: Build and Package Zygisk Module
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Build Script
+        run: |
+          # 运行 build_in_container.sh
+          # 使用 sudo 是为了允许脚本通过 apt-get 安装系统依赖（cmake, wget, unzip 等）并在 /opt/toolchain 中下载解压 NDK
+          sudo bash Zygisk-DispatchModule/build_in_container.sh
+
+      - name: Upload Packaged Magisk Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zygisk-PoliceDispatch
+          path: Zygisk-DispatchModule/Zygisk-PoliceDispatch.zip
