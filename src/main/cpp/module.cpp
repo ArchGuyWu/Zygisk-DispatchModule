@@ -5474,7 +5474,10 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
         void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
         void* ptr = *ptr_slot;
         if (ptr) {
-            if (is_pointer_readable(ptr)) {
+            if (!is_pointer_readable(ptr)) {
+                LOGW("⚠️ [sanitize_task_pointers] Found completely UNREADABLE pointer %p at offset 0x%X in task %p. Clearing it!", ptr, offset, task);
+                *ptr_slot = nullptr;
+            } else {
                 void* vtable = *reinterpret_cast<void**>(ptr);
                 if (vtable == nullptr) {
                     LOGW("⚠️ [sanitize_task_pointers] Found zero-filled object pointer %p at offset 0x%X in task %p. Clearing it!", ptr, offset, task);
