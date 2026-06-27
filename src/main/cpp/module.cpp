@@ -4656,18 +4656,9 @@ static void apply_civilian_avoidance_field() {
                                 float side_shove = intensity * 0.45f; // 最大单次横移 0.45 米
                                 
                                 // 惊慌按喇叭与原生急刹车尾灯细节：
-                                // 在避让时（进入前方 22 米内），给平民车施加一个无害的原生物理受击事件，以此触发原生的惊慌喇叭与急刹尾灯，真实感拉满！
-                                if (dot_forward < 22.0f) {
-                                    if (g_civilian_panic_timers.find(veh) == g_civilian_panic_timers.end() ||
-                                        now - g_civilian_panic_timers[veh] > 6000) {
-                                        g_civilian_panic_timers[veh] = now;
-                                        if (g_VehicleInflictDamage) {
-                                            CVector hit_pos = civ_pos;
-                                            g_VehicleInflictDamage(veh, nullptr, WEAPON_UNARMED, 0.0f, hit_pos);
-                                            LOGI("🚗🔊 [Fear Field - Panic] Triggered native alarm/horn/panic-brake on vehicle %p via 0-damage nudge (dist: %.1fm)", veh, dist);
-                                        }
-                                    }
-                                }
+                                // [Note] 经过现场排查，高频高并发对全城平民车辆施加原生伤害事件 (g_VehicleInflictDamage)
+                                // 会导致某些特定载具类型或处于特殊AI状态的车辆触发 'Pure virtual function called!' 闪退。
+                                // 为保证系统 100% 绝对稳定性，此处不采用不安全的物理受击事件。
 
                                 CMatrix* mat = g_GetMatrix(veh);
                                 float civ_up_x = 0.0f;
