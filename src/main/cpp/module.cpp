@@ -276,6 +276,7 @@ static fn_IsAlive_t                  g_IsAlive = nullptr;
 static fn_VehicleInflictDamage_t     g_VehicleInflictDamage = nullptr;
 static fn_GetPoolPed_t               g_GetPoolPed = nullptr;
 static void*                         g_ms_pPedPool = nullptr;
+static void**                        g_CSequenceManager_ms_instance = nullptr;
 static void*                         g_ms_pVehiclePool = nullptr;
 
 // 摄像机/视野判定相关符号
@@ -5412,6 +5413,57 @@ static void proxy_the_scripts_process() {
     on_main_thread_tick();
 }
 
+// =====================================================================
+// 🤝 [CTaskComplexPartnerGreet Hooks]：防止打招呼序列导致的 Sequence Manager 空指针闪退
+// =====================================================================
+static inline bool is_sequence_manager_safe() {
+    if (!g_CSequenceManager_ms_instance || !*g_CSequenceManager_ms_instance) {
+        return false;
+    }
+    void* manager = *g_CSequenceManager_ms_instance;
+    void* sequences = *(void**)manager;
+    return (sequences != nullptr);
+}
+
+typedef void* (*fn_GetPartnerSequence_t)(void* self);
+static void* g_stub_get_partner_sequence = nullptr;
+static fn_GetPartnerSequence_t g_orig_get_partner_sequence = nullptr;
+
+static void* proxy_get_partner_sequence(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [GetPartnerSequence] Sequence manager unsafe! Returning nullptr to prevent crash.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_get_partner_sequence, self);
+}
+
+typedef void* (*fn_CreateFirstSubTask_t)(void* self, void* ped);
+static void* g_stub_create_first_sub_task = nullptr;
+static fn_CreateFirstSubTask_t g_orig_create_first_sub_task = nullptr;
+
+static void* proxy_create_first_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [CreateFirstSubTask] Sequence manager unsafe! Returning nullptr to prevent crash.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_create_first_sub_task, self, ped);
+}
+
+typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
+static void* g_stub_control_sub_task = nullptr;
+static fn_ControlSubTask_t g_orig_control_sub_task = nullptr;
+
+static void* proxy_control_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!is_sequence_manager_safe()) {
+        LOGW("⚠️ [ControlSubTask] Sequence manager unsafe! Returning nullptr to prevent crash.");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_control_sub_task, self, ped);
+}
+
 static void* g_stub_add_police_occupants = nullptr;
 static fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
 
@@ -5621,6 +5673,7 @@ static void hook_thread_func() {
 
     // 解析游戏引擎自带的 GMalloc 内存分配器指针，确保完全使用 native 分配以彻底杜绝堆损坏
     RESOLVE_SYM(lib, g_p_GMalloc, "GMalloc", FMalloc**);
+    RESOLVE_SYM(lib, g_CSequenceManager_ms_instance, "_ZN16CSequenceManager11ms_instanceE", void**);
 
     xdl_close(lib);
 
@@ -5744,6 +5797,36 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_script_generate_one_emergency_car));
     if (g_stub_script_generate_one_emergency_car) LOGI("✅ Hooked CCarCtrl::ScriptGenerateOneEmergencyServicesCar (Ambulance Script Workaround)");
     else LOGE("❌ Failed to hook CCarCtrl::ScriptGenerateOneEmergencyServicesCar: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexPartnerGreet::GetPartnerSequence (防止伴随打招呼 Sequence Manager 空指针闪退)
+    g_stub_get_partner_sequence = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexPartnerGreet18GetPartnerSequenceEv",
+        reinterpret_cast<void*>(proxy_get_partner_sequence),
+        reinterpret_cast<void**>(&g_orig_get_partner_sequence));
+    if (g_stub_get_partner_sequence) LOGI("✅ Hooked CTaskComplexPartnerGreet::GetPartnerSequence");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::GetPartnerSequence: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexPartnerGreet::CreateFirstSubTask (防止伴随打招呼 Sequence Manager 空指针闪退)
+    g_stub_create_first_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexPartnerGreet18CreateFirstSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_create_first_sub_task),
+        reinterpret_cast<void**>(&g_orig_create_first_sub_task));
+    if (g_stub_create_first_sub_task) LOGI("✅ Hooked CTaskComplexPartnerGreet::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::CreateFirstSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexPartnerGreet::ControlSubTask (防止伴随打招呼 Sequence Manager 空指针闪退)
+    g_stub_control_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexPartnerGreet12ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_control_sub_task),
+        reinterpret_cast<void**>(&g_orig_control_sub_task));
+    if (g_stub_control_sub_task) LOGI("✅ Hooked CTaskComplexPartnerGreet::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::ControlSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     LOGI("=== All hooks installed ===");
