@@ -6232,6 +6232,19 @@ static void proxy_task_destructor(void* self) {
 }
 
 // =====================================================================
+// 🛡️ [AssetPackManager_requestDownload Hook]：防止无谷歌服务环境下 Play Core 崩溃
+// =====================================================================
+static void* g_stub_asset_pack_manager_request_download = nullptr;
+typedef int (*fn_AssetPackManager_requestDownload_t)(void* env, void* thiz, void* packNames);
+static fn_AssetPackManager_requestDownload_t g_orig_asset_pack_manager_request_download = nullptr;
+
+static int proxy_asset_pack_manager_request_download(void* env, void* thiz, void* packNames) {
+    SHADOWHOOK_STACK_SCOPE();
+    LOGW("⚠️ [AssetPackManager Hook] Bypassing AssetPackManager_requestDownload to prevent Play Core crash (returning -101)");
+    return -101; // ASSET_PACK_API_NOT_AVAILABLE (-101)
+}
+
+// =====================================================================
 // 🛡️ [CScriptDecisionMakerModifications::Save Hook]：防止存档期间全局决策制造者未初始化或失效导致虚表解引用闪退
 // =====================================================================
 static void* g_stub_script_decision_maker_save = nullptr;
@@ -6765,6 +6778,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_task_destructor));
     if (g_stub_task_destructor) LOGI("✅ Hooked CTask::Destructor");
     else LOGE("❌ Failed to hook CTask::Destructor: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook AssetPackManager_requestDownload (防止无谷歌服务环境下 Play Core 崩溃)
+    g_stub_asset_pack_manager_request_download = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "AssetPackManager_requestDownload",
+        reinterpret_cast<void*>(proxy_asset_pack_manager_request_download),
+        reinterpret_cast<void**>(&g_orig_asset_pack_manager_request_download));
+    if (g_stub_asset_pack_manager_request_download) LOGI("✅ Hooked AssetPackManager_requestDownload");
+    else LOGE("❌ Failed to hook AssetPackManager_requestDownload: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退)

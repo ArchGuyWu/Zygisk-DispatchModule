@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 19-Hook 协同防御网 (19-Hook Defense System)
-模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑、存档机制、涉水行为、脚步落地特效及任务中途析构相关的核心生命周期方法，建立起立体的全方位防御网：
+### 3. 20-Hook 协同防御网 (20-Hook Defense System)
+模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑、存档机制、涉水行为、脚步落地特效、任务中途析构及谷歌分包下载相关的核心生命周期方法，建立起立体的全方位防御网：
 
 1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -137,6 +137,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CPed::DoFootLanded` (当行人脚步落地时，引擎会读取行人对象偏移 `0x90` 处的粒子特效系统 `FxSystem_c` 指针并调用 `AddParticle` 生成脚印特效。若该特效系统未初始化或已被销毁（其偏移 `0x18` 处的数组成员为空），调用时会裸解引用 `nullptr + 0x18` 并触发 SIGSEGV 闪退。本 Hook 在脚步落地时，动态检测特效系统及数组成员状态，若未就绪则安全跳过粒子生成，彻底根治高频运动中偶发的脚印特效解引用闪退)
 14. **任务中途析构安全清理** (`~CTask` - 1 个 Hook)：
     *   `CTask::~CTask` (在行人智能决策 `ProcessAfterPreRender` 执行期间，某些子任务可能会被其他活动任务动态销毁（析构）。如果它们的指针仍残留于任务槽中，引擎在同帧后续逻辑中将继续尝试调用它们，从而因虚表被清空或内存释放而在偏移 `0x28` 处触发 SIGSEGV 闪退。本 Hook 动态拦截任务的析构事件，实时检测其是否属于当前正在更新的 `CPedIntelligence` 上下文，并在析构瞬间强行将对应的任务槽净化为 `nullptr`，彻底解决中途析构产生的野指针闪退)
+15. **谷歌分包下载服务安全防线** (`AssetPackManager_requestDownload` - 1 个 Hook)：
+    *   `AssetPackManager_requestDownload` (在定制 ROM 或没有谷歌服务（Google Play Services）的系统环境下，Play Core 的 `AssetPackManager` 实例在 JNI 初始化时会产生一个未完全初始化或已损坏的智能指针。当游戏尝试下载分包资源时，该损坏的智能指针在析构时会裸解引用其控制块虚表 `nullptr + 0x18` 触发 SIGSEGV 闪退。本 Hook 主动拦截该 JNI 下载请求，直接安全返回 `-101`（`ASSET_PACK_API_NOT_AVAILABLE`）通知游戏谷歌分包不可用，使其安全降级至本地资源读取，完美解决无谷歌服务机型启动或加载时的闪退)
 
 ---
 

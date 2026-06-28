@@ -1,7 +1,8 @@
 import struct
 import sys
 
-elf_path = "/data/data/com.termux/files/home/Projects/mod-workspace/libUE4.so"
+import os
+elf_path = "/root/workspace/libUE4.so" if os.path.exists("/root/workspace/libUE4.so") else "/data/data/com.termux/files/home/Projects/mod-workspace/libUE4.so"
 
 def lookup_address(target_addr):
     print(f"Looking up address 0x{target_addr:x} in {elf_path}...")
