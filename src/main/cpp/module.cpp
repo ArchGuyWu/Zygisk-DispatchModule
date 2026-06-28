@@ -6161,6 +6161,34 @@ static void proxy_process_buoyancy(void* self) {
 }
 
 // =====================================================================
+// 🛡️ [CPedIntelligence::ProcessAfterPreRender Hook]：防止 ProcessAfterPreRender 期间已析构任务残留导致纯虚函数调用闪退
+// =====================================================================
+static void* g_stub_process_after_pre_render = nullptr;
+typedef void (*fn_ProcessAfterPreRender_t)(void* self);
+static fn_ProcessAfterPreRender_t g_orig_process_after_pre_render = nullptr;
+
+static void proxy_process_after_pre_render(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void* task_mgr = reinterpret_cast<char*>(self) + 8;
+        if (is_pointer_readable(task_mgr)) {
+            // 扫描 CPedIntelligence 中的前 20 个任务槽，净化已析构或无效的任务指针
+            for (int i = 0; i < 20; ++i) {
+                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                if (is_pointer_readable(task_slot)) {
+                    void* task = *task_slot;
+                    if (task && !is_task_vtable_safe(task)) {
+                        LOGW("⚠️ [ProcessAfterPreRender Sanitizer] Clearing unsafe/zeroed/destructed task %p at slot %d inside CPedIntelligence %p", task, i, self);
+                        *task_slot = nullptr;
+                    }
+                }
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_process_after_pre_render, self);
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -6547,6 +6575,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_process_buoyancy));
     if (g_stub_process_buoyancy) LOGI("✅ Hooked CPed::ProcessBuoyancy");
     else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPedIntelligence::ProcessAfterPreRender (防止已析构任务残留导致 ProcessAfterPreRender 纯虚函数调用闪退)
+    g_stub_process_after_pre_render = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN16CPedIntelligence21ProcessAfterPreRenderEv",
+        reinterpret_cast<void*>(proxy_process_after_pre_render),
+        reinterpret_cast<void**>(&g_orig_process_after_pre_render));
+    if (g_stub_process_after_pre_render) LOGI("✅ Hooked CPedIntelligence::ProcessAfterPreRender");
+    else LOGE("❌ Failed to hook CPedIntelligence::ProcessAfterPreRender: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
