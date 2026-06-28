@@ -6203,6 +6203,59 @@ static void proxy_process_after_pre_render(void* self) {
 }
 
 // =====================================================================
+// 🛡️ [CScriptDecisionMakerModifications::Save Hook]：防止存档期间全局决策制造者未初始化或失效导致虚表解引用闪退
+// =====================================================================
+static void* g_stub_script_decision_maker_save = nullptr;
+typedef void (*fn_ScriptDecisionMakerSave_t)(void* self);
+static fn_ScriptDecisionMakerSave_t g_orig_script_decision_maker_save = nullptr;
+
+static void proxy_script_decision_maker_save(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (g_orig_script_decision_maker_save) {
+        xdl_info_t info;
+        if (xdl_addr(reinterpret_cast<void*>(g_orig_script_decision_maker_save), &info)) {
+            uintptr_t lib_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
+            if (lib_base) {
+                // 1. 净化第一个全局决策制造者指针 (offset 0xa8b98f0)
+                void** p_dm1 = reinterpret_cast<void**>(lib_base + 0xa8b98f0);
+                if (is_pointer_readable(p_dm1)) {
+                    void* dm1 = *p_dm1;
+                    if (dm1) {
+                        if (!is_pointer_readable(dm1)) {
+                            *p_dm1 = nullptr;
+                        } else {
+                            void* vtable = *reinterpret_cast<void**>(dm1);
+                            if (!vtable || !is_pointer_readable(vtable)) {
+                                LOGW("⚠️ [Save Sanitizer] Clearing invalid global decision maker 1 %p", dm1);
+                                *p_dm1 = nullptr;
+                            }
+                        }
+                    }
+                }
+                
+                // 2. 净化第二个全局决策制造者指针 (offset 0xa8afa48)
+                void** p_dm2 = reinterpret_cast<void**>(lib_base + 0xa8afa48);
+                if (is_pointer_readable(p_dm2)) {
+                    void* dm2 = *p_dm2;
+                    if (dm2) {
+                        if (!is_pointer_readable(dm2)) {
+                            *p_dm2 = nullptr;
+                        } else {
+                            void* vtable = *reinterpret_cast<void**>(dm2);
+                            if (!vtable || !is_pointer_readable(vtable)) {
+                                LOGW("⚠️ [Save Sanitizer] Clearing invalid global decision maker 2 %p", dm2);
+                                *p_dm2 = nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_script_decision_maker_save, self);
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -6599,6 +6652,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_process_after_pre_render));
     if (g_stub_process_after_pre_render) LOGI("✅ Hooked CPedIntelligence::ProcessAfterPreRender");
     else LOGE("❌ Failed to hook CPedIntelligence::ProcessAfterPreRender: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退)
+    g_stub_script_decision_maker_save = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN33CScriptDecisionMakerModifications4SaveEv",
+        reinterpret_cast<void*>(proxy_script_decision_maker_save),
+        reinterpret_cast<void**>(&g_orig_script_decision_maker_save));
+    if (g_stub_script_decision_maker_save) LOGI("✅ Hooked CScriptDecisionMakerModifications::Save");
+    else LOGE("❌ Failed to hook CScriptDecisionMakerModifications::Save: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs

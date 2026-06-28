@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 15-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, and post-rendering tasks:
+### 3. The 16-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, and game saving tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -129,6 +129,8 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CPed::ProcessBuoyancy` (When processing water buoyancy, the engine iterates over the task slots in `CTaskManager`. If a slot contains a dangling or zeroed task pointer, the engine blindly dereferences its virtual table to call `GetTaskType`, causing a null pointer dereference crash at offset `0x18`. This hook dynamically scans and purges any unsafe or zeroed task pointers in the task manager before the buoyancy logic executes, completely eliminating this crash vector)
 10. **Post-PreRender Intelligence Task Protection** (`ProcessAfterPreRender` - 1 Hook):
     *   `CPedIntelligence::ProcessAfterPreRender` (When the game updates pedestrian intelligence post-rendering, it queries task slots in the primary and secondary task managers. If a task has been destructed but its pointer remains in the slot, its vtable pointer points to the base class `CTask` which has pure virtual slots. Calling `IsSimple` on it triggers a `__cxa_pure_virtual` call and aborts. This hook dynamically scans and purges any destructed or unsafe task pointers in `CPedIntelligence` before the intelligence logic executes, preventing pure virtual call crashes)
+11. **Game Save Decision Maker Safety Hook** (`Save` - 1 Hook):
+    *   `CScriptDecisionMakerModifications::Save` (During game saving or autosaving, the engine saves modifications to script decision makers by querying two global `CScriptDecisionMaker` objects. If either object was released or uninitialized (leaving its vtable pointer as `nullptr`), the engine dereferences the null vtable at offset `0x18` or `0x38`, causing a SIGSEGV crash. This hook dynamically detects and purges these invalid global pointers to `nullptr`, allowing the engine's built-in null checks to safely skip them and prevent crashes)
 
 ---
 ## 🛠️ Tech Stack & Requirements

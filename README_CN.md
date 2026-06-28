@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 15-Hook 协同防御网 (15-Hook Defense System)
-模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理及后渲染逻辑相关的核心生命周期方法，建立起立体的全方位防御网：
+### 3. 16-Hook 协同防御网 (16-Hook Defense System)
+模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑及存档机制相关的核心生命周期方法，建立起立体的全方位防御网：
 
 1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -129,6 +129,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CPed::ProcessBuoyancy` (在游戏引擎高频处理行人的水中浮力物理时，会遍历 `CTaskManager` 中的所有任务槽。若某个任务槽内由于引擎释放残留了被填零或野指针的无效任务指针，原生引擎会直接通过该指针解引用其虚表并调用 `GetTaskType`，从而在偏移 `0x18` 处触发空指针解引用闪退。本 Hook 在浮力逻辑执行前，动态扫描并强制将任务管理器中不安全或已填零的指针净化为 `nullptr`，彻底斩断此闪退路径)
 10. **智能后渲染任务安全拦截** (`ProcessAfterPreRender` - 1 个 Hook)：
     *   `CPedIntelligence::ProcessAfterPreRender` (当游戏引擎在渲染后更新行人的智能决策时，会读取主任务及副任务管理器中的特定任务槽。如果某个任务已执行析构（Destructed），但指针仍残留于任务槽中，其虚表指针会指向基类 `CTask` 的虚表。当引擎调用其 `IsSimple` 时，会因调用纯虚函数而触发 `__cxa_pure_virtual` 闪退。本 Hook 在后渲染智能处理前，动态扫描并清空 `CPedIntelligence` 任务管理器中已析构或无效的悬挂指针，彻底杜绝纯虚函数调用闪退)
+11. **存档决策修改器安全拦截** (`Save` - 1 个 Hook)：
+    *   `CScriptDecisionMakerModifications::Save` (在游戏手动存档或自动存档时，引擎会保存脚本决策修改器的数据，期间需要访问两个全局的决策制造者对象 `CScriptDecisionMaker`。如果这两个全局对象由于场景切换被销毁或未完成初始化（其虚表指针为 `nullptr`），引擎在执行保存时会裸解引用虚表偏移 `0x18` 或 `0x38` 并触发 SIGSEGV 闪退。本 Hook 在存档逻辑执行前，动态检测并强行将无效的全局对象指针净化为 `nullptr`，安全引导引擎走入原装的空指针跳过分支，完美解决存档与自动存档时的偶发闪退)
 
 ---
 
