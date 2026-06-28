@@ -399,34 +399,38 @@ static bool is_vehicle_pointer_valid_safe(void* target_veh) {
     return false;
 }
 
+struct ThreadLocalPipe {
+    int fds[2] = {-1, -1};
+    ThreadLocalPipe() {
+        if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+            fds[0] = -1;
+            fds[1] = -1;
+        }
+    }
+    ~ThreadLocalPipe() {
+        if (fds[0] >= 0) close(fds[0]);
+        if (fds[1] >= 0) close(fds[1]);
+    }
+};
+
 static inline bool is_pointer_readable(const void* ptr) {
     if (!ptr) return false;
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
     if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
         return false;
     }
-    thread_local static int pipe_fds[2] = {-1, -1};
-    if (pipe_fds[1] < 0) {
-        if (pipe2(pipe_fds, O_CLOEXEC | O_NONBLOCK) != 0) {
-            pipe_fds[0] = -1;
-            pipe_fds[1] = -1;
-            return false;
-        }
+    thread_local static ThreadLocalPipe tl_pipe;
+    if (tl_pipe.fds[1] < 0) {
+        return false;
     }
-    long ret = write(pipe_fds[1], ptr, 1);
+    long ret = write(tl_pipe.fds[1], ptr, 1);
     if (ret >= 0) {
         char dummy;
-        read(pipe_fds[0], &dummy, 1);
+        read(tl_pipe.fds[0], &dummy, 1);
         return true;
     }
     if (errno == EFAULT) {
         return false;
-    }
-    if (errno == EBADF) {
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        pipe_fds[0] = -1;
-        pipe_fds[1] = -1;
     }
     return false;
 }
@@ -437,9 +441,9 @@ static inline bool is_task_vtable_safe(void* task) {
     void* vtable = *reinterpret_cast<void**>(task);
     if (!vtable) return false;
     if (!is_pointer_readable(vtable)) return false;
-    if (g_vtable_CTask && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTask) + 16)) return false;
-    if (g_vtable_CTaskSimple && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskSimple) + 16)) return false;
-    if (g_vtable_CTaskComplex && vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskComplex) + 16)) return false;
+    if (g_vtable_CTask && (vtable == g_vtable_CTask || vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTask) + 16))) return false;
+    if (g_vtable_CTaskSimple && (vtable == g_vtable_CTaskSimple || vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskSimple) + 16))) return false;
+    if (g_vtable_CTaskComplex && (vtable == g_vtable_CTaskComplex || vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskComplex) + 16))) return false;
     return true;
 }
 
@@ -5454,6 +5458,9 @@ static inline bool is_sequence_manager_safe() {
         return false;
     }
     void* manager = *g_CSequenceManager_ms_instance;
+    if (!is_pointer_readable(manager)) {
+        return false;
+    }
     void* sequences = *(void**)manager;
     return (sequences != nullptr);
 }
