@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 27-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, water-related, footstep landing, task destruction, asset downloading, Unicode character formatting, and font rendering tasks:
+### 3. The 30-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, water-related, footstep landing, task destruction, asset downloading, Unicode character formatting, font rendering, and text shaping tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -139,12 +139,15 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CTask::~CTask` (During pedestrian intelligence updates in `ProcessAfterPreRender`, some subtasks can be dynamically destructed by other active tasks. If their pointers remain in the task manager slots, the engine will attempt to access them later in the same frame, causing a SIGSEGV crash due to a null or garbage virtual table. This hook dynamically intercepts task destruction, checks if the task belongs to the currently executing `CPedIntelligence` context, and immediately clears its slot to `nullptr`, completely preventing mid-frame dangling pointer crashes)
 15. **Google Play Core Asset Delivery Safeguard** (`AssetPackManager_requestDownload` - 1 Hook):
     *   `AssetPackManager_requestDownload` (On custom ROMs or devices without Google Play Services, the JNI initialization of the Play Core `AssetPackManager` returns an uninitialized or corrupt shared pointer. When the game attempts to request asset pack downloads, the destructor of this corrupt shared pointer dereferences `nullptr + 0x18`, causing a SIGSEGV crash. This hook intercepts the JNI call, safely returns `-101` (`ASSET_PACK_API_NOT_AVAILABLE`) to notify the game that Google Play Asset Delivery is unavailable, allowing it to fall back to local assets without crashing)
-16. **ICU Character Processing Safeguards** (5 Hooks):
+16. **ICU Character & Date Processing Safeguards** (8 Hooks):
     *   `icu_64::TimeZone::findID` (Prevents crashes when searching for timezone IDs with a null or unreadable `UnicodeString` reference)
     *   `icu_64::TimeZone::getDisplayName` (Prevents crashes when localizing time zones with a null or unreadable `TimeZone` instance)
     *   `icu_64::UnicodeSetStringSpan::span` (Prevents crashes when parsing Unicode character spans with a null or unreadable instance/string pointer)
     *   `icu_64::MessageFormat::findKeyword` (Prevents crashes when formatting messages with a null or unreadable string/keyword list)
     *   `icu_64::CollationIterator::previousCodePoint` (Prevents crashes during string collation/sorting iteration if the iterator is null)
+    *   `icu_64::DateTimePatternGenerator::createEmptyInstance` (Prevents in-game crashes when constructing empty date-time pattern generators by returning `nullptr` and setting the error code)
+    *   `icu_64::DateTimePatternGenerator::createInstance` (Prevents in-game crashes when constructing date-time pattern generators by returning `nullptr` and setting the error code)
+    *   `icu_64::DateTimePatternGenerator::createInstance(Locale)` (Prevents in-game crashes when constructing date-time pattern generators for a specific locale by returning `nullptr` and setting the error code)
 17. **FreeType Font Interpreter Protection** (`TT_RunIns` - 1 Hook):
     *   `TT_RunIns` (Prevents crashes inside the TrueType bytecode interpreter when rendering custom or corrupted fonts by verifying the execution context pointer)
 18. **HarfBuzz Font Rendering Protection** (1 Hook):
