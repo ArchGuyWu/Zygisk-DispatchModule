@@ -6213,7 +6213,7 @@ static void proxy_script_decision_maker_save(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (g_orig_script_decision_maker_save) {
         xdl_info_t info;
-        if (xdl_addr(reinterpret_cast<void*>(g_orig_script_decision_maker_save), &info)) {
+        if (xdl_addr(reinterpret_cast<void*>(g_orig_script_decision_maker_save), &info, nullptr)) {
             uintptr_t lib_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
             if (lib_base) {
                 // 1. 净化第一个全局决策制造者指针 (offset 0xa8b98f0)
