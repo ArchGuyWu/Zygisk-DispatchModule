@@ -5799,6 +5799,44 @@ static void* proxy_find_active_task(void* self, int type) {
     return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
 }
 
+
+// --- CTaskManager Destructor Hook ---
+static void* g_stub_task_manager_destructor = nullptr;
+typedef void (*fn_TaskManagerDestructor_t)(void* self);
+static fn_TaskManagerDestructor_t g_orig_task_manager_destructor = nullptr;
+
+static void proxy_task_manager_destructor(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        for (int i = 0; i < 11; ++i) {
+            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+            if (is_pointer_readable(task_slot)) {
+                void* task = *task_slot;
+                if (task) {
+                    if (!is_task_vtable_safe(task)) {
+                        LOGW("⚠️ [CTaskManager Destructor Sanitizer] Sanitizing unsafe task %p at slot %d inside CTaskManager %p before destruction", task, i, self);
+                        *task_slot = nullptr;
+                    }
+                }
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_task_manager_destructor, self);
+}
+
+// --- CTaskComplexPartnerGreet::GetPartnerSequence Hook ---
+static void* g_stub_partner_greet_get_sequence = nullptr;
+typedef void* (*fn_GetPartnerSequence_t)(void* self);
+static fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence = nullptr;
+
+static void* proxy_partner_greet_get_sequence(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_task_vtable_safe(self)) {
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_partner_greet_get_sequence, self);
+}
+
 // --- CAEPedSpeechAudioEntity::PlayLoadedSound Hook ---
 static void* g_stub_play_loaded_sound = nullptr;
 typedef void (*fn_PlayLoadedSound_t)(void* self);
@@ -5868,6 +5906,16 @@ static fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
 
 static void* proxy_avoid_ped_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (is_pointer_readable(subtask_ptr)) {
+            void* subtask = *subtask_ptr;
+            if (subtask && !is_task_vtable_safe(subtask)) {
+                LOGW("⚠️ [ControlSubTask Sanitizer] Sanitizing unsafe subtask %p inside CTaskComplexAvoidOtherPedWhileWandering %p", subtask, self);
+                *subtask_ptr = nullptr;
+            }
+        }
+    }
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
@@ -6500,6 +6548,27 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_find_active_task));
     if (g_stub_find_active_task) LOGI("✅ Hooked CTaskManager::FindActiveTaskByType");
     else LOGE("❌ Failed to hook CTaskManager::FindActiveTaskByType: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+
+    // Hook CTaskManager Destructor (析构时强制净化，防止删除零填充任务虚表解引用闪退)
+    g_stub_task_manager_destructor = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN12CTaskManagerD1Ev",
+        reinterpret_cast<void*>(proxy_task_manager_destructor),
+        reinterpret_cast<void**>(&g_orig_task_manager_destructor));
+    if (g_stub_task_manager_destructor) LOGI("✅ Hooked CTaskManager Destructor");
+    else LOGE("❌ Failed to hook CTaskManager Destructor: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexPartnerGreet::GetPartnerSequence (防止在伙伴问候任务中读取已销毁或零填充任务虚表闪退)
+    g_stub_partner_greet_get_sequence = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexPartnerGreet18GetPartnerSequenceEv",
+        reinterpret_cast<void*>(proxy_partner_greet_get_sequence),
+        reinterpret_cast<void**>(&g_orig_partner_greet_get_sequence));
+    if (g_stub_partner_greet_get_sequence) LOGI("✅ Hooked CTaskComplexPartnerGreet::GetPartnerSequence");
+    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::GetPartnerSequence: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CAEPedSpeechAudioEntity::PlayLoadedSound (防止语音实体播放时对 null 语音管理器指针写操作闪退)
