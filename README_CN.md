@@ -101,7 +101,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 21-Hook 核心网络 (21-Hook System)
+### 3. 22-Hook 核心网络 (22-Hook System)
 模组挂钩了官方引擎内所有与通缉星级、犯罪上报、应急载具生成、任务管理器、脚步声更新、涉水浮力物理以及 Unicode 字符串解析相关的生命周期与虚表，建立起精简高效的协同网络：
 
 1.  **玩法功能与自定义警力调度** (共 12 个 Hook)：
@@ -114,7 +114,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `add_police_occupants` (在警车刷出时绑定乘员)
     *   `tell_occupants_leave_car` (控制警车乘员的下车战术)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (移动端特有的救护车与消防车加载视距缩放 Workaround)
-2.  **防御与净化安全防线** (共 9 个 Hook)：
+2.  **防御与净化安全防线** (共 10 个 Hook)：
     *   `u_strlen_64` (防止 ICU 字符串长度计算函数在接收到野指针时发生 SIGSEGV 闪退，在访问前进行指针有效性过滤)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (防止在行人计算涉水浮力时，由于任务管理器中残留零填充或无效的任务指针而导致解引用虚表闪退。其中 `cBuoyancy::ProcessBuoyancy` 挂钩在物理计算完成后立即净化任务槽，解决了物理 tick 途中任务被销毁/空指针的竞态问题)
     *   `CPed::PlayFootSteps` (防止转场或传送期间由于行人的 `RwClump` 骨骼暂时脱离导致播放脚步声时解引用空指针闪退)
@@ -124,6 +124,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CTaskSimpleHoldEntity::SetPedPosition` (防止持物任务在更新位置时，因行人的 RwClump 骨骼指针未就绪而解引用闪退)
     *   `CTaskComplexUsePairedAttractor::CreateNextSubTask` (防止配对吸引子任务已不在 Ped 上活动时，由于原生引擎缺少空指针校验而发生的解引用闪退，通过提前校验并强行安全返回解决)
     *   `CPedIntelligence::ProcessStaticCounter` (防止更新行人的静态计数器时由于任务被析构填零而发生虚表解引用闪退，同样使用前置净化防御解决)
+    *   `CTaskComplexFacial::~CTaskComplexFacial` (防止表情动画等复杂面部任务析构时，由于子任务已被销毁填零而发生双重释放/空指针虚表解引用闪退)
 
 ---
 

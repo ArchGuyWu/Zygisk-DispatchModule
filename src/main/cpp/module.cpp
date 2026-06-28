@@ -5788,6 +5788,26 @@ static void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) 
     return SHADOWHOOK_CALL_PREV(proxy_paired_attractor_create_next_sub_task, self, ped);
 }
 
+// --- CTaskComplexFacial Destructor Hook ---
+static void* g_stub_facial_dtor = nullptr;
+typedef void (*fn_FacialDtor_t)(void* self);
+static fn_FacialDtor_t g_orig_facial_dtor = nullptr;
+
+static void proxy_facial_dtor(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (is_pointer_readable(p_sub)) {
+            void* sub = *p_sub;
+            if (sub && !is_task_vtable_safe(sub)) {
+                LOGW("⚠️ [Facial Dtor] Clearing unsafe subtask %p inside facial task %p before destruction", sub, self);
+                *p_sub = nullptr;
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
+}
+
 
 // --- CTaskGangHassleVehicle::CalcTargetOffset Hook ---
 typedef void (*fn_CalcTargetOffset_t)(void* self);
@@ -6394,6 +6414,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_paired_attractor_create_next_sub_task));
     if (g_stub_paired_attractor_create_next_sub_task) LOGI("✅ Hooked CTaskComplexUsePairedAttractor::CreateNextSubTask");
     else LOGE("❌ Failed to hook CTaskComplexUsePairedAttractor::CreateNextSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexFacial::Destructor (防止析构时子任务被销毁/空指针的竞态双重释放闪退)
+    g_stub_facial_dtor = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN18CTaskComplexFacialD0Ev",
+        reinterpret_cast<void*>(proxy_facial_dtor),
+        reinterpret_cast<void**>(&g_orig_facial_dtor));
+    if (g_stub_facial_dtor) LOGI("✅ Hooked CTaskComplexFacial::~CTaskComplexFacial");
+    else LOGE("❌ Failed to hook CTaskComplexFacial::~CTaskComplexFacial: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
