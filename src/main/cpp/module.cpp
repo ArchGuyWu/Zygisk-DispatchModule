@@ -6245,6 +6245,75 @@ static int proxy_asset_pack_manager_request_download(void* env, void* thiz, void
 }
 
 // =====================================================================
+// 🛡️ [ICU & FreeType Hooks]：防止本地化字符与字体渲染引擎空指针解引用闪退
+// =====================================================================
+static void* g_stub_timezone_get_display_name = nullptr;
+typedef void* (*fn_TimeZone_getDisplayName_t)(void* self, bool daylight, int style, void* locale, void* result);
+static fn_TimeZone_getDisplayName_t g_orig_timezone_get_display_name = nullptr;
+
+static void* proxy_timezone_get_display_name(void* self, bool daylight, int style, void* locale, void* result) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) {
+        LOGW("⚠️ [TimeZone::getDisplayName Hook] self is null or unreadable! Preventing crash.");
+        return result;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_timezone_get_display_name, self, daylight, style, locale, result);
+}
+
+static void* g_stub_unicodeset_stringspan_span = nullptr;
+typedef int (*fn_UnicodeSetStringSpan_span_t)(void* self, const void* s, int length, int spanCondition);
+static fn_UnicodeSetStringSpan_span_t g_orig_unicodeset_stringspan_span = nullptr;
+
+static int proxy_unicodeset_stringspan_span(void* self, const void* s, int length, int spanCondition) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self) || (length > 0 && (!s || !is_pointer_readable(s)))) {
+        LOGW("⚠️ [UnicodeSetStringSpan::span Hook] self or s is null/unreadable! Preventing crash.");
+        return 0;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_unicodeset_stringspan_span, self, s, length, spanCondition);
+}
+
+static void* g_stub_messageformat_findkeyword = nullptr;
+typedef int (*fn_MessageFormat_findKeyword_t)(void* s, const void* list);
+static fn_MessageFormat_findKeyword_t g_orig_messageformat_findkeyword = nullptr;
+
+static int proxy_messageformat_findkeyword(void* s, const void* list) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!s || !is_pointer_readable(s) || !list || !is_pointer_readable(list)) {
+        LOGW("⚠️ [MessageFormat::findKeyword Hook] s or list is null/unreadable! Preventing crash.");
+        return -1;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_messageformat_findkeyword, s, list);
+}
+
+static void* g_stub_collationiterator_previous_codepoint = nullptr;
+typedef int (*fn_CollationIterator_previousCodePoint_t)(void* self, int* status);
+static fn_CollationIterator_previousCodePoint_t g_orig_collationiterator_previous_codepoint = nullptr;
+
+static int proxy_collationiterator_previous_codepoint(void* self, int* status) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) {
+        LOGW("⚠️ [CollationIterator::previousCodePoint Hook] self is null! Preventing crash.");
+        if (status) *status = 1; // U_ILLEGAL_ARGUMENT_ERROR
+        return -1;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_collationiterator_previous_codepoint, self, status);
+}
+
+static void* g_stub_tt_runins = nullptr;
+typedef int (*fn_TT_RunIns_t)(void* exc);
+static fn_TT_RunIns_t g_orig_tt_runins = nullptr;
+
+static int proxy_tt_runins(void* exc) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!exc || !is_pointer_readable(exc)) {
+        LOGW("⚠️ [TT_RunIns Hook] exc is null/unreadable! Preventing crash.");
+        return 0x14; // FT_Err_Invalid_Argument
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_tt_runins, exc);
+}
+
+// =====================================================================
 // 🛡️ [CScriptDecisionMakerModifications::Save Hook]：防止存档期间全局决策制造者未初始化或失效导致虚表解引用闪退
 // =====================================================================
 static void* g_stub_script_decision_maker_save = nullptr;
@@ -6789,6 +6858,51 @@ static void hook_thread_func() {
     if (g_stub_asset_pack_manager_request_download) LOGI("✅ Hooked AssetPackManager_requestDownload");
     else LOGE("❌ Failed to hook AssetPackManager_requestDownload: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook TimeZone::getDisplayName (防止本地化时区空指针崩溃)
+    g_stub_timezone_get_display_name = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK6icu_648TimeZone14getDisplayNameEaNS0_12EDisplayTypeERKNS_6LocaleERNS_13UnicodeStringE",
+        reinterpret_cast<void*>(proxy_timezone_get_display_name),
+        reinterpret_cast<void**>(&g_orig_timezone_get_display_name));
+    if (g_stub_timezone_get_display_name) LOGI("✅ Hooked TimeZone::getDisplayName");
+    else LOGE("❌ Failed to hook TimeZone::getDisplayName: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook UnicodeSetStringSpan::span (防止Unicode字符解析空指针崩溃)
+    g_stub_unicodeset_stringspan_span = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK6icu_6420UnicodeSetStringSpan4spanEPKDsi17USetSpanCondition",
+        reinterpret_cast<void*>(proxy_unicodeset_stringspan_span),
+        reinterpret_cast<void**>(&g_orig_unicodeset_stringspan_span));
+    if (g_stub_unicodeset_stringspan_span) LOGI("✅ Hooked UnicodeSetStringSpan::span");
+    else LOGE("❌ Failed to hook UnicodeSetStringSpan::span: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook MessageFormat::findKeyword (防止MessageFormat解析空指针崩溃)
+    g_stub_messageformat_findkeyword = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN6icu_6413MessageFormat11findKeywordERKNS_13UnicodeStringEPKPKDs",
+        reinterpret_cast<void*>(proxy_messageformat_findkeyword),
+        reinterpret_cast<void**>(&g_orig_messageformat_findkeyword));
+    if (g_stub_messageformat_findkeyword) LOGI("✅ Hooked MessageFormat::findKeyword");
+    else LOGE("❌ Failed to hook MessageFormat::findKeyword: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CollationIterator::previousCodePoint (防止文本排序迭代空指针崩溃)
+    g_stub_collationiterator_previous_codepoint = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN6icu_6425FCDUTF16CollationIterator17previousCodePointER10UErrorCode",
+        reinterpret_cast<void*>(proxy_collationiterator_previous_codepoint),
+        reinterpret_cast<void**>(&g_orig_collationiterator_previous_codepoint));
+    if (g_stub_collationiterator_previous_codepoint) LOGI("✅ Hooked CollationIterator::previousCodePoint");
+    else LOGE("❌ Failed to hook CollationIterator::previousCodePoint: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook TT_RunIns (防止FreeType字体渲染解析崩溃)
+    g_stub_tt_runins = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "TT_RunIns",
+        reinterpret_cast<void*>(proxy_tt_runins),
+        reinterpret_cast<void**>(&g_orig_tt_runins));
+    if (g_stub_tt_runins) LOGI("✅ Hooked TT_RunIns");
+    else LOGE("❌ Failed to hook TT_RunIns: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退)
     g_stub_script_decision_maker_save = shadowhook_hook_sym_name(
