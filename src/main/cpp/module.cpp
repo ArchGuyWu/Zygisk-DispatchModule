@@ -5733,7 +5733,6 @@ static void* proxy_ccgf_control(void* self, void* ped) {
 
 // --- CPedIntelligence::FindTaskByType Hook ---
 static void* g_stub_find_task_by_type = nullptr;
-typedef void* (*fn_FindTaskByType_t)(void* self, int type);
 static fn_FindTaskByType_t g_orig_find_task_by_type = nullptr;
 
 static void* proxy_find_task_by_type(void* self, int type) {
