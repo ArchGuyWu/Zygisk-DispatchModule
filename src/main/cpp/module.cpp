@@ -425,7 +425,7 @@ struct ThreadLocalPipe {
 static inline bool is_pointer_readable(const void* ptr) {
     if (!ptr) return false;
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
+    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL) {
         return false;
     }
     thread_local static ThreadLocalPipe tl_pipe;
