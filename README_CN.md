@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 17-Hook 协同防御网 (17-Hook Defense System)
-模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑、存档机制及涉水行为相关的核心生命周期方法，建立起立体的全方位防御网：
+### 3. 18-Hook 协同防御网 (18-Hook Defense System)
+模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑、存档机制、涉水行为及脚步落地特效相关的核心生命周期方法，建立起立体的全方位防御网：
 
 1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -133,6 +133,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CScriptDecisionMakerModifications::Save` (在游戏手动存档或自动存档时，引擎会保存脚本决策修改器的数据，期间需要访问两个全局的决策制造者对象 `CScriptDecisionMaker`。如果这两个全局对象由于场景切换被销毁或未完成初始化（其虚表指针为 `nullptr`），引擎在执行保存时会裸解引用虚表偏移 `0x18` 或 `0x38` 并触发 SIGSEGV 闪退。本 Hook 在存档逻辑执行前，动态检测并强行将无效的全局对象指针净化为 `nullptr`，安全引导引擎走入原装的空指针跳过分支，完美解决存档与自动存档时的偶发闪退)
 12. **涉水任务初始化安全拦截** (`CreateFirstSubTask` - 1 个 Hook)：
     *   `CTaskComplexInWater::CreateFirstSubTask` (当行人进入水中时，引擎会为其分配并初始化涉水复杂任务。若当前游戏的水系统管理器或其内部的物理高度/深度数据数组由于场景重载被销毁或尚未初始化，引擎在计算水域交互时会裸解引用空数组指针，导致 SIGSEGV 闪退。本 Hook 在涉水任务创建时，动态检测水系统管理器及数组状态，若发现未就绪则强制返回 `nullptr` 阻止任务创建，从而由官方任务管理器安全降级，彻底解决水中偶发的解引用闪退)
+13. **脚步落地特效安全拦截** (`DoFootLanded` - 1 个 Hook)：
+    *   `CPed::DoFootLanded` (当行人脚步落地时，引擎会读取行人对象偏移 `0x90` 处的粒子特效系统 `FxSystem_c` 指针并调用 `AddParticle` 生成脚印特效。若该特效系统未初始化或已被销毁（其偏移 `0x18` 处的数组成员为空），调用时会裸解引用 `nullptr + 0x18` 并触发 SIGSEGV 闪退。本 Hook 在脚步落地时，动态检测特效系统及数组成员状态，若未就绪则安全跳过粒子生成，彻底根治高频运动中偶发的脚印特效解引用闪退)
 
 ---
 

@@ -6292,6 +6292,34 @@ static void* proxy_task_complex_in_water_create_first_sub_task(void* self, void*
 }
 
 // =====================================================================
+// 🛡️ [CPed::DoFootLanded Hook]：防止粒子特效系统未就绪或为空导致脚步落地逻辑解引用 +0x18 崩溃
+// =====================================================================
+static void* g_stub_ped_do_foot_landed = nullptr;
+typedef void (*fn_PedDoFootLanded_t)(void* self, bool bLeftFoot, unsigned char uSurfaceType);
+static fn_PedDoFootLanded_t g_orig_ped_do_foot_landed = nullptr;
+
+static void proxy_ped_do_foot_landed(void* self, bool bLeftFoot, unsigned char uSurfaceType) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** p_fx_system = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x90);
+        if (is_pointer_readable(p_fx_system)) {
+            void* fx_system = *p_fx_system;
+            if (!fx_system || !is_pointer_readable(fx_system)) {
+                LOGW("⚠️ [DoFootLanded Sanitizer] Null or unreadable FxSystem %p for ped %p, skipping DoFootLanded", fx_system, self);
+                return;
+            }
+            // 进一步检查 FxSystem 内部结构 (防止 FxSystem::AddParticle 内部解引用 +0x18 崩溃)
+            void** p_member_18 = reinterpret_cast<void**>(reinterpret_cast<char*>(fx_system) + 0x18);
+            if (!is_pointer_readable(p_member_18) || *p_member_18 == nullptr) {
+                LOGW("⚠️ [DoFootLanded Sanitizer] Invalid FxSystem member at +0x18 for ped %p, skipping DoFootLanded", self);
+                return;
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_ped_do_foot_landed, self, bLeftFoot, uSurfaceType);
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -6668,6 +6696,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_play_footsteps));
     if (g_stub_play_footsteps) LOGI("✅ Hooked CPed::PlayFootSteps");
     else LOGE("❌ Failed to hook CPed::PlayFootSteps: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPed::DoFootLanded (防止粒子特效系统未就绪导致脚步落地逻辑解引用 +0x18 崩溃)
+    g_stub_ped_do_foot_landed = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN4CPed12DoFootLandedEbh",
+        reinterpret_cast<void*>(proxy_ped_do_foot_landed),
+        reinterpret_cast<void**>(&g_orig_ped_do_foot_landed));
+    if (g_stub_ped_do_foot_landed) LOGI("✅ Hooked CPed::DoFootLanded");
+    else LOGE("❌ Failed to hook CPed::DoFootLanded: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CPed::ProcessBuoyancy (防止任务槽被置空/野指针导致 ProcessBuoyancy 虚表解引用闪退)

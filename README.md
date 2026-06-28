@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 17-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, and water-related tasks:
+### 3. The 18-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, water-related, and footstep landing tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -133,6 +133,8 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CScriptDecisionMakerModifications::Save` (During game saving or autosaving, the engine saves modifications to script decision makers by querying two global `CScriptDecisionMaker` objects. If either object was released or uninitialized (leaving its vtable pointer as `nullptr`), the engine dereferences the null vtable at offset `0x18` or `0x38`, causing a SIGSEGV crash. This hook dynamically detects and purges these invalid global pointers to `nullptr`, allowing the engine's built-in null checks to safely skip them and prevent crashes)
 12. **In-Water Task Initialization Protection** (`CreateFirstSubTask` - 1 Hook):
     *   `CTaskComplexInWater::CreateFirstSubTask` (When a pedestrian enters water, the engine initializes a complex water task. If the water physics manager or its internal water array has been deallocated or remains uninitialized, the engine blindly dereferences the null array pointer, causing a SIGSEGV crash. This hook dynamically intercepts the task creation, verifies the water manager and its internal array, and safely returns `nullptr` if they are uninitialized, preventing crashes during water-related transitions)
+13. **Footstep Landing Effect System Protection** (`DoFootLanded` - 1 Hook):
+    *   `CPed::DoFootLanded` (When a pedestrian's foot lands, the engine attempts to trigger a footprint particle effect by retrieving the ped's particle system `FxSystem_c` pointer at offset `0x90`. If the particle system is uninitialized or has been deallocated (leaving its member at offset `0x18` as null), calling `AddParticle` on it dereferences `nullptr + 0x18`, causing a SIGSEGV crash. This hook dynamically intercepts the footstep landing event, verifies the particle system's validity, and safely skips particle generation if the system is uninitialized, preventing footstep-related particle crashes)
 
 ---
 ## 🛠️ Tech Stack & Requirements
