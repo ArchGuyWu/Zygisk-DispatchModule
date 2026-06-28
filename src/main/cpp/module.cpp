@@ -6247,10 +6247,6 @@ static int proxy_asset_pack_manager_request_download(void* env, void* thiz, void
 // =====================================================================
 // 🛡️ [HarfBuzz get_glyph_from_name Hook]：防止字体 post 表损坏导致的二分查找野指针闪退
 // =====================================================================
-static void* g_stub_hb_get_glyph_from_name = nullptr;
-typedef bool (*fn_hb_get_glyph_from_name_t)(void* self, const char* name, int len, unsigned int* glyph);
-static fn_hb_get_glyph_from_name_t g_orig_hb_get_glyph_from_name = nullptr;
-
 // =====================================================================
 // 🛡️ [u_strlen_64 Hook]：防止 ICU 计算 Unicode 字符串长度时传入野指针闪退
 // =====================================================================
@@ -6265,54 +6261,6 @@ static int32_t proxy_u_strlen(const void* s) {
         return 0;
     }
     return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
-}
-
-// =====================================================================
-// 🛡️ [icu::DateTimePatternGenerator Hooks]：防止获取日期时间格式模板时空指针解引用闪退
-// =====================================================================
-static void* g_stub_dtpg_create_empty_instance = nullptr;
-typedef void* (*fn_dtpg_create_empty_instance_t)(int* status);
-static fn_dtpg_create_empty_instance_t g_orig_dtpg_create_empty_instance = nullptr;
-
-static void* proxy_dtpg_create_empty_instance(int* status) {
-    SHADOWHOOK_STACK_SCOPE();
-    LOGW("⚠️ [DateTimePatternGenerator::createEmptyInstance Hook] Bypassing to prevent crash.");
-    if (status) {
-        *status = 16; // U_FILE_ACCESS_ERROR
-    }
-    return nullptr;
-}
-
-static void* g_stub_dtpg_create_instance_no_locale = nullptr;
-typedef void* (*fn_dtpg_create_instance_no_locale_t)(int* status);
-static fn_dtpg_create_instance_no_locale_t g_orig_dtpg_create_instance_no_locale = nullptr;
-
-static void* proxy_dtpg_create_instance_no_locale(int* status) {
-    SHADOWHOOK_STACK_SCOPE();
-    LOGW("⚠️ [DateTimePatternGenerator::createInstance Hook] Bypassing to prevent crash.");
-    if (status) {
-        *status = 16; // U_FILE_ACCESS_ERROR
-    }
-    return nullptr;
-}
-
-static void* g_stub_dtpg_create_instance_with_locale = nullptr;
-typedef void* (*fn_dtpg_create_instance_with_locale_t)(const void* locale, int* status);
-static fn_dtpg_create_instance_with_locale_t g_orig_dtpg_create_instance_with_locale = nullptr;
-
-static void* proxy_dtpg_create_instance_with_locale(const void* locale, int* status) {
-    SHADOWHOOK_STACK_SCOPE();
-    LOGW("⚠️ [DateTimePatternGenerator::createInstance(Locale) Hook] Bypassing to prevent crash.");
-    if (status) {
-        *status = 16; // U_FILE_ACCESS_ERROR
-    }
-    return nullptr;
-}
-
-static bool proxy_hb_get_glyph_from_name(void* self, const char* name, int len, unsigned int* glyph) {
-    SHADOWHOOK_STACK_SCOPE();
-    // 直接返回 false，绕过损坏的 post 表二分查找。HarfBuzz 会自动降级为 unicode cmap 查找，完全不影响渲染且绝对安全。
-    return false;
 }
 
 // =====================================================================
@@ -6962,42 +6910,6 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_u_strlen));
     if (g_stub_u_strlen) LOGI("✅ Hooked u_strlen_64");
     else LOGE("❌ Failed to hook u_strlen_64: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook DateTimePatternGenerator::createEmptyInstance
-    g_stub_dtpg_create_empty_instance = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN6icu_6424DateTimePatternGenerator19createEmptyInstanceER10UErrorCode",
-        reinterpret_cast<void*>(proxy_dtpg_create_empty_instance),
-        reinterpret_cast<void**>(&g_orig_dtpg_create_empty_instance));
-    if (g_stub_dtpg_create_empty_instance) LOGI("✅ Hooked DateTimePatternGenerator::createEmptyInstance");
-    else LOGE("❌ Failed to hook DateTimePatternGenerator::createEmptyInstance: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook DateTimePatternGenerator::createInstance
-    g_stub_dtpg_create_instance_no_locale = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN6icu_6424DateTimePatternGenerator14createInstanceER10UErrorCode",
-        reinterpret_cast<void*>(proxy_dtpg_create_instance_no_locale),
-        reinterpret_cast<void**>(&g_orig_dtpg_create_instance_no_locale));
-    if (g_stub_dtpg_create_instance_no_locale) LOGI("✅ Hooked DateTimePatternGenerator::createInstance");
-    else LOGE("❌ Failed to hook DateTimePatternGenerator::createInstance: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook DateTimePatternGenerator::createInstance(Locale)
-    g_stub_dtpg_create_instance_with_locale = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN6icu_6424DateTimePatternGenerator14createInstanceERKNS_6LocaleER10UErrorCode",
-        reinterpret_cast<void*>(proxy_dtpg_create_instance_with_locale),
-        reinterpret_cast<void**>(&g_orig_dtpg_create_instance_with_locale));
-    if (g_stub_dtpg_create_instance_with_locale) LOGI("✅ Hooked DateTimePatternGenerator::createInstance(Locale)");
-    else LOGE("❌ Failed to hook DateTimePatternGenerator::createInstance(Locale): %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook HarfBuzz get_glyph_from_name (防止字体 post 表二分查找崩溃)
-    g_stub_hb_get_glyph_from_name = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZNK2OT4post13accelerator_t19get_glyph_from_nameEPKciPj",
-        reinterpret_cast<void*>(proxy_hb_get_glyph_from_name),
-        reinterpret_cast<void**>(&g_orig_hb_get_glyph_from_name));
-    if (g_stub_hb_get_glyph_from_name) LOGI("✅ Hooked HarfBuzz get_glyph_from_name");
-    else LOGE("❌ Failed to hook HarfBuzz get_glyph_from_name: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook TimeZone::getDisplayName (防止本地化时区空指针崩溃)
     g_stub_timezone_get_display_name = shadowhook_hook_sym_name(
