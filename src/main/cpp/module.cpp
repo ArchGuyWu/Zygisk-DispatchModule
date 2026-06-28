@@ -5731,20 +5731,6 @@ static void* proxy_ccgf_control(void* self, void* ped) {
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
 }
 
-// --- CPedIntelligence::FindTaskByType Hook ---
-static void* g_stub_find_task_by_type = nullptr;
-static fn_FindTaskByType_t g_orig_find_task_by_type = nullptr;
-
-static void* proxy_find_task_by_type(void* self, int type) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
-        void** p_ped = reinterpret_cast<void**>(self);
-        if (is_pointer_readable(p_ped)) {
-            sanitize_ped_tasks(*p_ped);
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_find_task_by_type, self, type);
-}
 
 // --- CTaskComplexUsePairedAttractor::CreateNextSubTask Hook ---
 static void* g_stub_paired_attractor_create_next_sub_task = nullptr;
@@ -6067,18 +6053,6 @@ static void proxy_play_footsteps(void* self) {
     SHADOWHOOK_CALL_PREV(proxy_play_footsteps, self);
 }
 
-// =====================================================================
-// 🛡️ [CPed::ProcessBuoyancy Hook]：防止 ProcessBuoyancy 期间任务槽被置空/野指针导致虚表解引用闪退
-// =====================================================================
-static void* g_stub_process_buoyancy = nullptr;
-typedef void (*fn_ProcessBuoyancy_t)(void* self);
-static fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
-
-static void proxy_process_buoyancy(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    sanitize_ped_tasks(self);
-    SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
-}
 
 // =====================================================================
 // 🛡️ [cBuoyancy::ProcessBuoyancy Hook]：防止物理浮力计算期间/之后任务被销毁导致 CPed::ProcessBuoyancy 闪退 (静态函数，首参为 CPhysical*)
@@ -6374,15 +6348,6 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskComplexGangFollower::ControlSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CPedIntelligence::FindTaskByType (防止递归查询子任务类型时虚表空指针解引用)
-    g_stub_find_task_by_type = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZNK16CPedIntelligence14FindTaskByTypeEi",
-        reinterpret_cast<void*>(proxy_find_task_by_type),
-        reinterpret_cast<void**>(&g_orig_find_task_by_type));
-    if (g_stub_find_task_by_type) LOGI("✅ Hooked CPedIntelligence::FindTaskByType");
-    else LOGE("❌ Failed to hook CPedIntelligence::FindTaskByType: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CTaskComplexUsePairedAttractor::CreateNextSubTask (防止找不到吸引子任务时解引用崩溃)
     g_stub_paired_attractor_create_next_sub_task = shadowhook_hook_sym_name(
@@ -6408,15 +6373,6 @@ static void hook_thread_func() {
 
 
 
-    // Hook CPed::ProcessBuoyancy (防止任务槽被置空/野指针导致 ProcessBuoyancy 虚表解引用闪退)
-    g_stub_process_buoyancy = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN4CPed15ProcessBuoyancyEv",
-        reinterpret_cast<void*>(proxy_process_buoyancy),
-        reinterpret_cast<void**>(&g_orig_process_buoyancy));
-    if (g_stub_process_buoyancy) LOGI("✅ Hooked CPed::ProcessBuoyancy");
-    else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook cBuoyancy::ProcessBuoyancy (解决物理tick途中任务被销毁/空指针的竞态问题)
     g_stub_cbuoyancy_process_buoyancy = shadowhook_hook_sym_name(

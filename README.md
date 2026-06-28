@@ -101,7 +101,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 22-Hook System
+### 3. The 20-Hook System
 Our solution intercepts all core lifecycles and virtual tables related to wanted levels, crime reporting, emergency vehicle spawning, task management, footstep rendering, buoyancy physics, and Unicode formatting:
 
 1.  **Gameplay Features & Custom Dispatching** (12 Hooks):
@@ -114,15 +114,14 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
     *   `add_police_occupants` (Binds occupants to spawned cop cars)
     *   `tell_occupants_leave_car` (Triggers custom vehicle exits)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (Draw distance scaling workarounds for emergency vehicles in mobile versions)
-2.  **Defensive & Sanitizing Safeguards** (10 Hooks):
+2.  **Defensive & Sanitizing Safeguards** (8 Hooks):
     *   `u_strlen_64` (Prevents startup crashes in ICU's Unicode string length function by validating wild pointers)
-    *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (Prevents crashes during buoyancy processing. `cBuoyancy::ProcessBuoyancy` is hooked to sanitize task slots immediately after the physics calculation, solving a race condition where a task gets destructed mid-function)
+    *   `cBuoyancy::ProcessBuoyancy` (Prevents crashes during buoyancy processing. It is hooked to sanitize task slots immediately after the physics calculation, solving a race condition where a task gets destructed mid-function)
     *   `CPed::PlayFootSteps` (Prevents crashes during transitions when the ped's RW clump/model is temporarily detached)
     *   `CTaskManager::ManageTasks` (Sanitizes the task chain inside CTaskManager to prevent null/invalid virtual table dereferences)
     *   `CAttractorScanner::ScanForAttractorsInRange` (Sanitizes the pedestrian intelligence task slots to prevent crashes when scanning attractors)
     *   `CTaskComplexGangFollower::ControlSubTask` (Prevents crashes in gang follower tasks when the follower, leader, or partner's task managers contain zeroed/invalid tasks)
     *   `CTaskSimpleHoldEntity::SetPedPosition` (Prevents crashes in hold-entity tasks when the ped's clump is unreadable)
-    *   `CPedIntelligence::FindTaskByType` (Prevents crashes during recursive subtask queries by recursively sanitizing the entire task tree of the ped)
     *   `CTaskComplexUsePairedAttractor::CreateNextSubTask` (Prevents crashes when the paired attractor task is no longer active on the ped by verifying and sanitizing it)
 
 ---
