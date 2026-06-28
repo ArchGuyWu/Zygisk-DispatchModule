@@ -5661,15 +5661,20 @@ static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
 // --- CTaskComplexGangFollower::ControlSubTask Hook ---
 static inline void sanitize_task_tree(void* task) {
     if (!task || !is_pointer_readable(task)) return;
-    void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x10);
-    if (is_pointer_readable(p_sub)) {
-        void* sub = *p_sub;
-        if (sub) {
-            if (!is_task_vtable_safe(sub)) {
-                LOGW("⚠️ [Task Tree Sanitizer] Clearing unsafe subtask %p inside parent task %p", sub, task);
-                *p_sub = nullptr;
-            } else {
-                sanitize_task_tree(sub);
+    
+    // Only CTaskComplex has m_pSubTask at offset 16 (0x10).
+    // Wiping offset 16 of a CTaskSimple will corrupt its member variables!
+    if (!is_task_simple(task)) {
+        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x10);
+        if (is_pointer_readable(p_sub)) {
+            void* sub = *p_sub;
+            if (sub) {
+                if (!is_task_vtable_safe(sub)) {
+                    LOGW("⚠️ [Task Tree Sanitizer] Clearing unsafe subtask %p inside parent task %p", sub, task);
+                    *p_sub = nullptr;
+                } else {
+                    sanitize_task_tree(sub);
+                }
             }
         }
     }
@@ -6095,7 +6100,9 @@ static bool proxy_cbuoyancy_process_buoyancy(void* physical, float f1, void* vec
     SHADOWHOOK_STACK_SCOPE();
     bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, physical, f1, vec1, vec2);
     if (!res) {
-        sanitize_ped_tasks(physical);
+        if (physical && is_ped_pointer_valid_safe(physical)) {
+            sanitize_ped_tasks(physical);
+        }
     }
     return res;
 }
