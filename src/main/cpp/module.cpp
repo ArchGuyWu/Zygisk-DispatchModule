@@ -6128,6 +6128,39 @@ static void proxy_play_footsteps(void* self) {
 }
 
 // =====================================================================
+// 🛡️ [CPed::ProcessBuoyancy Hook]：防止 ProcessBuoyancy 期间任务槽被置空/野指针导致虚表解引用闪退
+// =====================================================================
+static void* g_stub_process_buoyancy = nullptr;
+typedef void (*fn_ProcessBuoyancy_t)(void* self);
+static fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
+
+static void proxy_process_buoyancy(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x5e8);
+        if (is_pointer_readable(intel_slot)) {
+            void* intel = *intel_slot;
+            if (intel && is_pointer_readable(intel)) {
+                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+                if (is_pointer_readable(task_mgr)) {
+                    for (int i = 0; i < 11; ++i) {
+                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                        if (is_pointer_readable(task_slot)) {
+                            void* task = *task_slot;
+                            if (task && !is_task_vtable_safe(task)) {
+                                LOGW("⚠️ [ProcessBuoyancy Sanitizer] Clearing unsafe/zeroed task %p at slot %d inside CTaskManager %p", task, i, task_mgr);
+                                *task_slot = nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -6504,6 +6537,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_play_footsteps));
     if (g_stub_play_footsteps) LOGI("✅ Hooked CPed::PlayFootSteps");
     else LOGE("❌ Failed to hook CPed::PlayFootSteps: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPed::ProcessBuoyancy (防止任务槽被置空/野指针导致 ProcessBuoyancy 虚表解引用闪退)
+    g_stub_process_buoyancy = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN4CPed15ProcessBuoyancyEv",
+        reinterpret_cast<void*>(proxy_process_buoyancy),
+        reinterpret_cast<void**>(&g_orig_process_buoyancy));
+    if (g_stub_process_buoyancy) LOGI("✅ Hooked CPed::ProcessBuoyancy");
+    else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs

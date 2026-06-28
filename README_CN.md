@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 13-Hook 协同防御网 (13-Hook Defense System)
-模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务及转场脚步声相关的核心生命周期方法，建立起立体的全方位防御网：
+### 3. 14-Hook 协同防御网 (14-Hook Defense System)
+模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声及浮力处理相关的核心生命周期方法，建立起立体的全方位防御网：
 
 1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -125,6 +125,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CTaskComplexGangFollower::ControlSubTask` (主动拦截跟从者子任务更新驱动。若跟从者关联的 leader/目标 ped 指针（位于 `self + 0x18` 处）为空或不可读，直接返回 `nullptr` 防止其深入执行并在原生汇编偏移 `0x498` 处触发空指针解引用，确保帮派招募与追随行为 100% 绝对稳定)
 8.  **转场脚步声空指针拦截** (`PlayFootSteps` - 1 个 Hook)：
     *   `CPed::PlayFootSteps` (在转场、传送或载具上下车期间，如果玩家或 NPC 的骨骼模型 `m_pRwObject` 指针（`ped + 0x20` 处）被临时解绑或尚未加载完毕，原生引擎会裸解引用该指针产生的 `nullptr + 0x44` 导致闪退。本 Hook 在检测到 `m_pRwObject` 为空时，安全拦截并直接返回，彻底根治转场时偶发的脚步声解引用闪退)
+9.  **浮力计算任务槽安全拦截** (`ProcessBuoyancy` - 1 个 Hook)：
+    *   `CPed::ProcessBuoyancy` (在游戏引擎高频处理行人的水中浮力物理时，会遍历 `CTaskManager` 中的所有任务槽。若某个任务槽内由于引擎释放残留了被填零或野指针的无效任务指针，原生引擎会直接通过该指针解引用其虚表并调用 `GetTaskType`，从而在偏移 `0x18` 处触发空指针解引用闪退。本 Hook 在浮力逻辑执行前，动态扫描并强制将任务管理器中不安全或已填零的指针净化为 `nullptr`，彻底斩断此闪退路径)
 
 ---
 

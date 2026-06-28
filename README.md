@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 13-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, and footstep tasks:
+### 3. The 14-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, and buoyancy tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -125,6 +125,8 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CTaskComplexGangFollower::ControlSubTask` (Intercepts follower subtask updates. If the follower's leader pointer at offset `0x18` is null or invalid, the hook returns `nullptr` to prevent native null pointer dereference at offset `0x498`, ensuring flawless gameplay stability during gang recruitments/activities)
 8.  **Transition Footsteps Null Pointer Hook** (`PlayFootSteps` - 1 Hook):
     *   `CPed::PlayFootSteps` (During transitions, teleports, or vehicle entries/exits, the ped's RW clump/model pointer `m_pRwObject` at offset `0x20` can be temporarily detached or not yet loaded. The native engine blindly dereferences `m_pRwObject` offset `0x44` even when it is null, causing SIGSEGV crashes. This hook detects if `m_pRwObject` is null and safely bypasses the footstep logic, completely resolving transition-related footstep crashes)
+9.  **Buoyancy Processing Task Protection** (`ProcessBuoyancy` - 1 Hook):
+    *   `CPed::ProcessBuoyancy` (When processing water buoyancy, the engine iterates over the task slots in `CTaskManager`. If a slot contains a dangling or zeroed task pointer, the engine blindly dereferences its virtual table to call `GetTaskType`, causing a null pointer dereference crash at offset `0x18`. This hook dynamically scans and purges any unsafe or zeroed task pointers in the task manager before the buoyancy logic executes, completely eliminating this crash vector)
 
 ---
 ## 🛠️ Tech Stack & Requirements
