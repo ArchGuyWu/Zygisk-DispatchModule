@@ -5970,15 +5970,35 @@ extern "C" void* safe_pure_virtual_stub() {
     return nullptr;
 }
 
-static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, void* pure_virtual_target, void* stub_func) {
-    if (!vtable_symbol || !pure_virtual_target || !stub_func) return;
+static void* find_pure_virtual_target(void* vtable_symbol, int num_slots) {
+    if (!vtable_symbol) return nullptr;
+    void** slots = reinterpret_cast<void**>(vtable_symbol);
+    std::unordered_map<void*, int> counts;
+    for (int i = 0; i < num_slots; ++i) {
+        if (slots[i]) {
+            counts[slots[i]]++;
+        }
+    }
+    void* best_target = nullptr;
+    int max_count = 1;
+    for (const auto& pair : counts) {
+        if (pair.second > max_count) {
+            max_count = pair.second;
+            best_target = pair.first;
+        }
+    }
+    return best_target;
+}
+
+static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, int num_slots, void* pure_virtual_target, void* stub_func) {
+    if (!vtable_symbol || !pure_virtual_target || !stub_func || num_slots <= 0) return;
     
     void** slots = reinterpret_cast<void**>(vtable_symbol);
     uintptr_t page_size = sysconf(_SC_PAGESIZE);
     
-    // Calculate page range for 64 slots (64 * 8 = 512 bytes, at most 2 pages)
+    // Calculate page range for num_slots
     uintptr_t start_addr = reinterpret_cast<uintptr_t>(slots);
-    uintptr_t end_addr = reinterpret_cast<uintptr_t>(slots + 64);
+    uintptr_t end_addr = reinterpret_cast<uintptr_t>(slots + num_slots);
     uintptr_t page_start = start_addr & ~(page_size - 1);
     uintptr_t page_end = (end_addr + page_size - 1) & ~(page_size - 1);
     size_t length = page_end - page_start;
@@ -5990,7 +6010,7 @@ static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, vo
     }
     
     int patched_count = 0;
-    for (int i = 0; i < 64; ++i) {
+    for (int i = 0; i < num_slots; ++i) {
         if (slots[i] == pure_virtual_target) {
             slots[i] = stub_func;
             patched_count++;
@@ -6379,16 +6399,41 @@ static void hook_thread_func() {
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
-    void* pure_virtual_target = dlsym(RTLD_DEFAULT, "__cxa_pure_virtual");
+    void* pure_virtual_target = nullptr;
+    if (g_vtable_CTask) {
+        void** slots = reinterpret_cast<void**>(g_vtable_CTask);
+        // Slot 4 is the first pure virtual function in _ZTV5CTask
+        pure_virtual_target = slots[4];
+        if (pure_virtual_target) {
+            LOGI("🎯 Dynamically extracted __cxa_pure_virtual target from g_vtable_CTask[4]: %p", pure_virtual_target);
+        }
+    }
+    if (!pure_virtual_target || pure_virtual_target == reinterpret_cast<void*>(0)) {
+        if (g_vtable_CTask) {
+            pure_virtual_target = find_pure_virtual_target(g_vtable_CTask, 11);
+            if (pure_virtual_target) {
+                LOGI("🎯 Dynamically extracted __cxa_pure_virtual target via consensus: %p", pure_virtual_target);
+            }
+        }
+    }
+    if (!pure_virtual_target) {
+        pure_virtual_target = dlsym(RTLD_DEFAULT, "__cxa_pure_virtual");
+        if (pure_virtual_target) {
+            LOGI("🎯 Resolved __cxa_pure_virtual via dlsym: %p", pure_virtual_target);
+        }
+    }
     if (!pure_virtual_target) {
         pure_virtual_target = xdl_sym(lib, "__cxa_pure_virtual", nullptr);
+        if (pure_virtual_target) {
+            LOGI("🎯 Resolved __cxa_pure_virtual via xdl_sym: %p", pure_virtual_target);
+        }
     }
     if (pure_virtual_target) {
         LOGI("Found __cxa_pure_virtual at %p, scanning and patching base vtables...", pure_virtual_target);
-        patch_vtable_pure_virtuals("_ZTV5CTask", g_vtable_CTask, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
-        patch_vtable_pure_virtuals("_ZTV11CTaskSimple", g_vtable_CTaskSimple, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
-        patch_vtable_pure_virtuals("_ZTV12CTaskComplex", g_vtable_CTaskComplex, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
-        patch_vtable_pure_virtuals("_ZTV6CEvent", g_vtable_CEvent, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV5CTask", g_vtable_CTask, 11, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV11CTaskSimple", g_vtable_CTaskSimple, 13, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV12CTaskComplex", g_vtable_CTaskComplex, 15, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        patch_vtable_pure_virtuals("_ZTV6CEvent", g_vtable_CEvent, 19, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
     } else {
         LOGW("⚠️ __cxa_pure_virtual symbol not found! Vtable safety patch could not be applied.");
     }
