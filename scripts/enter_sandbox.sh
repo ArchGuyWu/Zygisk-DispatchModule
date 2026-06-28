@@ -26,5 +26,5 @@ echo "🚀 正在进入隔离分析沙箱..."
 echo "💡 提示：输入 'exit' 可随时退出沙箱返回 Termux。"
 echo ""
 
-# 执行挂载并登录
-proot-distro login "$TARGET_DISTRO" --bind "$WORKSPACE_DIR:/root/workspace" "$@"
+# 执行挂载并登录（启用 --isolated 隔离模式，仅挂载当前工作区）
+proot-distro login "$TARGET_DISTRO" --isolated --bind "$WORKSPACE_DIR:/root/workspace" "$@"
