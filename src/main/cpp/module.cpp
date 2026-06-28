@@ -6319,8 +6319,8 @@ static fn_TT_RunIns_t g_orig_tt_runins = nullptr;
 
 static int proxy_tt_runins(void* exc) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!exc || !is_pointer_readable(exc)) {
-        LOGW("⚠️ [TT_RunIns Hook] exc is null/unreadable! Preventing crash.");
+    if (!exc) {
+        LOGW("⚠️ [TT_RunIns Hook] exc is null! Preventing crash.");
         return 0x14; // FT_Err_Invalid_Argument
     }
     return SHADOWHOOK_CALL_PREV(proxy_tt_runins, exc);
