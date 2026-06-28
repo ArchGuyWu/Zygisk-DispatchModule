@@ -101,53 +101,27 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 27-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, water-related, footstep landing, task destruction, asset downloading, Unicode character formatting, font rendering, and text shaping tasks:
+### 3. The 19-Hook System
+Our solution intercepts all core lifecycles and virtual tables related to wanted levels, crime reporting, emergency vehicle spawning, task management, footstep rendering, buoyancy physics, and Unicode formatting:
 
-1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
-    *   `CTaskComplexPartnerDeal::GetPartnerSequence`
-    *   `CTaskComplexPartnerGreet::GetPartnerSequence`
-    *   `CTaskComplexPartnerShove::GetPartnerSequence`
-    *   `CTaskComplexPartnerChat::GetPartnerSequence`
-2.  **Subtask Initialization Safeguards** (`CreateFirstSubTask` - 3 Hooks):
-    *   `CTaskComplexPartner::CreateFirstSubTask` (Base class hook)
-    *   `CTaskComplexPartnerDeal::CreateFirstSubTask` (Overridden method hook)
-    *   `CTaskComplexPartnerGreet::CreateFirstSubTask` (Overridden method hook)
-3.  **Active Task Controller Hook** (`ControlSubTask` - 1 Hook):
-    *   `CTaskComplexPartner::ControlSubTask` (Base hook covering all derived `Deal`, `Greet`, `Shove`, and `Chat` tasks)
-4.  **Pathfinding & Navigation Safeties** (`CreateSubTask` - 1 Hook):
-    *   `CTaskComplexGoToPointAnyMeans::CreateSubTask` (Defensively filters and purges uninitialized or stale Ped/Vehicle references)
-5.  **Gang Hassle Target Security Hook** (`CalcTargetOffset` - 1 Hook):
-    *   `CTaskGangHassleVehicle::CalcTargetOffset` (Intercepts target coordinate offsets. If the target vehicle gets deleted or out of loading distance, the hook detects this before the native dereference at offset `0x498`, skipping the calculation gracefully and preventing SIGSEGV crashes)
-6.  **Hold-Entity Bone Target Security Hook** (`SetPedPosition` - 1 Hook):
-    *   `CTaskSimpleHoldEntity::SetPedPosition` (Intercepts holding position updates. If the ped's RW clump pointer at offset `0x648` is unreadable or null, the hook skips the offset calculation to avoid null pointer dereferences, allowing smooth scene transitions)
-7.  **Gang Follower Target Security Hook** (`ControlSubTask` - 1 Hook):
-    *   `CTaskComplexGangFollower::ControlSubTask` (Intercepts follower subtask updates. If the follower's leader pointer at offset `0x18` is null or invalid, the hook returns `nullptr` to prevent native null pointer dereference at offset `0x498`, ensuring flawless gameplay stability during gang recruitments/activities)
-8.  **Transition Footsteps Null Pointer Hook** (`PlayFootSteps` - 1 Hook):
-    *   `CPed::PlayFootSteps` (During transitions, teleports, or vehicle entries/exits, the ped's RW clump/model pointer `m_pRwObject` at offset `0x20` can be temporarily detached or not yet loaded. The native engine blindly dereferences `m_pRwObject` offset `0x44` even when it is null, causing SIGSEGV crashes. This hook detects if `m_pRwObject` is null and safely bypasses the footstep logic, completely resolving transition-related footstep crashes)
-9.  **Buoyancy Processing Task Protection** (`ProcessBuoyancy` - 1 Hook):
-    *   `CPed::ProcessBuoyancy` (When processing water buoyancy, the engine iterates over the task slots in `CTaskManager`. If a slot contains a dangling or zeroed task pointer, the engine blindly dereferences its virtual table to call `GetTaskType`, causing a null pointer dereference crash at offset `0x18`. This hook dynamically scans and purges any unsafe or zeroed task pointers in the task manager before the buoyancy logic executes, completely eliminating this crash vector)
-10. **Post-PreRender Intelligence Task Protection** (`ProcessAfterPreRender` - 1 Hook):
-    *   `CPedIntelligence::ProcessAfterPreRender` (When the game updates pedestrian intelligence post-rendering, it queries task slots in the primary and secondary task managers. If a task has been destructed but its pointer remains in the slot, its vtable pointer points to the base class `CTask` which has pure virtual slots. Calling `IsSimple` on it triggers a `__cxa_pure_virtual` call and aborts. This hook dynamically scans and purges any destructed or unsafe task pointers in `CPedIntelligence` before the intelligence logic executes, preventing pure virtual call crashes)
-11. **Game Save Decision Maker Safety Hook** (`Save` - 1 Hook):
-    *   `CScriptDecisionMakerModifications::Save` (During game saving or autosaving, the engine saves modifications to script decision makers by querying two global `CScriptDecisionMaker` objects. If either object was released or uninitialized (leaving its vtable pointer as `nullptr`), the engine dereferences the null vtable at offset `0x18` or `0x38`, causing a SIGSEGV crash. This hook dynamically detects and purges these invalid global pointers to `nullptr`, allowing the engine's built-in null checks to safely skip them and prevent crashes)
-12. **In-Water Task Initialization Protection** (`CreateFirstSubTask` - 1 Hook):
-    *   `CTaskComplexInWater::CreateFirstSubTask` (When a pedestrian enters water, the engine initializes a complex water task. If the water physics manager or its internal water array has been deallocated or remains uninitialized, the engine blindly dereferences the null array pointer, causing a SIGSEGV crash. This hook dynamically intercepts the task creation, verifies the water manager and its internal array, and safely returns `nullptr` if they are uninitialized, preventing crashes during water-related transitions)
-13. **Footstep Landing Effect System Protection** (`DoFootLanded` - 1 Hook):
-    *   `CPed::DoFootLanded` (When a pedestrian's foot lands, the engine attempts to trigger a footprint particle effect by retrieving the ped's particle system `FxSystem_c` pointer at offset `0x90`. If the particle system is uninitialized or has been deallocated (leaving its member at offset `0x18` as null), calling `AddParticle` on it dereferences `nullptr + 0x18`, causing a SIGSEGV crash. This hook dynamically intercepts the footstep landing event, verifies the particle system's validity, and safely skips particle generation if the system is uninitialized, preventing footstep-related particle crashes)
-14. **Mid-Process Task Destruction Protection** (`~CTask` - 1 Hook):
-    *   `CTask::~CTask` (During pedestrian intelligence updates in `ProcessAfterPreRender`, some subtasks can be dynamically destructed by other active tasks. If their pointers remain in the task manager slots, the engine will attempt to access them later in the same frame, causing a SIGSEGV crash due to a null or garbage virtual table. This hook dynamically intercepts task destruction, checks if the task belongs to the currently executing `CPedIntelligence` context, and immediately clears its slot to `nullptr`, completely preventing mid-frame dangling pointer crashes)
-15. **Google Play Core Asset Delivery Safeguard** (`AssetPackManager_requestDownload` - 1 Hook):
-    *   `AssetPackManager_requestDownload` (On custom ROMs or devices without Google Play Services, the JNI initialization of the Play Core `AssetPackManager` returns an uninitialized or corrupt shared pointer. When the game attempts to request asset pack downloads, the destructor of this corrupt shared pointer dereferences `nullptr + 0x18`, causing a SIGSEGV crash. This hook intercepts the JNI call, safely returns `-101` (`ASSET_PACK_API_NOT_AVAILABLE`) to notify the game that Google Play Asset Delivery is unavailable, allowing it to fall back to local assets without crashing)
-16. **ICU Character & Date Processing Safeguards** (6 Hooks):
-    *   `icu_64::TimeZone::findID` (Prevents crashes when searching for timezone IDs with a null or unreadable `UnicodeString` reference)
-    *   `icu_64::TimeZone::getDisplayName` (Prevents crashes when localizing time zones with a null or unreadable `TimeZone` instance)
-    *   `icu_64::UnicodeSetStringSpan::span` (Prevents crashes when parsing Unicode character spans with a null or unreadable instance/string pointer)
-    *   `icu_64::MessageFormat::findKeyword` (Prevents crashes when formatting messages with a null or unreadable string/keyword list)
-    *   `icu_64::CollationIterator::previousCodePoint` (Prevents crashes during string collation/sorting iteration if the iterator is null)
-    *   `u_strlen_64` (Prevents crashes when ICU's Unicode string length function receives a dangling or wild pointer from corrupted locale/resource data by validating the pointer before access)
-17. **FreeType Font Interpreter Protection** (`TT_RunIns` - 1 Hook):
-    *   `TT_RunIns` (Prevents crashes inside the TrueType bytecode interpreter when rendering custom or corrupted fonts by verifying the execution context pointer)
+1.  **Gameplay Features & Custom Dispatching** (12 Hooks):
+    *   `report_crime` (Intercepts and manages wanted level crimes)
+    *   `register_kill` (Tracks kills for custom wanted logic)
+    *   `set_wanted` (Controls the wanted level system)
+    *   `generate_damage_event` / `event_damage_ctor_c1` / `event_damage_ctor_c2` (Handles damage events for police reactions)
+    *   `set_current_weapon` (Manages weapons for custom dispatch units)
+    *   `the_scripts_process` (Ticks the main gameplay loop for trueDispatch)
+    *   `add_police_occupants` (Binds occupants to spawned cop cars)
+    *   `tell_occupants_leave_car` (Triggers custom vehicle exits)
+    *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (Draw distance scaling workarounds for emergency vehicles in mobile versions)
+2.  **Defensive & Sanitizing Safeguards** (7 Hooks):
+    *   `u_strlen_64` (Prevents startup crashes in ICU's Unicode string length function by validating wild pointers)
+    *   `CPed::ProcessBuoyancy` (Prevents crashes during buoyancy processing when task slots contain zeroed or invalid task pointers)
+    *   `CPed::PlayFootSteps` (Prevents crashes during transitions when the ped's RW clump/model is temporarily detached)
+    *   `CTaskManager::ManageTasks` (Sanitizes the task chain inside CTaskManager to prevent null/invalid virtual table dereferences)
+    *   `CAttractorScanner::ScanForAttractorsInRange` (Sanitizes the pedestrian intelligence task slots to prevent crashes when scanning attractors)
+    *   `CTaskComplexGangFollower::ControlSubTask` (Prevents crashes in gang follower tasks when the leader pointer is invalid/unreadable)
+    *   `CTaskSimpleHoldEntity::SetPedPosition` (Prevents crashes in hold-entity tasks when the ped's clump is unreadable)
 
 ---
 ## 🛠️ Tech Stack & Requirements

@@ -101,53 +101,27 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 27-Hook 协同防御网 (27-Hook Defense System)
-模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑、存档机制、涉水行为、脚步落地特效、任务中途析构、谷歌分包下载、Unicode字符本地化以及FreeType字体渲染相关的核心生命周期方法，建立起立体的全方位防御网：
+### 3. 19-Hook 核心网络 (19-Hook System)
+模组挂钩了官方引擎内所有与通缉星级、犯罪上报、应急载具生成、任务管理器、脚步声更新、涉水浮力物理以及 Unicode 字符串解析相关的生命周期与虚表，建立起精简高效的协同网络：
 
-1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
-    *   `CTaskComplexPartnerDeal::GetPartnerSequence`
-    *   `CTaskComplexPartnerGreet::GetPartnerSequence`
-    *   `CTaskComplexPartnerShove::GetPartnerSequence`
-    *   `CTaskComplexPartnerChat::GetPartnerSequence`
-2.  **子任务创建生命周期** (`CreateFirstSubTask` - 共 3 个 Hook)：
-    *   `CTaskComplexPartner::CreateFirstSubTask` (基类 Hook)
-    *   `CTaskComplexPartnerDeal::CreateFirstSubTask` (重写 Hook)
-    *   `CTaskComplexPartnerGreet::CreateFirstSubTask` (重写 Hook)
-3.  **伴随任务驱动控制** (`ControlSubTask` - 1 个 Hook)：
-    *   `CTaskComplexPartner::ControlSubTask` (作为基类挂钩，统一保护 `Deal` / `Greet` / `Shove` / `Chat` 所有派生子类)
-4.  **智能寻路安全重构** (`CreateSubTask` - 1 个 Hook)：
-    *   `CTaskComplexGoToPointAnyMeans::CreateSubTask` (防御性地对内部未初始化或已失效的 Ped/Vehicle 指针进行净化过滤)
-5.  **帮派载具袭击计算拦截** (`CalcTargetOffset` - 1 个 Hook)：
-    *   `CTaskGangHassleVehicle::CalcTargetOffset` (主动拦截帮派载具骚扰任务中的目标偏移计算。若目标载具已被销毁或由于超出加载视距而置空，在进入原生汇编的解引用偏移 `0x498` 之前触发安全判定，完美跳过无效的矩阵/坐标计算并重设回退，阻止 SIGSEGV 闪退)
-6.  **手持物体骨骼绑定拦截** (`SetPedPosition` - 1 个 Hook)：
-    *   `CTaskSimpleHoldEntity::SetPedPosition` (主动拦截手持物体位置计算。若行人的动画骨骼 `RwClump` 指针（`ped + 0x648` 处）完全不可读或为空，直接安全跳过计算，完美解决原版在此处的未对齐/空指针引用闪退)
-7.  **帮派跟从者驱动安全拦截** (`ControlSubTask` - 1 个 Hook)：
-    *   `CTaskComplexGangFollower::ControlSubTask` (主动拦截跟从者子任务更新驱动。若跟从者关联的 leader/目标 ped 指针（位于 `self + 0x18` 处）为空或不可读，直接返回 `nullptr` 防止其深入执行并在原生汇编偏移 `0x498` 处触发空指针解引用，确保帮派招募与追随行为 100% 绝对稳定)
-8.  **转场脚步声空指针拦截** (`PlayFootSteps` - 1 个 Hook)：
-    *   `CPed::PlayFootSteps` (在转场、传送或载具上下车期间，如果玩家或 NPC 的骨骼模型 `m_pRwObject` 指针（`ped + 0x20` 处）被临时解绑或尚未加载完毕，原生引擎会裸解引用该指针产生的 `nullptr + 0x44` 导致闪退。本 Hook 在检测到 `m_pRwObject` 为空时，安全拦截并直接返回，彻底根治转场时偶发的脚步声解引用闪退)
-9.  **浮力计算任务槽安全拦截** (`ProcessBuoyancy` - 1 个 Hook)：
-    *   `CPed::ProcessBuoyancy` (在游戏引擎高频处理行人的水中浮力物理时，会遍历 `CTaskManager` 中的所有任务槽。若某个任务槽内由于引擎释放残留了被填零或野指针的无效任务指针，原生引擎会直接通过该指针解引用其虚表并调用 `GetTaskType`，从而在偏移 `0x18` 处触发空指针解引用闪退。本 Hook 在浮力逻辑执行前，动态扫描并强制将任务管理器中不安全或已填零的指针净化为 `nullptr`，彻底斩断此闪退路径)
-10. **智能后渲染任务安全拦截** (`ProcessAfterPreRender` - 1 个 Hook)：
-    *   `CPedIntelligence::ProcessAfterPreRender` (当游戏引擎在渲染后更新行人的智能决策时，会读取主任务及副任务管理器中的特定任务槽。如果某个任务已执行析构（Destructed），但指针仍残留于任务槽中，其虚表指针会指向基类 `CTask` 的虚表。当引擎调用其 `IsSimple` 时，会因调用纯虚函数而触发 `__cxa_pure_virtual` 闪退。本 Hook 在后渲染智能处理前，动态扫描并清空 `CPedIntelligence` 任务管理器中已析构或无效的悬挂指针，彻底杜绝纯虚函数调用闪退)
-11. **存档决策修改器安全拦截** (`Save` - 1 个 Hook)：
-    *   `CScriptDecisionMakerModifications::Save` (在游戏手动存档或自动存档时，引擎会保存脚本决策修改器的数据，期间需要访问两个全局的决策制造者对象 `CScriptDecisionMaker`。如果这两个全局对象由于场景切换被销毁或未完成初始化（其虚表指针为 `nullptr`），引擎在执行保存时会裸解引用虚表偏移 `0x18` 或 `0x38` 并触发 SIGSEGV 闪退。本 Hook 在存档逻辑执行前，动态检测并强行将无效的全局对象指针净化为 `nullptr`，安全引导引擎走入原装的空指针跳过分支，完美解决存档与自动存档时的偶发闪退)
-12. **涉水任务初始化安全拦截** (`CreateFirstSubTask` - 1 个 Hook)：
-    *   `CTaskComplexInWater::CreateFirstSubTask` (当行人进入水中时，引擎会为其分配并初始化涉水复杂任务。若当前游戏的水系统管理器或其内部的物理高度/深度数据数组由于场景重载被销毁或尚未初始化，引擎在计算水域交互时会裸解引用空数组指针，导致 SIGSEGV 闪退。本 Hook 在涉水任务创建时，动态检测水系统管理器及数组状态，若发现未就绪则强制返回 `nullptr` 阻止任务创建，从而由官方任务管理器安全降级，彻底解决水中偶发的解引用闪退)
-13. **脚步落地特效安全拦截** (`DoFootLanded` - 1 个 Hook)：
-    *   `CPed::DoFootLanded` (当行人脚步落地时，引擎会读取行人对象偏移 `0x90` 处的粒子特效系统 `FxSystem_c` 指针并调用 `AddParticle` 生成脚印特效。若该特效系统未初始化或已被销毁（其偏移 `0x18` 处的数组成员为空），调用时会裸解引用 `nullptr + 0x18` 并触发 SIGSEGV 闪退。本 Hook 在脚步落地时，动态检测特效系统及数组成员状态，若未就绪则安全跳过粒子生成，彻底根治高频运动中偶发的脚印特效解引用闪退)
-14. **任务中途析构安全清理** (`~CTask` - 1 个 Hook)：
-    *   `CTask::~CTask` (在行人智能决策 `ProcessAfterPreRender` 执行期间，某些子任务可能会被其他活动任务动态销毁（析构）。如果它们的指针仍残留于任务槽中，引擎在同帧后续逻辑中将继续尝试调用它们，从而因虚表被清空或内存释放而在偏移 `0x28` 处触发 SIGSEGV 闪退。本 Hook 动态拦截任务的析构事件，实时检测其是否属于当前正在更新的 `CPedIntelligence` 上下文，并在析构瞬间强行将对应的任务槽净化为 `nullptr`，彻底解决中途析构产生的野指针闪退)
-15. **谷歌分包下载服务安全防线** (`AssetPackManager_requestDownload` - 1 个 Hook)：
-    *   `AssetPackManager_requestDownload` (在定制 ROM 或没有谷歌服务（Google Play Services）的系统环境下，Play Core 的 `AssetPackManager` 实例在 JNI 初始化时会产生一个未完全初始化或已损坏的智能指针。当游戏尝试下载分包资源时，该损坏的智能指针在析构时会裸解引用其控制块虚表 `nullptr + 0x18` 触发 SIGSEGV 闪退。本 Hook 主动拦截该 JNI 下载请求，直接安全返回 `-101`（`ASSET_PACK_API_NOT_AVAILABLE`）通知游戏谷歌分包不可用，使其安全降级至本地资源读取，完美解决无谷歌服务机型启动或加载时的闪退)
-16. **ICU 字符与日期格式解析安全防护** (共 6 个 Hook)：
-    *   `icu_64::TimeZone::findID` (防止在查找时区 ID 时，由于传入 the `UnicodeString` 引用为空或非法而导致空指针闪退)
-    *   `icu_64::TimeZone::getDisplayName` (防止在本地化时区文本时，由于 `TimeZone` 实例为空或非法而导致空指针闪退)
-    *   `icu_64::UnicodeSetStringSpan::span` (防止在解析 Unicode 字符跨度时，由于实例指针或字符串指针为空而导致空指针闪退)
-    *   `icu_64::MessageFormat::findKeyword` (防止在格式化本地化文本时，由于关键词列表或字符串指针为空而导致空指针闪退)
-    *   `icu_64::CollationIterator::previousCodePoint` (防止在文本排序迭代过程中，由于迭代器实例为空而导致空指针闪退)
-    *   `u_strlen_64` (防止 ICU 的 Unicode 字符串长度计算函数在接收到来自损坏的本地化/资源数据的野指针或悬空指针时发生 SIGSEGV 闪退，通过在访问内存前校验指针有效性来安全返回 0)
-17. **FreeType 字体渲染解释器保护** (`TT_RunIns` - 1 个 Hook)：
-    *   `TT_RunIns` (防止在解析和渲染第三方或损坏的 TrueType 字体时，由于执行上下文指针非法而导致 FreeType 虚拟机崩溃)
+1.  **玩法功能与自定义警力调度** (共 12 个 Hook)：
+    *   `report_crime` (拦截并接管原版的犯罪上报逻辑)
+    *   `register_kill` (追踪击杀事件以实现自定义通缉判定)
+    *   `set_wanted` (接管通缉星级系统)
+    *   `generate_damage_event` / `event_damage_ctor_c1` / `event_damage_ctor_c2` (处理伤害事件以触发警员自卫/反击)
+    *   `set_current_weapon` (管理分派警员的武器配置)
+    *   `the_scripts_process` (驱动 trueDispatch 玩法系统的 tick 主循环)
+    *   `add_police_occupants` (在警车刷出时绑定乘员)
+    *   `tell_occupants_leave_car` (控制警车乘员的下车战术)
+    *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (移动端特有的救护车与消防车加载视距缩放 Workaround)
+2.  **防御与净化安全防线** (共 7 个 Hook)：
+    *   `u_strlen_64` (防止 ICU 字符串长度计算函数在接收到野指针时发生 SIGSEGV 闪退，在访问前进行指针有效性过滤)
+    *   `CPed::ProcessBuoyancy` (防止在行人计算涉水浮力时，由于任务管理器中残留零填充或无效的任务指针而导致解引用虚表闪退)
+    *   `CPed::PlayFootSteps` (防止转场或传送期间由于行人的 `RwClump` 骨骼暂时脱离导致播放脚步声时解引用空指针闪退)
+    *   `CTaskManager::ManageTasks` (在任务管理器处理任务交替时，动态净化任务链中的野指针与无效虚表，防止纯虚函数调用崩溃)
+    *   `CAttractorScanner::ScanForAttractorsInRange` (在行人扫描周期性吸引物时，清理决策管理器中的悬挂析构任务指针)
+    *   `CTaskComplexGangFollower::ControlSubTask` (防止帮派招募与追随任务中，由于 Leader 指针为空或不可读而解引用闪退)
+    *   `CTaskSimpleHoldEntity::SetPedPosition` (防止持物任务在更新位置时，因行人的 RwClump 骨骼指针未就绪而解引用闪退)
 
 ---
 
