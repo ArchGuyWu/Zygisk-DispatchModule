@@ -6979,9 +6979,6 @@ static void hook_thread_func() {
     if (pure_virtual_target) {
         g_pure_virtual_target = pure_virtual_target;
         LOGI("Found __cxa_pure_virtual at %p, scanning and patching base vtables...", pure_virtual_target);
-    if (pure_virtual_target) {
-        g_pure_virtual_target = pure_virtual_target;
-        LOGI("Found __cxa_pure_virtual at %p, scanning and patching base vtables...", pure_virtual_target);
         patch_vtable_pure_virtuals("_ZTV5CTask", g_vtable_CTask, 11, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
         patch_vtable_pure_virtuals("_ZTV11CTaskSimple", g_vtable_CTaskSimple, 13, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
         patch_vtable_pure_virtuals("_ZTV12CTaskComplex", g_vtable_CTaskComplex, 15, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
