@@ -6113,6 +6113,26 @@ static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, in
 }
 
 // =====================================================================
+// 🛡️ [CPed::PlayFootSteps Hook]：防止转场期间玩家 Clump 临时脱离导致空指针解引用闪退
+// =====================================================================
+static void* g_stub_play_footsteps = nullptr;
+typedef void (*fn_PlayFootSteps_t)(void* self);
+static fn_PlayFootSteps_t g_orig_play_footsteps = nullptr;
+
+static void proxy_play_footsteps(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return;
+
+    // 检查 m_pRwObject (offset 0x20) 是否为空，若为空则直接跳过，防止底层 PlayFootSteps 裸解引用 0x44 闪退
+    void** rw_obj_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
+    if (!is_pointer_readable(rw_obj_slot) || *rw_obj_slot == nullptr) {
+        return;
+    }
+
+    SHADOWHOOK_CALL_PREV(proxy_play_footsteps, self);
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -6479,6 +6499,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_turntofaceentity_controlsubtask));
     if (g_stub_turntofaceentity_controlsubtask) LOGI("✅ Hooked CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPed::PlayFootSteps (防止转场期间玩家 Clump 临时脱离导致空指针解引用闪退)
+    g_stub_play_footsteps = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN4CPed13PlayFootStepsEv",
+        reinterpret_cast<void*>(proxy_play_footsteps),
+        reinterpret_cast<void**>(&g_orig_play_footsteps));
+    if (g_stub_play_footsteps) LOGI("✅ Hooked CPed::PlayFootSteps");
+    else LOGE("❌ Failed to hook CPed::PlayFootSteps: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs

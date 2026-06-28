@@ -101,8 +101,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 12-Hook Defense System
-Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, and gang hassle tasks:
+### 3. The 13-Hook Defense System
+Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, and footstep tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
     *   `CTaskComplexPartnerDeal::GetPartnerSequence`
@@ -123,6 +123,8 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CTaskSimpleHoldEntity::SetPedPosition` (Intercepts holding position updates. If the ped's RW clump pointer at offset `0x648` is unreadable or null, the hook skips the offset calculation to avoid null pointer dereferences, allowing smooth scene transitions)
 7.  **Gang Follower Target Security Hook** (`ControlSubTask` - 1 Hook):
     *   `CTaskComplexGangFollower::ControlSubTask` (Intercepts follower subtask updates. If the follower's leader pointer at offset `0x18` is null or invalid, the hook returns `nullptr` to prevent native null pointer dereference at offset `0x498`, ensuring flawless gameplay stability during gang recruitments/activities)
+8.  **Transition Footsteps Null Pointer Hook** (`PlayFootSteps` - 1 Hook):
+    *   `CPed::PlayFootSteps` (During transitions, teleports, or vehicle entries/exits, the ped's RW clump/model pointer `m_pRwObject` at offset `0x20` can be temporarily detached or not yet loaded. The native engine blindly dereferences `m_pRwObject` offset `0x44` even when it is null, causing SIGSEGV crashes. This hook detects if `m_pRwObject` is null and safely bypasses the footstep logic, completely resolving transition-related footstep crashes)
 
 ---
 ## 🛠️ Tech Stack & Requirements
