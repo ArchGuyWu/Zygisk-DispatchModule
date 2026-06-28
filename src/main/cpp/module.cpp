@@ -1961,7 +1961,7 @@ static void command_vehicle_ai(void* vehicle, const CVector& target_loc, float d
     // 当距离目标非常近（例如 < 32 米）时：
     // 我们将驾驶目的地重置为车辆当前的 3D 坐标（原地诱骗急刹），防止其开到人行道或越野冲撞，
     // 并且我们调用 TellOccupantsToLeaveCar 让警员战术提前离车包抄，实现极其优雅、平稳的减速刹车
-    if (dist_to_target < 32.0f) {
+    if (dist_to_target < 16.0f) {
         CVector veh_pos = get_entity_pos(vehicle);
         g_GetCarToGoToCoors(vehicle, &veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
         if (g_TellOccupantsToLeaveCar) {
@@ -2735,8 +2735,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                             int64_t elapsed = now_ms() - first_seen;
 
                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
-                            float exit_dist = is_bike ? 18.0f : 32.0f;
-                            // 复合下车判定：距离接近 (摩托车18米/轿车32米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或彻底超时 (行驶超12秒)
+                            float exit_dist = is_bike ? 12.0f : 16.0f;
+                            // 复合下车判定：距离接近 (摩托车12米/轿车16米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或彻底超时 (行驶超12秒)
                             bool should_exit = (v_dist < exit_dist) || 
                                                (elapsed > 6000 && v_dist < 60.0f) || 
                                                (elapsed > 12000);
@@ -3020,13 +3020,13 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                 float oz = other_pos.z - current_pos.z;
                                                 float cop_dist = sqrtf(ox * ox + oy * oy + oz * oz);
 
-                                                if (cop_dist < 8.5f) {
+                                                if (cop_dist < 10.0f) {
                                                     float dot_p = ox * dir_x + oy * dir_y + oz * dir_z;
-                                                    if (dot_p > 0.0f && dot_p < 8.5f) {
+                                                    if (dot_p > 0.0f && dot_p < 10.0f) {
                                                         float lat_dist_sq = (cop_dist * cop_dist) - (dot_p * dot_p);
                                                         if (lat_dist_sq < 4.84f) { // 2.2米内横向偏离（直接阻挡在行进轨迹上）
                                                             ped_blocked = true;
-                                                            if ((speed < 1.2f || dist_moved < 1.2f) && cop_dist < 6.5f) {
+                                                            if ((speed < 1.2f || dist_moved < 1.2f) && cop_dist < 8.0f) {
                                                                 float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
                                                                 float lx = -dir_y * side_sign;
                                                                 float ly = dir_x * side_sign;
@@ -3043,17 +3043,6 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                     stabilize_motorcycle(veh);
                                                                 }LOGI("[dispatchCenter - ACC Bypass Ped] Vehicle %p blocked by TARGET CRIMINAL %p (dist=%.1f, speed=%.2f). Detoured (side=%.1f)", 
                                                                      veh, target_criminal, cop_dist, speed, side_sign);
-                                                            } else {
-                                                                float push_back_dist = 8.5f - cop_dist;
-                                                                if (push_back_dist > 2.0f) push_back_dist = 2.0f;
-                                                                CVector decel_pos = {
-                                                                    current_pos.x - dir_x * push_back_dist,
-                                                                    current_pos.y - dir_y * push_back_dist,
-                                                                    current_pos.z
-                                                                };
-                                                                set_entity_pos(veh, decel_pos);
-                                                                LOGI("[dispatchCenter - ACC Keep Ped] Fleet distance keep for %p behind TARGET CRIMINAL %p (dist=%.1f). Decelerated by %.2fm.", 
-                                                                     veh, target_criminal, cop_dist, push_back_dist);
                                                             }
                                                         }
                                                     }
@@ -3078,13 +3067,13 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                     float oz = other_pos.z - current_pos.z;
                                                                     float cop_dist = sqrtf(ox * ox + oy * oy + oz * oz);
 
-                                                                    if (cop_dist < 8.5f) {
+                                                                    if (cop_dist < 10.0f) {
                                                                         float dot_p = ox * dir_x + oy * dir_y + oz * dir_z;
-                                                                        if (dot_p > 0.0f && dot_p < 8.5f) {
+                                                                        if (dot_p > 0.0f && dot_p < 10.0f) {
                                                                             float lat_dist_sq = (cop_dist * cop_dist) - (dot_p * dot_p);
                                                                             if (lat_dist_sq < 4.84f) { // Under 2.2m lateral deviation (directly in path)
                                                                                 // Dynamic smart bypass detour nudge if extremely slow or stationary (stuck behind civilians)
-                                                                                if ((speed < 1.2f || dist_moved < 1.2f) && cop_dist < 6.5f) {
+                                                                                if ((speed < 1.2f || dist_moved < 1.2f) && cop_dist < 8.0f) {
                                                                                     float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
                                                                                     float lx = -dir_y * side_sign;
                                                                                     float ly = dir_x * side_sign;
@@ -3103,20 +3092,6 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                                     }
                                                                                     LOGI("[dispatchCenter - ACC Bypass] Vehicle %p blocked by %p (dist=%.1f, speed=%.2f). Smooth detour nudge (side=%.1f) by 1.8m side, 0.8m forward.", 
                                                                                          veh, other_veh, cop_dist, speed, side_sign);
-                                                                                } else {
-                                                                                    // Default: decelerate/keep distance backward
-                                                                                    float push_back_dist = 8.5f - cop_dist;
-                                                                                    if (push_back_dist > 2.0f) push_back_dist = 2.0f;
-                                                                                    CVector decel_pos = {
-                                                                                        current_pos.x - dir_x * push_back_dist,
-                                                                                        current_pos.y - dir_y * push_back_dist,
-                                                                                        current_pos.z
-                                                                                    };
-                                                                                    
-                                                                                    set_entity_pos(veh, decel_pos);
-                                                                                    
-                                                                                    LOGI("[dispatchCenter - ACC Keep] Fleet distance keep for %p behind %p (dist=%.1f). Decelerated backward by %.2fm.", 
-                                                                                         veh, other_veh, cop_dist, push_back_dist);
                                                                                 }
                                                                                 break; // Handle one roadblock vehicle per tick to avoid jitter
                                                                             }
@@ -4326,13 +4301,13 @@ static void emergency_vehicles_tick() {
                                                             float oz = other_pos.z - current_pos.z;
                                                             float dist_v = sqrtf(ox * ox + oy * oy + oz * oz);
 
-                                                            if (dist_v < 8.5f) {
+                                                            if (dist_v < 10.0f) {
                                                                 float dot_p = ox * dir_x + oy * dir_y + oz * dir_z;
-                                                                if (dot_p > 0.0f && dot_p < 8.5f) {
+                                                                if (dot_p > 0.0f && dot_p < 10.0f) {
                                                                     float lat_dist_sq = (dist_v * dist_v) - (dot_p * dot_p);
                                                                     if (lat_dist_sq < 4.84f) { // 横向偏离小于 2.2米
                                                                         car_blocked = true;
-                                                                        if ((speed < 1.2f || dist_moved < 1.2f) && dist_v < 6.5f) {
+                                                                        if ((speed < 1.2f || dist_moved < 1.2f) && dist_v < 8.0f) {
                                                                             // 开启智能偏斜避让
                                                                             float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
                                                                             float lx = -dir_y * side_sign;
@@ -4346,18 +4321,6 @@ static void emergency_vehicles_tick() {
                                                                             set_entity_pos(veh, detour_pos);
                                                                             
                                                                             LOGI("[Emergency Escaper - ACC Bypass] Detoured blocked vehicle %p", veh);
-                                                                        } else {
-                                                                            // 减速退避保持距离
-                                                                            float push_back_dist = 8.5f - dist_v;
-                                                                            if (push_back_dist > 2.0f) push_back_dist = 2.0f;
-                                                                            CVector decel_pos = {
-                                                                                current_pos.x - dir_x * push_back_dist,
-                                                                                current_pos.y - dir_y * push_back_dist,
-                                                                                current_pos.z
-                                                                            };
-                                                                            
-                                                                            set_entity_pos(veh, decel_pos);
-                                                                            
                                                                         }
                                                                         break; // 每秒处理一个避让源
                                                                     }
@@ -4416,7 +4379,7 @@ static void emergency_vehicles_tick() {
                                                                 
                                                                 set_entity_pos(veh, detour_pos);
                                                                 
-                                                                LOGI("🔥 [Emergency Escaper - Ambulance Fire Detour] Detoured around fire source.");
+                                                                LOGI("[Emergency Escaper - Ambulance Fire Detour] Detoured around fire source.");
                                                             }
                                                         }
                                                     }
