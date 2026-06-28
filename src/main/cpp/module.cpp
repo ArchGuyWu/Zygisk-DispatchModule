@@ -5490,7 +5490,7 @@ static inline void sanitize_partner_task_pointers(void* task) {
     if (is_pointer_readable(sub_task_slot)) {
         void* sub_task = *sub_task_slot;
         if (sub_task) {
-            if (!is_pointer_readable(sub_task) || !*reinterpret_cast<void**>(sub_task)) {
+            if (!is_task_vtable_safe(sub_task)) {
                 *sub_task_slot = nullptr;
             }
         }
@@ -5501,7 +5501,7 @@ static inline void sanitize_partner_task_pointers(void* task) {
     if (is_pointer_readable(partner_task_slot)) {
         void* partner_task = *partner_task_slot;
         if (partner_task) {
-            if (!is_pointer_readable(partner_task) || !*reinterpret_cast<void**>(partner_task)) {
+            if (!is_task_vtable_safe(partner_task)) {
                 *partner_task_slot = nullptr;
             }
         }
