@@ -5781,31 +5781,60 @@ typedef void (*fn_ManageTasks_t)(void* self);
 static void* g_stub_manage_tasks = nullptr;
 static fn_ManageTasks_t g_orig_manage_tasks = nullptr;
 
+typedef bool (*fn_IsSimple_t)(void* self);
+
+static inline bool is_task_simple(void* task) {
+    if (!task || !is_pointer_readable(task)) return true;
+    void** vtable = *reinterpret_cast<void***>(task);
+    if (!is_pointer_readable(vtable)) return true;
+
+    // IsSimple is at offset 0x20 (index 4 in 64-bit vtable)
+    fn_IsSimple_t is_simple_fn = reinterpret_cast<fn_IsSimple_t>(vtable[4]);
+    if (is_pointer_readable(reinterpret_cast<void*>(is_simple_fn))) {
+        return is_simple_fn(task);
+    }
+    return true;
+}
+
 static void sanitize_task_chain(void* task, int depth = 0) {
     if (!task || depth > 10) return;
     if (!is_pointer_readable(task)) return;
 
     sanitize_task_pointers(task);
 
-    void** parent_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 8);
-    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 16);
+    // Only CTaskComplex (where is_task_simple returns false) has m_pSubTask at offset 16.
+    // Wiping offset 16 of a CTaskSimple will corrupt its subclass member variables.
+    if (!is_task_simple(task)) {
+        void** parent_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 8);
+        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 16);
 
-    if (is_pointer_readable(parent_slot)) {
-        void* parent = *parent_slot;
-        if (parent && !is_task_vtable_safe(parent)) {
-            LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe parent task %p inside task %p", parent, task);
-            *parent_slot = nullptr;
+        if (is_pointer_readable(parent_slot)) {
+            void* parent = *parent_slot;
+            if (parent && !is_task_vtable_safe(parent)) {
+                LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe parent task %p inside task %p", parent, task);
+                *parent_slot = nullptr;
+            }
         }
-    }
 
-    if (is_pointer_readable(sub_slot)) {
-        void* sub = *sub_slot;
-        if (sub) {
-            if (!is_task_vtable_safe(sub)) {
-                LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe subtask %p inside task %p", sub, task);
-                *sub_slot = nullptr;
-            } else {
-                sanitize_task_chain(sub, depth + 1);
+        if (is_pointer_readable(sub_slot)) {
+            void* sub = *sub_slot;
+            if (sub) {
+                if (!is_task_vtable_safe(sub)) {
+                    LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe subtask %p inside task %p", sub, task);
+                    *sub_slot = nullptr;
+                } else {
+                    sanitize_task_chain(sub, depth + 1);
+                }
+            }
+        }
+    } else {
+        // For CTaskSimple, we only sanitize its parent task pointer at offset 8.
+        void** parent_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 8);
+        if (is_pointer_readable(parent_slot)) {
+            void* parent = *parent_slot;
+            if (parent && !is_task_vtable_safe(parent)) {
+                LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe parent task %p inside simple task %p", parent, task);
+                *parent_slot = nullptr;
             }
         }
     }
