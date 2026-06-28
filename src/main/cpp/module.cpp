@@ -356,7 +356,16 @@ static fn_SetCurrentWeapon_t g_orig_SetCurrentWeapon = nullptr;
 // =====================================================================
 // 验证 Ped 指针在 Ped Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
 static bool is_ped_pointer_valid_safe(void* target_ped) {
-    if (!target_ped || !g_ms_pPedPool || !g_GetPoolPed) return false;
+    if (!target_ped) return false;
+
+    // 优先通过 FindPlayerPed 判定玩家 Ped 的有效性，防止转场/淡入淡出期间玩家 Ped 临时不在 Pool 中而被误判
+    if (g_FindPlayerPed) {
+        if (target_ped == g_FindPlayerPed(-1) || target_ped == g_FindPlayerPed(0)) {
+            return true;
+        }
+    }
+
+    if (!g_ms_pPedPool || !g_GetPoolPed) return false;
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
     if (!pool) return false;
 
@@ -5644,10 +5653,6 @@ static void* proxy_cfst_base(void* self, void* ped) {
         return nullptr;
     }
     sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [CreateFirstSubTaskBase] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
     return SHADOWHOOK_CALL_PREV(proxy_cfst_base, self, ped);
 }
 
@@ -5660,10 +5665,6 @@ static void* proxy_cfst_deal(void* self, void* ped) {
         return nullptr;
     }
     sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [CreateFirstSubTaskDeal] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
     return SHADOWHOOK_CALL_PREV(proxy_cfst_deal, self, ped);
 }
 
@@ -5676,10 +5677,6 @@ static void* proxy_cfst_greet(void* self, void* ped) {
         return nullptr;
     }
     sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [CreateFirstSubTaskGreet] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
     return SHADOWHOOK_CALL_PREV(proxy_cfst_greet, self, ped);
 }
 
@@ -5696,10 +5693,6 @@ static void* proxy_cst_base(void* self, void* ped) {
         return nullptr;
     }
     sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [ControlSubTaskBase] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
     return SHADOWHOOK_CALL_PREV(proxy_cst_base, self, ped);
 }
 
