@@ -101,7 +101,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 26-Hook 协同防御网 (26-Hook Defense System)
+### 3. 27-Hook 协同防御网 (27-Hook Defense System)
 模组挂钩了官方引擎内所有与伴随、寻路、手持物体、帮派跟从者、帮派袭击任务、转场脚步声、浮力处理、后渲染逻辑、存档机制、涉水行为、脚步落地特效、任务中途析构、谷歌分包下载、Unicode字符本地化以及FreeType字体渲染相关的核心生命周期方法，建立起立体的全方位防御网：
 
 1.  **伴随虚函数保护** (`GetPartnerSequence` - 共 4 个 Hook)：
@@ -147,6 +147,8 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `icu_64::CollationIterator::previousCodePoint` (防止在文本排序迭代过程中，由于迭代器实例为空而导致空指针闪退)
 17. **FreeType 字体渲染解释器保护** (`TT_RunIns` - 1 个 Hook)：
     *   `TT_RunIns` (防止在解析和渲染第三方或损坏的 TrueType 字体时，由于执行上下文指针非法而导致 FreeType 虚拟机崩溃)
+18. **HarfBuzz 字体排版引擎保护** (1 个 Hook)：
+    *   `OT::post::accelerator_t::get_glyph_from_name` (在某些特定系统配置或定制 ROM 上加载特定字体时，字体的 `post` 表（负责将字形索引映射为名称）可能包含非法的内部偏移。当 HarfBuzz 在进行字形名称二分查找时，会因为解引用野指针而触发 SIGSEGV 闪退。本 Hook 拦截字形名称查找逻辑并直接安全返回 `false`，强制引导 HarfBuzz 降级为标准的 Unicode `cmap` 表映射查找，在不影响字体渲染质量的前提下彻底根治启动时的排版闪退)
 
 ---
 

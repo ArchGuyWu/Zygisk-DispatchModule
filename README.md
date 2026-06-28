@@ -101,7 +101,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 26-Hook Defense System
+### 3. The 27-Hook Defense System
 Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, water-related, footstep landing, task destruction, asset downloading, Unicode character formatting, and font rendering tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
@@ -147,6 +147,8 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `icu_64::CollationIterator::previousCodePoint` (Prevents crashes during string collation/sorting iteration if the iterator is null)
 17. **FreeType Font Interpreter Protection** (`TT_RunIns` - 1 Hook):
     *   `TT_RunIns` (Prevents crashes inside the TrueType bytecode interpreter when rendering custom or corrupted fonts by verifying the execution context pointer)
+18. **HarfBuzz Font Rendering Protection** (1 Hook):
+    *   `OT::post::accelerator_t::get_glyph_from_name` (When loading certain fonts on specific system configurations or ROMs, the font's `post` table (which maps glyph indexes to names) can contain invalid offsets, causing a SIGSEGV crash during binary search in HarfBuzz. This hook intercepts the name-based glyph lookup and safely returns `false`, forcing HarfBuzz to fall back to the standard Unicode `cmap` table lookup, preventing startup font rendering crashes without affecting text rendering quality)
 
 ---
 ## 🛠️ Tech Stack & Requirements
