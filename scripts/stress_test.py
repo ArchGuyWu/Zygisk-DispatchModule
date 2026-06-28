@@ -11,10 +11,11 @@ import re
 # This script runs locally in Termux on the Android device.
 # It automates:
 # 1. Launching the game.
-# 2. Simulating high-frequency inputs (taps/swipes) to force AI task updates.
-# 3. Parsing logcat in real-time for our modular sanitizer events.
-# 4. Monitoring game process status.
-# 5. Automatically capturing and analyzing tombstones if a crash occurs.
+# 2. Monitoring libUE4.so loading in memory.
+# 3. Adding a safe delay to ensure splash screens are finished and loading/gameplay has started.
+# 4. Simulating high-frequency inputs (taps) avoiding the top-left mini-map.
+# 5. Parsing logcat in real-time for our modular sanitizer events.
+# 6. Monitoring game process status and auto-capturing tombstones.
 # =====================================================================
 
 PACKAGE_NAME = "com.rockstargames.gtasa.de"
@@ -36,17 +37,52 @@ def is_game_running():
     pid = run_su_cmd(f"pidof {PACKAGE_NAME}")
     return pid if pid.isdigit() else None
 
+def wait_for_libue4(pid):
+    print("⏳ Waiting for libUE4.so to load into memory...")
+    start_wait = time.time()
+    while time.time() - start_wait < 60:  # 60s timeout
+        maps = run_su_cmd(f"cat /proc/{pid}/maps")
+        if "libUE4.so" in maps:
+            print("✅ libUE4.so loaded successfully!")
+            return True
+        time.sleep(1)
+    print("⚠️ Timeout waiting for libUE4.so.")
+    return False
+
 def start_game():
     print("🚀 Starting GTA: San Andreas DE...")
     run_su_cmd(f"monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1")
-    time.sleep(8)  # Wait for splash screens
+    
+    # Wait for PID
+    pid = None
+    for _ in range(10):
+        pid = is_game_running()
+        if pid:
+            break
+        time.sleep(1)
+        
+    if not pid:
+        print("❌ Error: Failed to obtain game PID.")
+        sys.exit(1)
+        
+    # Monitor libUE4.so loading
+    if wait_for_libue4(pid):
+        # Once libUE4.so is loaded, wait for the game to load splash screens and reach the loading/gameplay screen
+        print("⏳ Waiting 25 seconds for the game to finish splash screens and enter the loading/gameplay stage...")
+        time.sleep(25)
+    else:
+        print("⚠️ Proceeding with default startup delay...")
+        time.sleep(15)
 
 def simulate_input():
-    # Simulate random taps on the screen to trigger player/ped task transitions (targeting, moving, etc.)
-    # Coordinates are randomized to cover different UI parts
+    # Avoid top-left corner (mini-map) and top-center (weapon HUD/health).
+    # Typical screen coordinates:
+    # Top-left mini-map: x from 0 to 450, y from 0 to 450.
+    # Top-center HUD: x from 450 to 1400, y from 0 to 200.
+    # Safe zone: right side and bottom-right quadrant (where action buttons and camera swipe are).
     import random
-    x = random.randint(200, 1800)
-    y = random.randint(200, 800)
+    x = random.randint(1100, 1900)
+    y = random.randint(450, 950)
     run_su_cmd(f"input tap {x} {y}")
 
 def get_latest_tombstone_path():
@@ -77,7 +113,6 @@ def analyze_tombstone(tombstone_path, output_path):
         if backtrace:
             pc, lib = backtrace[0]
             print(f"Crashing Frame #03 PC: 0x{pc} in {lib}")
-            # Try to resolve symbol if lookup_symbol is available
             print("💡 Run: python lookup_symbol.py to resolve this address in libUE4.so")
         print("=============================\n")
     except Exception as e:
@@ -100,6 +135,8 @@ def main():
         if not pid:
             print("❌ Failed to start the game. Please start it manually and run the script again.")
             sys.exit(1)
+    else:
+        print(f"✅ Game is already running (PID: {pid}). Skipping launch sequence.")
     
     print(f"✅ Game is running (PID: {pid}).")
     
@@ -164,7 +201,7 @@ def main():
                             if "Clearing unsafe" in line or "⚠️" in line:
                                 print(f"  [SANITIZER EVENT] {line.strip()}")
             
-            # Print progress every 10 seconds
+            # Print progress every 30 seconds
             elapsed = int(time.time() - start_time)
             if elapsed > 0 and elapsed % 30 == 0:
                 print(f"⏱️ Progress: {elapsed}/{TEST_DURATION_SEC}s | Interceptions: AfterPreRender={stats['ProcessAfterPreRender']}, Buoyancy={stats['ProcessBuoyancy']}, ManageTasks={stats['ManageTasks']}")
