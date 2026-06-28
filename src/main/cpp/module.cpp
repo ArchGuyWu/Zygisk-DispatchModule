@@ -6256,6 +6256,42 @@ static void proxy_script_decision_maker_save(void* self) {
 }
 
 // =====================================================================
+// 🛡️ [CTaskComplexInWater::CreateFirstSubTask Hook]：防止水系统未初始化或数组为空导致在水中创建子任务时解引用闪退
+// =====================================================================
+static void* g_stub_task_complex_in_water_create_first_sub_task = nullptr;
+typedef void* (*fn_TaskComplexInWaterCreateFirstSubTask_t)(void* self, void* ped);
+static fn_TaskComplexInWaterCreateFirstSubTask_t g_orig_task_complex_in_water_create_first_sub_task = nullptr;
+
+static void* proxy_task_complex_in_water_create_first_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (g_orig_task_complex_in_water_create_first_sub_task) {
+        xdl_info_t info;
+        if (xdl_addr(reinterpret_cast<void*>(g_orig_task_complex_in_water_create_first_sub_task), &info, nullptr)) {
+            uintptr_t lib_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
+            if (lib_base) {
+                void** p_manager = reinterpret_cast<void**>(lib_base + 0xa8ba5b8);
+                if (is_pointer_readable(p_manager)) {
+                    void* manager = *p_manager;
+                    if (!manager || !is_pointer_readable(manager)) {
+                        LOGW("⚠️ [InWater Sanitizer] Null or unreadable water manager %p, skipping task creation", manager);
+                        return nullptr;
+                    }
+                    void** p_array = reinterpret_cast<void**>(manager);
+                    if (is_pointer_readable(p_array)) {
+                        void* array = *p_array;
+                        if (!array || !is_pointer_readable(array)) {
+                            LOGW("⚠️ [InWater Sanitizer] Null or unreadable water array %p in manager %p, skipping task creation", array, manager);
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_task_complex_in_water_create_first_sub_task, self, ped);
+}
+
+// =====================================================================
 // Hook 安装线程
 // =====================================================================
 static void hook_thread_func() {
@@ -6662,6 +6698,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_script_decision_maker_save));
     if (g_stub_script_decision_maker_save) LOGI("✅ Hooked CScriptDecisionMakerModifications::Save");
     else LOGE("❌ Failed to hook CScriptDecisionMakerModifications::Save: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexInWater::CreateFirstSubTask (防止在水中创建子任务时因水系统未初始化闪退)
+    g_stub_task_complex_in_water_create_first_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN19CTaskComplexInWater18CreateFirstSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_task_complex_in_water_create_first_sub_task),
+        reinterpret_cast<void**>(&g_orig_task_complex_in_water_create_first_sub_task));
+    if (g_stub_task_complex_in_water_create_first_sub_task) LOGI("✅ Hooked CTaskComplexInWater::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexInWater::CreateFirstSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
