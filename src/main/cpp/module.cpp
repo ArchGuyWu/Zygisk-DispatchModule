@@ -6252,6 +6252,22 @@ typedef bool (*fn_hb_get_glyph_from_name_t)(void* self, const char* name, int le
 static fn_hb_get_glyph_from_name_t g_orig_hb_get_glyph_from_name = nullptr;
 
 // =====================================================================
+// 🛡️ [u_strlen_64 Hook]：防止 ICU 计算 Unicode 字符串长度时传入野指针闪退
+// =====================================================================
+static void* g_stub_u_strlen = nullptr;
+typedef int32_t (*fn_u_strlen_t)(const void* s);
+static fn_u_strlen_t g_orig_u_strlen = nullptr;
+
+static int32_t proxy_u_strlen(const void* s) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!s || !is_pointer_readable(s)) {
+        LOGW("⚠️ [u_strlen_64 Hook] null/wild pointer detected! Returning 0.");
+        return 0;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
+}
+
+// =====================================================================
 // 🛡️ [icu::DateTimePatternGenerator Hooks]：防止获取日期时间格式模板时空指针解引用闪退
 // =====================================================================
 static void* g_stub_dtpg_create_empty_instance = nullptr;
@@ -6937,6 +6953,15 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_timezone_find_id));
     if (g_stub_timezone_find_id) LOGI("✅ Hooked TimeZone::findID");
     else LOGE("❌ Failed to hook TimeZone::findID: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook u_strlen_64 (防止 ICU 字符串长度计算传入野指针崩溃)
+    g_stub_u_strlen = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "u_strlen_64",
+        reinterpret_cast<void*>(proxy_u_strlen),
+        reinterpret_cast<void**>(&g_orig_u_strlen));
+    if (g_stub_u_strlen) LOGI("✅ Hooked u_strlen_64");
+    else LOGE("❌ Failed to hook u_strlen_64: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook DateTimePatternGenerator::createEmptyInstance
     g_stub_dtpg_create_empty_instance = shadowhook_hook_sym_name(
