@@ -5488,44 +5488,7 @@ static inline bool is_partner_task_safe(void* self) {
 }
 
 static inline void sanitize_partner_task_pointers(void* task) {
-    if (!task || !is_pointer_readable(task)) return;
-    // CTaskComplexPartner member offsets:
-    // 0x10: m_pSubTask (CTask*)
-    // 0x20: m_pPartnerTask (CTaskComplexPartner*)
-    // 0x48: m_pPartnerPed (CPed*)
-    
-    // Sanitize m_pSubTask
-    void** sub_task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x10);
-    if (is_pointer_readable(sub_task_slot)) {
-        void* sub_task = *sub_task_slot;
-        if (sub_task) {
-            if (!is_task_vtable_safe(sub_task)) {
-                *sub_task_slot = nullptr;
-            }
-        }
-    }
-    
-    // Sanitize m_pPartnerTask
-    void** partner_task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x20);
-    if (is_pointer_readable(partner_task_slot)) {
-        void* partner_task = *partner_task_slot;
-        if (partner_task) {
-            if (!is_task_vtable_safe(partner_task)) {
-                *partner_task_slot = nullptr;
-            }
-        }
-    }
-    
-    // Sanitize m_pPartnerPed
-    void** partner_ped_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x48);
-    if (is_pointer_readable(partner_ped_slot)) {
-        void* partner_ped = *partner_ped_slot;
-        if (partner_ped) {
-            if (!is_pointer_readable(partner_ped) || !is_ped_pointer_valid_safe(partner_ped)) {
-                *partner_ped_slot = nullptr;
-            }
-        }
-    }
+    // 禁用伙伴任务“净化器”以防误伤非指针数据成员
 }
 
 static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
@@ -5725,24 +5688,7 @@ static void* g_stub_turntofaceentity_controlsubtask = nullptr;
 static fn_TurnToFaceEntity_ControlSubTask_t g_orig_turntofaceentity_controlsubtask = nullptr;
 
 static void sanitize_turntofaceentity_target(void* self) {
-    if (!self) return;
-    char* self_bytes = reinterpret_cast<char*>(self);
-    void** entity_slot = reinterpret_cast<void**>(self_bytes + 0x18);
-    if (is_pointer_readable(entity_slot)) {
-        void* entity = *entity_slot;
-        if (entity) {
-            if (!is_pointer_readable(entity)) {
-                LOGW("⚠️ [TurnToFaceEntity] Intercepted unreadable target entity %p. Clearing it.", entity);
-                *entity_slot = nullptr;
-            } else {
-                void** entity_vtable = reinterpret_cast<void**>(entity);
-                if (!is_pointer_readable(entity_vtable) || *entity_vtable == nullptr) {
-                    LOGW("⚠️ [TurnToFaceEntity] Intercepted freed/zero-filled target entity %p. Clearing it.", entity);
-                    *entity_slot = nullptr;
-                }
-            }
-        }
-    }
+    // 禁用面对实体任务的“净化器”以防误伤非指针数据成员（如 offset 0x18 处的 CVector 目标坐标）
 }
 
 static void* proxy_turntofaceentity_createfirstsubtask(void* self, void* ped) {
