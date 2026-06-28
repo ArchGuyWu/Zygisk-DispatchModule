@@ -8,7 +8,7 @@ set -euo pipefail
 WORKSPACE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "📦 正在检索本地已安装的 proot-distro 容器..."
-DISTROS=$(proot-distro list | grep -E "alias:" | awk '{print $2}' || true)
+DISTROS=$(python3 -c "import subprocess, re; out = subprocess.getoutput('proot-distro list'); distros = [re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', line).strip('* \t') for line in out.splitlines() if '*' in line]; print('\n'.join(distros))")
 
 if [ -z "$DISTROS" ]; then
     echo "❌ 未检测到任何已安装的 proot-distro 容器。"
@@ -27,4 +27,4 @@ echo "💡 提示：输入 'exit' 可随时退出沙箱返回 Termux。"
 echo ""
 
 # 执行挂载并登录
-proot-distro login "$TARGET_DISTRO" --bind "$WORKSPACE_DIR:/root/workspace"
+proot-distro login "$TARGET_DISTRO" --bind "$WORKSPACE_DIR:/root/workspace" "$@"

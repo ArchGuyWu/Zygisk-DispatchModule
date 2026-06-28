@@ -6181,9 +6181,12 @@ static void* g_stub_process_after_pre_render = nullptr;
 typedef void (*fn_ProcessAfterPreRender_t)(void* self);
 static fn_ProcessAfterPreRender_t g_orig_process_after_pre_render = nullptr;
 
+static thread_local void* g_current_ped_intelligence = nullptr;
+
 static void proxy_process_after_pre_render(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && is_pointer_readable(self)) {
+        g_current_ped_intelligence = self;
         void* task_mgr = reinterpret_cast<char*>(self) + 8;
         if (is_pointer_readable(task_mgr)) {
             // 扫描 CPedIntelligence 中的前 20 个任务槽，净化已析构或无效的任务指针
@@ -6199,7 +6202,33 @@ static void proxy_process_after_pre_render(void* self) {
             }
         }
     }
+    
     SHADOWHOOK_CALL_PREV(proxy_process_after_pre_render, self);
+    g_current_ped_intelligence = nullptr;
+}
+
+// =====================================================================
+// 🛡️ [CTask::Destructor Hook]：防止 ProcessAfterPreRender 期间任务中途被析构产生野指针导致闪退
+// =====================================================================
+static void* g_stub_task_destructor = nullptr;
+typedef void (*fn_TaskDestructor_t)(void* self);
+static fn_TaskDestructor_t g_orig_task_destructor = nullptr;
+
+static void proxy_task_destructor(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && g_current_ped_intelligence && is_pointer_readable(g_current_ped_intelligence)) {
+        void* task_mgr = reinterpret_cast<char*>(g_current_ped_intelligence) + 8;
+        if (is_pointer_readable(task_mgr)) {
+            for (int i = 0; i < 20; ++i) {
+                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                if (is_pointer_readable(task_slot) && *task_slot == self) {
+                    LOGW("⚠️ [Task Destructor Sanitizer] Task %p is being destructed during ProcessAfterPreRender of CPedIntelligence %p, clearing slot %d", self, g_current_ped_intelligence, i);
+                    *task_slot = nullptr;
+                }
+            }
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_task_destructor, self);
 }
 
 // =====================================================================
@@ -6726,6 +6755,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_process_after_pre_render));
     if (g_stub_process_after_pre_render) LOGI("✅ Hooked CPedIntelligence::ProcessAfterPreRender");
     else LOGE("❌ Failed to hook CPedIntelligence::ProcessAfterPreRender: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTask::~CTask (防止在 ProcessAfterPreRender 期间任务中途被析构产生野指针导致闪退)
+    g_stub_task_destructor = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN5CTaskD2Ev",
+        reinterpret_cast<void*>(proxy_task_destructor),
+        reinterpret_cast<void**>(&g_orig_task_destructor));
+    if (g_stub_task_destructor) LOGI("✅ Hooked CTask::Destructor");
+    else LOGE("❌ Failed to hook CTask::Destructor: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退)
