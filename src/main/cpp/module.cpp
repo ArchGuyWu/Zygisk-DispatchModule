@@ -6284,6 +6284,15 @@ static void* g_stub_dtpg_create_instance_with_locale = nullptr;
 typedef void* (*fn_dtpg_create_instance_with_locale_t)(const void* locale, int* status);
 static fn_dtpg_create_instance_with_locale_t g_orig_dtpg_create_instance_with_locale = nullptr;
 
+static void* proxy_dtpg_create_instance_with_locale(const void* locale, int* status) {
+    SHADOWHOOK_STACK_SCOPE();
+    LOGW("⚠️ [DateTimePatternGenerator::createInstance(Locale) Hook] Bypassing to prevent crash.");
+    if (status) {
+        *status = 16; // U_FILE_ACCESS_ERROR
+    }
+    return nullptr;
+}
+
 static bool proxy_hb_get_glyph_from_name(void* self, const char* name, int len, unsigned int* glyph) {
     SHADOWHOOK_STACK_SCOPE();
     // 直接返回 false，绕过损坏的 post 表二分查找。HarfBuzz 会自动降级为 unicode cmap 查找，完全不影响渲染且绝对安全。
