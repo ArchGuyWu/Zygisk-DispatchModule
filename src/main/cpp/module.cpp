@@ -5482,6 +5482,47 @@ static inline bool is_partner_task_safe(void* self) {
     return true;
 }
 
+static inline void sanitize_partner_task_pointers(void* task) {
+    if (!task || !is_pointer_readable(task)) return;
+    // CTaskComplexPartner member offsets:
+    // 0x10: m_pSubTask (CTask*)
+    // 0x20: m_pPartnerTask (CTaskComplexPartner*)
+    // 0x48: m_pPartnerPed (CPed*)
+    
+    // Sanitize m_pSubTask
+    void** sub_task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x10);
+    if (is_pointer_readable(sub_task_slot)) {
+        void* sub_task = *sub_task_slot;
+        if (sub_task) {
+            if (!is_pointer_readable(sub_task) || !*reinterpret_cast<void**>(sub_task)) {
+                *sub_task_slot = nullptr;
+            }
+        }
+    }
+    
+    // Sanitize m_pPartnerTask
+    void** partner_task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x20);
+    if (is_pointer_readable(partner_task_slot)) {
+        void* partner_task = *partner_task_slot;
+        if (partner_task) {
+            if (!is_pointer_readable(partner_task) || !*reinterpret_cast<void**>(partner_task)) {
+                *partner_task_slot = nullptr;
+            }
+        }
+    }
+    
+    // Sanitize m_pPartnerPed
+    void** partner_ped_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x48);
+    if (is_pointer_readable(partner_ped_slot)) {
+        void* partner_ped = *partner_ped_slot;
+        if (partner_ped) {
+            if (!is_pointer_readable(partner_ped) || !is_ped_pointer_valid_safe(partner_ped)) {
+                *partner_ped_slot = nullptr;
+            }
+        }
+    }
+}
+
 static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
     // 【彻底修复说明】
     // 禁用盲目扫描内存的“净化器”。
@@ -5507,7 +5548,7 @@ static void* proxy_gps_deal(void* self) {
         LOGW("⚠️ [GetPartnerSequenceDeal] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [GetPartnerSequenceDeal] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5523,7 +5564,7 @@ static void* proxy_gps_greet(void* self) {
         LOGW("⚠️ [GetPartnerSequenceGreet] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [GetPartnerSequenceGreet] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5539,7 +5580,7 @@ static void* proxy_gps_shove(void* self) {
         LOGW("⚠️ [GetPartnerSequenceShove] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [GetPartnerSequenceShove] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5555,7 +5596,7 @@ static void* proxy_gps_chat(void* self) {
         LOGW("⚠️ [GetPartnerSequenceChat] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [GetPartnerSequenceChat] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5606,7 +5647,7 @@ static void* proxy_cfst_base(void* self, void* ped) {
         LOGW("⚠️ [CreateFirstSubTaskBase] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [CreateFirstSubTaskBase] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5622,7 +5663,7 @@ static void* proxy_cfst_deal(void* self, void* ped) {
         LOGW("⚠️ [CreateFirstSubTaskDeal] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [CreateFirstSubTaskDeal] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5638,7 +5679,7 @@ static void* proxy_cfst_greet(void* self, void* ped) {
         LOGW("⚠️ [CreateFirstSubTaskGreet] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [CreateFirstSubTaskGreet] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
@@ -5658,7 +5699,7 @@ static void* proxy_cst_base(void* self, void* ped) {
         LOGW("⚠️ [ControlSubTaskBase] unsafe self! Returning nullptr.");
         return nullptr;
     }
-    sanitize_task_pointers(self);
+    sanitize_partner_task_pointers(self);
     if (!is_sequence_manager_safe()) {
         LOGW("⚠️ [ControlSubTaskBase] Sequence manager unsafe! Returning nullptr.");
         return nullptr;
