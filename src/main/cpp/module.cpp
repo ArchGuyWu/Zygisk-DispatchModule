@@ -2153,8 +2153,10 @@ static void bind_vehicle_occupants(void* vehicle) {
                         if (!cop_comp) {
                             cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
                         }
-                        cop_comp->is_in_vehicle = true;
-                        cop_comp->has_exited_vehicle = false;
+                        if (cop_comp) {
+                            cop_comp->is_in_vehicle = true;
+                            cop_comp->has_exited_vehicle = false;
+                        }
 
                         bool found = false;
                         for (auto& binding : g_cop_vehicle_bindings) {
@@ -2200,8 +2202,10 @@ static void record_exit_start_for_occupants(void* vehicle) {
                         if (!cop_comp) {
                             cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
                         }
-                        cop_comp->is_in_vehicle = false;
-                        cop_comp->has_exited_vehicle = true;
+                        if (cop_comp) {
+                            cop_comp->is_in_vehicle = false;
+                            cop_comp->has_exited_vehicle = true;
+                        }
 
                         bool found = false;
                         for (auto& rec : g_cop_exits) {
@@ -3593,7 +3597,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                 if (!combat_comp) {
                                     combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(ped);
                                 }
-                                combat_comp->target_entity = target_criminal;
+                                if (combat_comp) {
+                                    combat_comp->target_entity = target_criminal;
+                                }
                             }
                             
                             bool found_assign = false;
@@ -3665,7 +3671,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                             if (!combat_comp) {
                                 combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(ped);
                             }
-                            combat_comp->target_entity = target_criminal;
+                            if (combat_comp) {
+                                combat_comp->target_entity = target_criminal;
+                            }
                         }
                         
                         bool found_assign = false;
@@ -3818,7 +3826,9 @@ static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool forc
         if (!combat_comp) {
             combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(cop);
         }
-        combat_comp->target_entity = criminal;
+        if (combat_comp) {
+            combat_comp->target_entity = criminal;
+        }
     }
 
     // Determine weapon based on specific threat
@@ -6567,8 +6577,10 @@ void init_ecs_systems() {
         auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(criminal);
         if (!crim_comp) {
             crim_comp = ecs::EntityManager::get().add_component<ecs::CriminalComponent>(criminal, criminal);
-            crim_comp->first_detect_time_ms = ev.time_ms;
-            crim_comp->initial_weapon_category = ev.weapon_category;
+            if (crim_comp) {
+                crim_comp->first_detect_time_ms = ev.time_ms;
+                crim_comp->initial_weapon_category = ev.weapon_category;
+            }
         } else {
             // Weapon Downgrade Protection: Keep highest/first weapon category
             if (ev.weapon_category > crim_comp->initial_weapon_category) {
@@ -6576,24 +6588,26 @@ void init_ecs_systems() {
             }
         }
 
-        crim_comp->last_attack_time_ms = ev.time_ms;
+        if (crim_comp) {
+            crim_comp->last_attack_time_ms = ev.time_ms;
 
-        if (ev.victim) {
-            crim_comp->is_active = true;
-            crim_comp->is_air_shooter = false;
-            crim_comp->is_fleeing = false;
-            crim_comp->current_victim = ev.victim;
-        } else {
-            if (ev.weapon_category == 2) { // FIREARM
-                crim_comp->is_active = true; // Mark active for FIREARM_AIR_SHOOT
-                crim_comp->is_air_shooter = true;
-                crim_comp->is_fleeing = false;
-                crim_comp->current_victim = nullptr;
-            } else {
-                crim_comp->is_active = false;
+            if (ev.victim) {
+                crim_comp->is_active = true;
                 crim_comp->is_air_shooter = false;
                 crim_comp->is_fleeing = false;
-                crim_comp->current_victim = nullptr;
+                crim_comp->current_victim = ev.victim;
+            } else {
+                if (ev.weapon_category == 2) { // FIREARM
+                    crim_comp->is_active = true; // Mark active for FIREARM_AIR_SHOOT
+                    crim_comp->is_air_shooter = true;
+                    crim_comp->is_fleeing = false;
+                    crim_comp->current_victim = nullptr;
+                } else {
+                    crim_comp->is_active = false;
+                    crim_comp->is_air_shooter = false;
+                    crim_comp->is_fleeing = false;
+                    crim_comp->current_victim = nullptr;
+                }
             }
         }
 
@@ -6617,9 +6631,9 @@ void init_ecs_systems() {
                 CrimeEvent::CriminalState c_state;
                 c_state.first_threat_category = ev.is_firearm ? 2 : (ev.weapon_category == 1 ? 1 : 0);
                 c_state.current_threat_category = c_state.first_threat_category;
-                c_state.is_active = crim_comp->is_active;
-                c_state.shooting_air = crim_comp->is_air_shooter;
-                c_state.fleeing = crim_comp->is_fleeing;
+                c_state.is_active = crim_comp ? crim_comp->is_active : false;
+                c_state.shooting_air = crim_comp ? crim_comp->is_air_shooter : false;
+                c_state.fleeing = crim_comp ? crim_comp->is_fleeing : false;
                 new_crime->criminal_states[criminal] = c_state;
 
                 new_crime->dispatch_sent = false;
@@ -6656,7 +6670,9 @@ void init_ecs_systems() {
             if (!combat_comp) {
                 combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(victim_cop);
             }
-            combat_comp->target_entity = attacker_perp;
+            if (combat_comp) {
+                combat_comp->target_entity = attacker_perp;
+            }
 
             // 警员受袭，触发即时自卫反击 (不强制更新武器模型，防止重置攻击动画)
             make_single_cop_attack_criminal(victim_cop, attacker_perp, false);
