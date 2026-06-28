@@ -5991,6 +5991,40 @@ static void proxy_process_buoyancy(void* self) {
 }
 
 // =====================================================================
+// 🛡️ [cBuoyancy::ProcessBuoyancy Hook]：防止物理浮力计算期间/之后任务被销毁导致 CPed::ProcessBuoyancy 闪退
+// =====================================================================
+static void* g_stub_cbuoyancy_process_buoyancy = nullptr;
+typedef bool (*fn_cBuoyancy_ProcessBuoyancy_t)(void* self, void* physical, float f1, void* vec1, void* vec2);
+static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
+
+static bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
+    SHADOWHOOK_STACK_SCOPE();
+    bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
+    if (!res && physical && is_pointer_readable(physical)) {
+        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(physical) + 0x5e8);
+        if (is_pointer_readable(intel_slot)) {
+            void* intel = *intel_slot;
+            if (intel && is_pointer_readable(intel)) {
+                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+                if (is_pointer_readable(task_mgr)) {
+                    for (int i = 0; i < 5; ++i) {
+                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                        if (is_pointer_readable(task_slot)) {
+                            void* task = *task_slot;
+                            if (task && !is_task_vtable_safe(task)) {
+                                LOGW("⚠️ [cBuoyancy::ProcessBuoyancy Sanitizer] Clearing unsafe/zeroed task %p at slot %d inside CTaskManager %p after physics tick", task, i, task_mgr);
+                                *task_slot = nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return res;
+}
+
+// =====================================================================
 // 🛡️ [u_strlen_64 Hook]：防止 ICU 计算 Unicode 字符串长度时传入野指针闪退
 // =====================================================================
 static void* g_stub_u_strlen = nullptr;
@@ -6290,6 +6324,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_process_buoyancy));
     if (g_stub_process_buoyancy) LOGI("✅ Hooked CPed::ProcessBuoyancy");
     else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook cBuoyancy::ProcessBuoyancy (解决物理tick途中任务被销毁/空指针的竞态问题)
+    g_stub_cbuoyancy_process_buoyancy = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN9cBuoyancy15ProcessBuoyancyEP9CPhysicalfP7CVectorS3_",
+        reinterpret_cast<void*>(proxy_cbuoyancy_process_buoyancy),
+        reinterpret_cast<void**>(&g_orig_cbuoyancy_process_buoyancy));
+    if (g_stub_cbuoyancy_process_buoyancy) LOGI("✅ Hooked cBuoyancy::ProcessBuoyancy");
+    else LOGE("❌ Failed to hook cBuoyancy::ProcessBuoyancy: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
