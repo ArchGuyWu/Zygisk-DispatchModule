@@ -5808,6 +5808,109 @@ static void proxy_facial_dtor(void* self) {
     SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
 }
 
+// --- CTaskManager::FindActiveTaskByType Hook ---
+static void* g_stub_find_active_task = nullptr;
+typedef void* (*fn_FindActiveTask_t)(void* self, int type);
+static fn_FindActiveTask_t g_orig_find_active_task = nullptr;
+
+static void* proxy_find_active_task(void* self, int type) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
+        // Total 11 slots of pointers starting at offset 0 of CTaskManager.
+        for (int i = 0; i < 11; ++i) {
+            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+            if (is_pointer_readable(task_slot)) {
+                void* task = *task_slot;
+                if (task) {
+                    if (!is_task_vtable_safe(task)) {
+                        LOGW("⚠️ [FindActiveTaskByType Sanitizer] Sanitizing unsafe task %p at slot %d inside CTaskManager %p", task, i, self);
+                        *task_slot = nullptr;
+                    } else {
+                        sanitize_task_tree(task);
+                    }
+                }
+            }
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
+}
+
+// --- CAEPedSpeechAudioEntity::PlayLoadedSound Hook ---
+static void* g_stub_play_loaded_sound = nullptr;
+typedef void (*fn_PlayLoadedSound_t)(void* self);
+static fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
+
+static void proxy_play_loaded_sound(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
+        if (is_pointer_readable(p_ped)) {
+            void* ped = *p_ped;
+            if (ped && is_pointer_readable(ped)) {
+                void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+                if (is_pointer_readable(p_intel)) {
+                    void* intel = *p_intel;
+                    if (intel && is_pointer_readable(intel)) {
+                        void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
+                        if (is_pointer_readable(p_speech)) {
+                            void* speech = *p_speech;
+                            if (speech && is_pointer_readable(speech)) {
+                                SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    LOGW("⚠️ [PlayLoadedSound Sanitizer] Skipping PlayLoadedSound on %p to prevent null speech manager crash!", self);
+}
+
+// --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
+static void* g_stub_check_if_within_range = nullptr;
+typedef bool (*fn_CheckIfWithinRange_t)(void* self);
+static fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
+static void*** g_p_ms_pPedPool = nullptr;
+
+static bool proxy_check_if_within_range(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    
+    short index = *reinterpret_cast<short*>(reinterpret_cast<char*>(self) + 0x0);
+    if (index >= 0 && g_p_ms_pPedPool && is_pointer_readable(g_p_ms_pPedPool)) {
+        void** ped_array = *g_p_ms_pPedPool;
+        if (ped_array && is_pointer_readable(ped_array)) {
+            if (index < 8) {
+                void** ped_slot = ped_array + index;
+                if (is_pointer_readable(ped_slot)) {
+                    void* ped = *ped_slot;
+                    if (!ped || !is_pointer_readable(ped)) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
+}
+
+// --- CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask Hook ---
+static void* g_stub_avoid_ped_control = nullptr;
+typedef void* (*fn_AvoidPedControl_t)(void* self, void* ped);
+static fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
+
+static void* proxy_avoid_ped_control(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_avoid_ped_control, self, ped);
+}
+
 
 // --- CTaskGangHassleVehicle::CalcTargetOffset Hook ---
 typedef void (*fn_CalcTargetOffset_t)(void* self);
@@ -6425,6 +6528,51 @@ static void hook_thread_func() {
     if (g_stub_facial_dtor) LOGI("✅ Hooked CTaskComplexFacial::~CTaskComplexFacial");
     else LOGE("❌ Failed to hook CTaskComplexFacial::~CTaskComplexFacial: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskManager::FindActiveTaskByType (直接杜绝该函数内对零填充辅助任务/主任务虚表解引用闪退)
+    g_stub_find_active_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK12CTaskManager20FindActiveTaskByTypeEi",
+        reinterpret_cast<void*>(proxy_find_active_task),
+        reinterpret_cast<void**>(&g_orig_find_active_task));
+    if (g_stub_find_active_task) LOGI("✅ Hooked CTaskManager::FindActiveTaskByType");
+    else LOGE("❌ Failed to hook CTaskManager::FindActiveTaskByType: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CAEPedSpeechAudioEntity::PlayLoadedSound (防止语音实体播放时对 null 语音管理器指针写操作闪退)
+    g_stub_play_loaded_sound = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN23CAEPedSpeechAudioEntity15PlayLoadedSoundEv",
+        reinterpret_cast<void*>(proxy_play_loaded_sound),
+        reinterpret_cast<void**>(&g_orig_play_loaded_sound));
+    if (g_stub_play_loaded_sound) LOGI("✅ Hooked CAEPedSpeechAudioEntity::PlayLoadedSound");
+    else LOGE("❌ Failed to hook CAEPedSpeechAudioEntity::PlayLoadedSound: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CCarGenerator::CheckIfWithinRangeOfAnyPlayers (防止刷车器运行时检测玩家距离时，由于玩家 Ped 临时析构置空导致的读操作闪退)
+    g_stub_check_if_within_range = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN13CCarGenerator30CheckIfWithinRangeOfAnyPlayersEv",
+        reinterpret_cast<void*>(proxy_check_if_within_range),
+        reinterpret_cast<void**>(&g_orig_check_if_within_range));
+    if (g_stub_check_if_within_range) {
+        LOGI("✅ Hooked CCarGenerator::CheckIfWithinRangeOfAnyPlayers");
+        // Resolve CPools::ms_pPedPool
+        RESOLVE_SYM(lib, g_p_ms_pPedPool, "_ZN6CPools11ms_pPedPoolE", void***);
+    }
+    else LOGE("❌ Failed to hook CCarGenerator::CheckIfWithinRangeOfAnyPlayers: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask (防止在避让行人任务决策中读取他人悬挂野指针任务闪退)
+    g_stub_avoid_ped_control = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN39CTaskComplexAvoidOtherPedWhileWandering14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_avoid_ped_control),
+        reinterpret_cast<void**>(&g_orig_avoid_ped_control));
+    if (g_stub_avoid_ped_control) LOGI("✅ Hooked CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
 
 
 

@@ -101,7 +101,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 22-Hook System
+### 3. The 25-Hook System
 Our solution intercepts all core lifecycles and virtual tables related to wanted levels, crime reporting, emergency vehicle spawning, task management, footstep rendering, buoyancy physics, and Unicode formatting:
 
 1.  **Gameplay Features & Custom Dispatching** (12 Hooks):
@@ -114,7 +114,7 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
     *   `add_police_occupants` (Binds occupants to spawned cop cars)
     *   `tell_occupants_leave_car` (Triggers custom vehicle exits)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (Draw distance scaling workarounds for emergency vehicles in mobile versions)
-2.  **Defensive & Sanitizing Safeguards** (10 Hooks):
+2.  **Defensive & Sanitizing Safeguards** (13 Hooks):
     *   `u_strlen_64` (Prevents startup crashes in ICU's Unicode string length function by validating wild pointers)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (Prevents crashes during buoyancy processing. `cBuoyancy::ProcessBuoyancy` is hooked to sanitize task slots immediately after the physics calculation, solving a race condition where a task gets destructed mid-function)
     *   `CPed::PlayFootSteps` (Prevents crashes during transitions when the ped's RW clump/model is temporarily detached)
@@ -125,6 +125,10 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
     *   `CTaskComplexUsePairedAttractor::CreateNextSubTask` (Prevents crashes when the paired attractor task is no longer active on the ped by verifying and sanitizing it)
     *   `CPedIntelligence::ProcessStaticCounter` (Prevents crashes when updating static counters on peds with zero-filled tasks by sanitizing them beforehand)
     *   `CTaskComplexFacial::~CTaskComplexFacial` (Prevents double free and null pointer dereference crashes when deleting facial tasks with zero-filled subtasks)
+    *   `CTaskManager::FindActiveTaskByType` (Prevents crashes inside the task type lookup when dealing with zero-filled tasks)
+    *   `CAEPedSpeechAudioEntity::PlayLoadedSound` (Prevents crashes in ped speech audio playing when the ped's speech manager is null)
+    *   `CCarGenerator::CheckIfWithinRangeOfAnyPlayers` (Prevents crashes when the car generator checks range against a temporarily null player ped in the pool)
+    *   `CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask` (Prevents crashes when wandering peds attempt to avoid other peds with zero-filled tasks)
 
 ---
 ## 🛠️ Tech Stack & Requirements
