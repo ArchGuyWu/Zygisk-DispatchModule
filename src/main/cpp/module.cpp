@@ -5468,11 +5468,7 @@ static inline bool is_sequence_manager_safe() {
         return false;
     }
     void* manager = *g_CSequenceManager_ms_instance;
-    if (!is_pointer_readable(manager)) {
-        return false;
-    }
-    void* sequences = *(void**)manager;
-    return (sequences != nullptr);
+    return is_pointer_readable(manager);
 }
 
 static inline bool is_partner_task_safe(void* self) {
