@@ -5519,74 +5519,6 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     // 并仅针对这些特定偏移量进行安全校验与置空，严禁进行盲目全内存扫描。
 }
 
-// --- GetPartnerSequence Hooks ---
-typedef void* (*fn_GetPartnerSequence_t)(void* self);
-
-static void* g_stub_gps_deal = nullptr;
-static fn_GetPartnerSequence_t g_orig_gps_deal = nullptr;
-static void* proxy_gps_deal(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [GetPartnerSequenceDeal] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [GetPartnerSequenceDeal] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_gps_deal, self);
-}
-
-static void* g_stub_gps_greet = nullptr;
-static fn_GetPartnerSequence_t g_orig_gps_greet = nullptr;
-static void* proxy_gps_greet(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [GetPartnerSequenceGreet] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [GetPartnerSequenceGreet] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_gps_greet, self);
-}
-
-static void* g_stub_gps_shove = nullptr;
-static fn_GetPartnerSequence_t g_orig_gps_shove = nullptr;
-static void* proxy_gps_shove(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [GetPartnerSequenceShove] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [GetPartnerSequenceShove] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_gps_shove, self);
-}
-
-static void* g_stub_gps_chat = nullptr;
-static fn_GetPartnerSequence_t g_orig_gps_chat = nullptr;
-static void* proxy_gps_chat(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [GetPartnerSequenceChat] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    if (!is_sequence_manager_safe()) {
-        LOGW("⚠️ [GetPartnerSequenceChat] Sequence manager unsafe! Returning nullptr.");
-        return nullptr;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_gps_chat, self);
-}
-
-
 // --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---
 typedef void (*fn_SetPedPosition_t)(void* self, void* ped);
 
@@ -5615,122 +5547,6 @@ static void proxy_set_ped_pos(void* self, void* ped) {
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_set_ped_pos, self, ped);
-}
-
-
-// --- CreateFirstSubTask Hooks ---
-typedef void* (*fn_CreateFirstSubTask_t)(void* self, void* ped);
-
-static void* g_stub_cfst_base = nullptr;
-static fn_CreateFirstSubTask_t g_orig_cfst_base = nullptr;
-static void* proxy_cfst_base(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [CreateFirstSubTaskBase] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    return SHADOWHOOK_CALL_PREV(proxy_cfst_base, self, ped);
-}
-
-static void* g_stub_cfst_deal = nullptr;
-static fn_CreateFirstSubTask_t g_orig_cfst_deal = nullptr;
-static void* proxy_cfst_deal(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [CreateFirstSubTaskDeal] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    return SHADOWHOOK_CALL_PREV(proxy_cfst_deal, self, ped);
-}
-
-static void* g_stub_cfst_greet = nullptr;
-static fn_CreateFirstSubTask_t g_orig_cfst_greet = nullptr;
-static void* proxy_cfst_greet(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [CreateFirstSubTaskGreet] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    return SHADOWHOOK_CALL_PREV(proxy_cfst_greet, self, ped);
-}
-
-
-// --- ControlSubTask Hooks ---
-typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
-
-static void* g_stub_cst_base = nullptr;
-static fn_ControlSubTask_t g_orig_cst_base = nullptr;
-static void* proxy_cst_base(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!is_partner_task_safe(self)) {
-        LOGW("⚠️ [ControlSubTaskBase] unsafe self! Returning nullptr.");
-        return nullptr;
-    }
-    sanitize_partner_task_pointers(self);
-    return SHADOWHOOK_CALL_PREV(proxy_cst_base, self, ped);
-}
-
-// --- CTaskComplexGoToPointAnyMeans::CreateSubTask Hook ---
-typedef void* (*fn_GoToPointAnyMeans_CreateSubTask_t)(void* self, int subTaskId, CPed* ped);
-static void* g_stub_gotopointanymeans_createsubtask = nullptr;
-static fn_GoToPointAnyMeans_CreateSubTask_t g_orig_gotopointanymeans_createsubtask = nullptr;
-
-static void* proxy_gotopointanymeans_createsubtask(void* self, int subTaskId, CPed* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_task_vtable_safe(self)) {
-        LOGW("⚠️ [GoToPointAnyMeans::CreateSubTask] self %p is null or has unsafe vtable! Intercepting.", self);
-        return nullptr;
-    }
-    if (ped && !is_ped_pointer_valid_safe(ped)) {
-        LOGW("⚠️ [GoToPointAnyMeans::CreateSubTask] input ped %p is unsafe! Intercepting.", ped);
-        return nullptr;
-    }
-    sanitize_task_pointers(self);
-    return SHADOWHOOK_CALL_PREV(proxy_gotopointanymeans_createsubtask, self, subTaskId, ped);
-}
-
-// --- CTaskComplexTurnToFaceEntityOrCoord Hook ---
-typedef void* (*fn_TurnToFaceEntity_CreateFirstSubTask_t)(void* self, void* ped);
-static void* g_stub_turntofaceentity_createfirstsubtask = nullptr;
-static fn_TurnToFaceEntity_CreateFirstSubTask_t g_orig_turntofaceentity_createfirstsubtask = nullptr;
-
-typedef void* (*fn_TurnToFaceEntity_ControlSubTask_t)(void* self, void* ped);
-static void* g_stub_turntofaceentity_controlsubtask = nullptr;
-static fn_TurnToFaceEntity_ControlSubTask_t g_orig_turntofaceentity_controlsubtask = nullptr;
-
-static void sanitize_turntofaceentity_target(void* self) {
-    // 禁用面对实体任务的“净化器”以防误伤非指针数据成员（如 offset 0x18 处的 CVector 目标坐标）
-}
-
-static void* proxy_turntofaceentity_createfirstsubtask(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_task_vtable_safe(self)) {
-        LOGW("⚠️ [TurnToFaceEntity::CreateFirstSubTask] self %p is null or has unsafe vtable! Intercepting.", self);
-        return nullptr;
-    }
-    if (ped && !is_ped_pointer_valid_safe(ped)) {
-        LOGW("⚠️ [TurnToFaceEntity::CreateFirstSubTask] input ped %p is unsafe! Intercepting.", ped);
-        return nullptr;
-    }
-    sanitize_turntofaceentity_target(self);
-    return SHADOWHOOK_CALL_PREV(proxy_turntofaceentity_createfirstsubtask, self, ped);
-}
-
-static void* proxy_turntofaceentity_controlsubtask(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_task_vtable_safe(self)) {
-        LOGW("⚠️ [TurnToFaceEntity::ControlSubTask] self %p is null or has unsafe vtable! Intercepting.", self);
-        return nullptr;
-    }
-    if (ped && !is_ped_pointer_valid_safe(ped)) {
-        LOGW("⚠️ [TurnToFaceEntity::ControlSubTask] input ped %p is unsafe! Intercepting.", ped);
-        return nullptr;
-    }
-    sanitize_turntofaceentity_target(self);
-    return SHADOWHOOK_CALL_PREV(proxy_turntofaceentity_controlsubtask, self, ped);
 }
 
 
@@ -6175,79 +5991,6 @@ static void proxy_process_buoyancy(void* self) {
 }
 
 // =====================================================================
-// 🛡️ [CPedIntelligence::ProcessAfterPreRender Hook]：防止 ProcessAfterPreRender 期间已析构任务残留导致纯虚函数调用闪退
-// =====================================================================
-static void* g_stub_process_after_pre_render = nullptr;
-typedef void (*fn_ProcessAfterPreRender_t)(void* self);
-static fn_ProcessAfterPreRender_t g_orig_process_after_pre_render = nullptr;
-
-static thread_local void* g_current_ped_intelligence = nullptr;
-
-static void proxy_process_after_pre_render(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
-        g_current_ped_intelligence = self;
-        void* task_mgr = reinterpret_cast<char*>(self) + 8;
-        if (is_pointer_readable(task_mgr)) {
-            // 扫描 CPedIntelligence 中的前 20 个任务槽，净化已析构或无效的任务指针
-            for (int i = 0; i < 20; ++i) {
-                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                if (is_pointer_readable(task_slot)) {
-                    void* task = *task_slot;
-                    if (task && !is_task_vtable_safe(task)) {
-                        LOGW("⚠️ [ProcessAfterPreRender Sanitizer] Clearing unsafe/zeroed/destructed task %p at slot %d inside CPedIntelligence %p", task, i, self);
-                        *task_slot = nullptr;
-                    }
-                }
-            }
-        }
-    }
-    
-    SHADOWHOOK_CALL_PREV(proxy_process_after_pre_render, self);
-    g_current_ped_intelligence = nullptr;
-}
-
-// =====================================================================
-// 🛡️ [CTask::Destructor Hook]：防止 ProcessAfterPreRender 期间任务中途被析构产生野指针导致闪退
-// =====================================================================
-static void* g_stub_task_destructor = nullptr;
-typedef void (*fn_TaskDestructor_t)(void* self);
-static fn_TaskDestructor_t g_orig_task_destructor = nullptr;
-
-static void proxy_task_destructor(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && g_current_ped_intelligence && is_pointer_readable(g_current_ped_intelligence)) {
-        void* task_mgr = reinterpret_cast<char*>(g_current_ped_intelligence) + 8;
-        if (is_pointer_readable(task_mgr)) {
-            for (int i = 0; i < 20; ++i) {
-                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                if (is_pointer_readable(task_slot) && *task_slot == self) {
-                    LOGW("⚠️ [Task Destructor Sanitizer] Task %p is being destructed during ProcessAfterPreRender of CPedIntelligence %p, clearing slot %d", self, g_current_ped_intelligence, i);
-                    *task_slot = nullptr;
-                }
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_task_destructor, self);
-}
-
-// =====================================================================
-// 🛡️ [AssetPackManager_requestDownload Hook]：防止无谷歌服务环境下 Play Core 崩溃
-// =====================================================================
-static void* g_stub_asset_pack_manager_request_download = nullptr;
-typedef int (*fn_AssetPackManager_requestDownload_t)(void* env, void* thiz, void* packNames);
-static fn_AssetPackManager_requestDownload_t g_orig_asset_pack_manager_request_download = nullptr;
-
-static int proxy_asset_pack_manager_request_download(void* env, void* thiz, void* packNames) {
-    SHADOWHOOK_STACK_SCOPE();
-    LOGW("⚠️ [AssetPackManager Hook] Bypassing AssetPackManager_requestDownload to prevent Play Core crash (returning -101)");
-    return -101; // ASSET_PACK_API_NOT_AVAILABLE (-101)
-}
-
-// =====================================================================
-// 🛡️ [HarfBuzz get_glyph_from_name Hook]：防止字体 post 表损坏导致的二分查找野指针闪退
-// =====================================================================
-// =====================================================================
 // 🛡️ [u_strlen_64 Hook]：防止 ICU 计算 Unicode 字符串长度时传入野指针闪退
 // =====================================================================
 static void* g_stub_u_strlen = nullptr;
@@ -6263,204 +6006,7 @@ static int32_t proxy_u_strlen(const void* s) {
     return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
 }
 
-// =====================================================================
-// 🛡️ [ICU & FreeType Hooks]：防止本地化字符与字体渲染引擎空指针解引用闪退
-// =====================================================================
-static void* g_stub_timezone_get_display_name = nullptr;
-typedef void* (*fn_TimeZone_getDisplayName_t)(void* self, bool daylight, int style, void* locale, void* result);
-static fn_TimeZone_getDisplayName_t g_orig_timezone_get_display_name = nullptr;
 
-static void* proxy_timezone_get_display_name(void* self, bool daylight, int style, void* locale, void* result) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) {
-        LOGW("⚠️ [TimeZone::getDisplayName Hook] self is null or unreadable! Preventing crash.");
-        return result;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_timezone_get_display_name, self, daylight, style, locale, result);
-}
-
-static void* g_stub_timezone_find_id = nullptr;
-typedef int (*fn_TimeZone_findID_t)(const void* id);
-static fn_TimeZone_findID_t g_orig_timezone_find_id = nullptr;
-
-static int proxy_timezone_find_id(const void* id) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!id || !is_pointer_readable(id)) {
-        LOGW("⚠️ [TimeZone::findID Hook] id is null or unreadable! Preventing crash.");
-        return -1;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_timezone_find_id, id);
-}
-
-static void* g_stub_unicodeset_stringspan_span = nullptr;
-typedef int (*fn_UnicodeSetStringSpan_span_t)(void* self, const void* s, int length, int spanCondition);
-static fn_UnicodeSetStringSpan_span_t g_orig_unicodeset_stringspan_span = nullptr;
-
-static int proxy_unicodeset_stringspan_span(void* self, const void* s, int length, int spanCondition) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self) || (length > 0 && (!s || !is_pointer_readable(s)))) {
-        LOGW("⚠️ [UnicodeSetStringSpan::span Hook] self or s is null/unreadable! Preventing crash.");
-        return 0;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_unicodeset_stringspan_span, self, s, length, spanCondition);
-}
-
-static void* g_stub_messageformat_findkeyword = nullptr;
-typedef int (*fn_MessageFormat_findKeyword_t)(void* s, const void* list);
-static fn_MessageFormat_findKeyword_t g_orig_messageformat_findkeyword = nullptr;
-
-static int proxy_messageformat_findkeyword(void* s, const void* list) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!s || !is_pointer_readable(s) || !list || !is_pointer_readable(list)) {
-        LOGW("⚠️ [MessageFormat::findKeyword Hook] s or list is null/unreadable! Preventing crash.");
-        return -1;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_messageformat_findkeyword, s, list);
-}
-
-static void* g_stub_collationiterator_previous_codepoint = nullptr;
-typedef int (*fn_CollationIterator_previousCodePoint_t)(void* self, int* status);
-static fn_CollationIterator_previousCodePoint_t g_orig_collationiterator_previous_codepoint = nullptr;
-
-static int proxy_collationiterator_previous_codepoint(void* self, int* status) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) {
-        LOGW("⚠️ [CollationIterator::previousCodePoint Hook] self is null! Preventing crash.");
-        if (status) *status = 1; // U_ILLEGAL_ARGUMENT_ERROR
-        return -1;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_collationiterator_previous_codepoint, self, status);
-}
-
-static void* g_stub_tt_runins = nullptr;
-typedef int (*fn_TT_RunIns_t)(void* exc);
-static fn_TT_RunIns_t g_orig_tt_runins = nullptr;
-
-static int proxy_tt_runins(void* exc) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!exc) {
-        LOGW("⚠️ [TT_RunIns Hook] exc is null! Preventing crash.");
-        return 0x14; // FT_Err_Invalid_Argument
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_tt_runins, exc);
-}
-
-// =====================================================================
-// 🛡️ [CScriptDecisionMakerModifications::Save Hook]：防止存档期间全局决策制造者未初始化或失效导致虚表解引用闪退
-// =====================================================================
-static void* g_stub_script_decision_maker_save = nullptr;
-typedef void (*fn_ScriptDecisionMakerSave_t)(void* self);
-static fn_ScriptDecisionMakerSave_t g_orig_script_decision_maker_save = nullptr;
-
-static void proxy_script_decision_maker_save(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (g_orig_script_decision_maker_save) {
-        xdl_info_t info;
-        if (xdl_addr(reinterpret_cast<void*>(g_orig_script_decision_maker_save), &info, nullptr)) {
-            uintptr_t lib_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
-            if (lib_base) {
-                // 1. 净化第一个全局决策制造者指针 (offset 0xa8b98f0)
-                void** p_dm1 = reinterpret_cast<void**>(lib_base + 0xa8b98f0);
-                if (is_pointer_readable(p_dm1)) {
-                    void* dm1 = *p_dm1;
-                    if (dm1) {
-                        if (!is_pointer_readable(dm1)) {
-                            *p_dm1 = nullptr;
-                        } else {
-                            void* vtable = *reinterpret_cast<void**>(dm1);
-                            if (!vtable || !is_pointer_readable(vtable)) {
-                                LOGW("⚠️ [Save Sanitizer] Clearing invalid global decision maker 1 %p", dm1);
-                                *p_dm1 = nullptr;
-                            }
-                        }
-                    }
-                }
-                
-                // 2. 净化第二个全局决策制造者指针 (offset 0xa8afa48)
-                void** p_dm2 = reinterpret_cast<void**>(lib_base + 0xa8afa48);
-                if (is_pointer_readable(p_dm2)) {
-                    void* dm2 = *p_dm2;
-                    if (dm2) {
-                        if (!is_pointer_readable(dm2)) {
-                            *p_dm2 = nullptr;
-                        } else {
-                            void* vtable = *reinterpret_cast<void**>(dm2);
-                            if (!vtable || !is_pointer_readable(vtable)) {
-                                LOGW("⚠️ [Save Sanitizer] Clearing invalid global decision maker 2 %p", dm2);
-                                *p_dm2 = nullptr;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_script_decision_maker_save, self);
-}
-
-// =====================================================================
-// 🛡️ [CTaskComplexInWater::CreateFirstSubTask Hook]：防止水系统未初始化或数组为空导致在水中创建子任务时解引用闪退
-// =====================================================================
-static void* g_stub_task_complex_in_water_create_first_sub_task = nullptr;
-typedef void* (*fn_TaskComplexInWaterCreateFirstSubTask_t)(void* self, void* ped);
-static fn_TaskComplexInWaterCreateFirstSubTask_t g_orig_task_complex_in_water_create_first_sub_task = nullptr;
-
-static void* proxy_task_complex_in_water_create_first_sub_task(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (g_orig_task_complex_in_water_create_first_sub_task) {
-        xdl_info_t info;
-        if (xdl_addr(reinterpret_cast<void*>(g_orig_task_complex_in_water_create_first_sub_task), &info, nullptr)) {
-            uintptr_t lib_base = reinterpret_cast<uintptr_t>(info.dli_fbase);
-            if (lib_base) {
-                void** p_manager = reinterpret_cast<void**>(lib_base + 0xa8ba5b8);
-                if (is_pointer_readable(p_manager)) {
-                    void* manager = *p_manager;
-                    if (!manager || !is_pointer_readable(manager)) {
-                        LOGW("⚠️ [InWater Sanitizer] Null or unreadable water manager %p, skipping task creation", manager);
-                        return nullptr;
-                    }
-                    void** p_array = reinterpret_cast<void**>(manager);
-                    if (is_pointer_readable(p_array)) {
-                        void* array = *p_array;
-                        if (!array || !is_pointer_readable(array)) {
-                            LOGW("⚠️ [InWater Sanitizer] Null or unreadable water array %p in manager %p, skipping task creation", array, manager);
-                            return nullptr;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_task_complex_in_water_create_first_sub_task, self, ped);
-}
-
-// =====================================================================
-// 🛡️ [CPed::DoFootLanded Hook]：防止粒子特效系统未就绪或为空导致脚步落地逻辑解引用 +0x18 崩溃
-// =====================================================================
-static void* g_stub_ped_do_foot_landed = nullptr;
-typedef void (*fn_PedDoFootLanded_t)(void* self, bool bLeftFoot, unsigned char uSurfaceType);
-static fn_PedDoFootLanded_t g_orig_ped_do_foot_landed = nullptr;
-
-static void proxy_ped_do_foot_landed(void* self, bool bLeftFoot, unsigned char uSurfaceType) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
-        void** p_fx_system = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x90);
-        if (is_pointer_readable(p_fx_system)) {
-            void* fx_system = *p_fx_system;
-            if (!fx_system || !is_pointer_readable(fx_system)) {
-                LOGW("⚠️ [DoFootLanded Sanitizer] Null or unreadable FxSystem %p for ped %p, skipping DoFootLanded", fx_system, self);
-                return;
-            }
-            // 进一步检查 FxSystem 内部结构 (防止 FxSystem::AddParticle 内部解引用 +0x18 崩溃)
-            void** p_member_18 = reinterpret_cast<void**>(reinterpret_cast<char*>(fx_system) + 0x18);
-            if (!is_pointer_readable(p_member_18) || *p_member_18 == nullptr) {
-                LOGW("⚠️ [DoFootLanded Sanitizer] Invalid FxSystem member at +0x18 for ped %p, skipping DoFootLanded", self);
-                return;
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_ped_do_foot_landed, self, bLeftFoot, uSurfaceType);
-}
 
 // =====================================================================
 // Hook 安装线程
@@ -6679,43 +6225,7 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CCarCtrl::ScriptGenerateOneEmergencyServicesCar: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // 🤝 [CTaskComplexPartner & derived Hooks Registration]
 
-    // 1. GetPartnerSequence Deal
-    g_stub_gps_deal = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN23CTaskComplexPartnerDeal18GetPartnerSequenceEv",
-        reinterpret_cast<void*>(proxy_gps_deal),
-        reinterpret_cast<void**>(&g_orig_gps_deal));
-    if (g_stub_gps_deal) LOGI("✅ Hooked CTaskComplexPartnerDeal::GetPartnerSequence");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerDeal::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // 2. GetPartnerSequence Greet
-    g_stub_gps_greet = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN24CTaskComplexPartnerGreet18GetPartnerSequenceEv",
-        reinterpret_cast<void*>(proxy_gps_greet),
-        reinterpret_cast<void**>(&g_orig_gps_greet));
-    if (g_stub_gps_greet) LOGI("✅ Hooked CTaskComplexPartnerGreet::GetPartnerSequence");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // 3. GetPartnerSequence Shove
-    g_stub_gps_shove = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN24CTaskComplexPartnerShove18GetPartnerSequenceEv",
-        reinterpret_cast<void*>(proxy_gps_shove),
-        reinterpret_cast<void**>(&g_orig_gps_shove));
-    if (g_stub_gps_shove) LOGI("✅ Hooked CTaskComplexPartnerShove::GetPartnerSequence");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerShove::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // 4. GetPartnerSequence Chat
-    g_stub_gps_chat = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN23CTaskComplexPartnerChat18GetPartnerSequenceEv",
-        reinterpret_cast<void*>(proxy_gps_chat),
-        reinterpret_cast<void**>(&g_orig_gps_chat));
-    if (g_stub_gps_chat) LOGI("✅ Hooked CTaskComplexPartnerChat::GetPartnerSequence");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerChat::GetPartnerSequence: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // 4b. CTaskSimpleHoldEntity::SetPedPosition
     g_stub_set_ped_pos = shadowhook_hook_sym_name(
@@ -6726,50 +6236,7 @@ static void hook_thread_func() {
     if (g_stub_set_ped_pos) LOGI("✅ Hooked CTaskSimpleHoldEntity::SetPedPosition");
     else LOGE("❌ Failed to hook CTaskSimpleHoldEntity::SetPedPosition: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // 5. CreateFirstSubTask Base
-    g_stub_cfst_base = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN19CTaskComplexPartner18CreateFirstSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_cfst_base),
-        reinterpret_cast<void**>(&g_orig_cfst_base));
-    if (g_stub_cfst_base) LOGI("✅ Hooked CTaskComplexPartner::CreateFirstSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexPartner::CreateFirstSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // 6. CreateFirstSubTask Deal
-    g_stub_cfst_deal = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN23CTaskComplexPartnerDeal18CreateFirstSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_cfst_deal),
-        reinterpret_cast<void**>(&g_orig_cfst_deal));
-    if (g_stub_cfst_deal) LOGI("✅ Hooked CTaskComplexPartnerDeal::CreateFirstSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerDeal::CreateFirstSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // 7. CreateFirstSubTask Greet
-    g_stub_cfst_greet = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN24CTaskComplexPartnerGreet18CreateFirstSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_cfst_greet),
-        reinterpret_cast<void**>(&g_orig_cfst_greet));
-    if (g_stub_cfst_greet) LOGI("✅ Hooked CTaskComplexPartnerGreet::CreateFirstSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexPartnerGreet::CreateFirstSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // 8. ControlSubTask Base
-    g_stub_cst_base = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN19CTaskComplexPartner14ControlSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_cst_base),
-        reinterpret_cast<void**>(&g_orig_cst_base));
-    if (g_stub_cst_base) LOGI("✅ Hooked CTaskComplexPartner::ControlSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexPartner::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // 9. CTaskComplexGoToPointAnyMeans::CreateSubTask
-    g_stub_gotopointanymeans_createsubtask = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZNK29CTaskComplexGoToPointAnyMeans13CreateSubTaskEiP4CPed",
-        reinterpret_cast<void*>(proxy_gotopointanymeans_createsubtask),
-        reinterpret_cast<void**>(&g_orig_gotopointanymeans_createsubtask));
-    if (g_stub_gotopointanymeans_createsubtask) LOGI("✅ Hooked CTaskComplexGoToPointAnyMeans::CreateSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexGoToPointAnyMeans::CreateSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CTaskManager::ManageTasks (防止各种任务生命周期、清理或零值野指针导致的任务管理闪退)
     g_stub_manage_tasks = shadowhook_hook_sym_name(
@@ -6801,35 +6268,7 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskComplexGangFollower::ControlSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CTaskGangHassleVehicle::CalcTargetOffset (防止帮派骚扰载具任务中目标载具被销毁或为空时解引用闪退)
-    g_stub_CalcTargetOffset = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN22CTaskGangHassleVehicle16CalcTargetOffsetEv",
-        reinterpret_cast<void*>(proxy_CalcTargetOffset),
-        reinterpret_cast<void**>(&g_orig_CalcTargetOffset));
-    if (g_stub_CalcTargetOffset) LOGI("✅ Hooked CTaskGangHassleVehicle::CalcTargetOffset");
-    else LOGE("❌ Failed to hook CTaskGangHassleVehicle::CalcTargetOffset: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CTaskComplexTurnToFaceEntityOrCoord::CreateFirstSubTask (防止面对实体/坐标任务中目标实体被销毁或为空时解引用闪退)
-    g_stub_turntofaceentity_createfirstsubtask = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN35CTaskComplexTurnToFaceEntityOrCoord18CreateFirstSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_turntofaceentity_createfirstsubtask),
-        reinterpret_cast<void**>(&g_orig_turntofaceentity_createfirstsubtask));
-    if (g_stub_turntofaceentity_createfirstsubtask) LOGI("✅ Hooked CTaskComplexTurnToFaceEntityOrCoord::CreateFirstSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexTurnToFaceEntityOrCoord::CreateFirstSubTask: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask (防止面对实体/坐标任务中目标实体被销毁或为空时解引用闪退)
-    g_stub_turntofaceentity_controlsubtask = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN35CTaskComplexTurnToFaceEntityOrCoord14ControlSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_turntofaceentity_controlsubtask),
-        reinterpret_cast<void**>(&g_orig_turntofaceentity_controlsubtask));
-    if (g_stub_turntofaceentity_controlsubtask) LOGI("✅ Hooked CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexTurnToFaceEntityOrCoord::ControlSubTask: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CPed::PlayFootSteps (防止转场期间玩家 Clump 临时脱离导致空指针解引用闪退)
     g_stub_play_footsteps = shadowhook_hook_sym_name(
@@ -6841,15 +6280,7 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CPed::PlayFootSteps: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CPed::DoFootLanded (防止粒子特效系统未就绪导致脚步落地逻辑解引用 +0x18 崩溃)
-    g_stub_ped_do_foot_landed = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN4CPed12DoFootLandedEbh",
-        reinterpret_cast<void*>(proxy_ped_do_foot_landed),
-        reinterpret_cast<void**>(&g_orig_ped_do_foot_landed));
-    if (g_stub_ped_do_foot_landed) LOGI("✅ Hooked CPed::DoFootLanded");
-    else LOGE("❌ Failed to hook CPed::DoFootLanded: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
+
 
     // Hook CPed::ProcessBuoyancy (防止任务槽被置空/野指针导致 ProcessBuoyancy 虚表解引用闪退)
     g_stub_process_buoyancy = shadowhook_hook_sym_name(
@@ -6861,46 +6292,11 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CPedIntelligence::ProcessAfterPreRender (防止已析构任务残留导致 ProcessAfterPreRender 纯虚函数调用闪退)
-    g_stub_process_after_pre_render = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN16CPedIntelligence21ProcessAfterPreRenderEv",
-        reinterpret_cast<void*>(proxy_process_after_pre_render),
-        reinterpret_cast<void**>(&g_orig_process_after_pre_render));
-    if (g_stub_process_after_pre_render) LOGI("✅ Hooked CPedIntelligence::ProcessAfterPreRender");
-    else LOGE("❌ Failed to hook CPedIntelligence::ProcessAfterPreRender: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook CTask::~CTask (防止在 ProcessAfterPreRender 期间任务中途被析构产生野指针导致闪退)
-    g_stub_task_destructor = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN5CTaskD2Ev",
-        reinterpret_cast<void*>(proxy_task_destructor),
-        reinterpret_cast<void**>(&g_orig_task_destructor));
-    if (g_stub_task_destructor) LOGI("✅ Hooked CTask::Destructor");
-    else LOGE("❌ Failed to hook CTask::Destructor: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook AssetPackManager_requestDownload (防止无谷歌服务环境下 Play Core 崩溃)
-    g_stub_asset_pack_manager_request_download = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "AssetPackManager_requestDownload",
-        reinterpret_cast<void*>(proxy_asset_pack_manager_request_download),
-        reinterpret_cast<void**>(&g_orig_asset_pack_manager_request_download));
-    if (g_stub_asset_pack_manager_request_download) LOGI("✅ Hooked AssetPackManager_requestDownload");
-    else LOGE("❌ Failed to hook AssetPackManager_requestDownload: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
 
-    // Hook TimeZone::findID (防止本地化时区查找空指针崩溃)
-    g_stub_timezone_find_id = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN6icu_648TimeZone6findIDERKNS_13UnicodeStringE",
-        reinterpret_cast<void*>(proxy_timezone_find_id),
-        reinterpret_cast<void**>(&g_orig_timezone_find_id));
-    if (g_stub_timezone_find_id) LOGI("✅ Hooked TimeZone::findID");
-    else LOGE("❌ Failed to hook TimeZone::findID: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+
 
     // Hook u_strlen_64 (防止 ICU 字符串长度计算传入野指针崩溃)
     g_stub_u_strlen = shadowhook_hook_sym_name(
@@ -6910,71 +6306,6 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_u_strlen));
     if (g_stub_u_strlen) LOGI("✅ Hooked u_strlen_64");
     else LOGE("❌ Failed to hook u_strlen_64: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook TimeZone::getDisplayName (防止本地化时区空指针崩溃)
-    g_stub_timezone_get_display_name = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZNK6icu_648TimeZone14getDisplayNameEaNS0_12EDisplayTypeERKNS_6LocaleERNS_13UnicodeStringE",
-        reinterpret_cast<void*>(proxy_timezone_get_display_name),
-        reinterpret_cast<void**>(&g_orig_timezone_get_display_name));
-    if (g_stub_timezone_get_display_name) LOGI("✅ Hooked TimeZone::getDisplayName");
-    else LOGE("❌ Failed to hook TimeZone::getDisplayName: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook UnicodeSetStringSpan::span (防止Unicode字符解析空指针崩溃)
-    g_stub_unicodeset_stringspan_span = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZNK6icu_6420UnicodeSetStringSpan4spanEPKDsi17USetSpanCondition",
-        reinterpret_cast<void*>(proxy_unicodeset_stringspan_span),
-        reinterpret_cast<void**>(&g_orig_unicodeset_stringspan_span));
-    if (g_stub_unicodeset_stringspan_span) LOGI("✅ Hooked UnicodeSetStringSpan::span");
-    else LOGE("❌ Failed to hook UnicodeSetStringSpan::span: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook MessageFormat::findKeyword (防止MessageFormat解析空指针崩溃)
-    g_stub_messageformat_findkeyword = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN6icu_6413MessageFormat11findKeywordERKNS_13UnicodeStringEPKPKDs",
-        reinterpret_cast<void*>(proxy_messageformat_findkeyword),
-        reinterpret_cast<void**>(&g_orig_messageformat_findkeyword));
-    if (g_stub_messageformat_findkeyword) LOGI("✅ Hooked MessageFormat::findKeyword");
-    else LOGE("❌ Failed to hook MessageFormat::findKeyword: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook CollationIterator::previousCodePoint (防止文本排序迭代空指针崩溃)
-    g_stub_collationiterator_previous_codepoint = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN6icu_6425FCDUTF16CollationIterator17previousCodePointER10UErrorCode",
-        reinterpret_cast<void*>(proxy_collationiterator_previous_codepoint),
-        reinterpret_cast<void**>(&g_orig_collationiterator_previous_codepoint));
-    if (g_stub_collationiterator_previous_codepoint) LOGI("✅ Hooked CollationIterator::previousCodePoint");
-    else LOGE("❌ Failed to hook CollationIterator::previousCodePoint: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook TT_RunIns (防止FreeType字体渲染解析崩溃)
-    g_stub_tt_runins = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "TT_RunIns",
-        reinterpret_cast<void*>(proxy_tt_runins),
-        reinterpret_cast<void**>(&g_orig_tt_runins));
-    if (g_stub_tt_runins) LOGI("✅ Hooked TT_RunIns");
-    else LOGE("❌ Failed to hook TT_RunIns: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退)
-    g_stub_script_decision_maker_save = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN33CScriptDecisionMakerModifications4SaveEv",
-        reinterpret_cast<void*>(proxy_script_decision_maker_save),
-        reinterpret_cast<void**>(&g_orig_script_decision_maker_save));
-    if (g_stub_script_decision_maker_save) LOGI("✅ Hooked CScriptDecisionMakerModifications::Save");
-    else LOGE("❌ Failed to hook CScriptDecisionMakerModifications::Save: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
-
-    // Hook CTaskComplexInWater::CreateFirstSubTask (防止在水中创建子任务时因水系统未初始化闪退)
-    g_stub_task_complex_in_water_create_first_sub_task = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN19CTaskComplexInWater18CreateFirstSubTaskEP4CPed",
-        reinterpret_cast<void*>(proxy_task_complex_in_water_create_first_sub_task),
-        reinterpret_cast<void**>(&g_orig_task_complex_in_water_create_first_sub_task));
-    if (g_stub_task_complex_in_water_create_first_sub_task) LOGI("✅ Hooked CTaskComplexInWater::CreateFirstSubTask");
-    else LOGE("❌ Failed to hook CTaskComplexInWater::CreateFirstSubTask: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
     void* pure_virtual_target = nullptr;
