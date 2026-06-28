@@ -5754,15 +5754,21 @@ static void sanitize_task_chain(void* task, int depth = 0) {
 
     if (is_pointer_readable(parent_slot)) {
         void* parent = *parent_slot;
-        if (parent && is_task_vtable_safe(parent)) {
-            sanitize_task_chain(parent, depth + 1);
+        if (parent && !is_task_vtable_safe(parent)) {
+            LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe parent task %p inside task %p", parent, task);
+            *parent_slot = nullptr;
         }
     }
 
     if (is_pointer_readable(sub_slot)) {
         void* sub = *sub_slot;
-        if (sub && is_task_vtable_safe(sub)) {
-            sanitize_task_chain(sub, depth + 1);
+        if (sub) {
+            if (!is_task_vtable_safe(sub)) {
+                LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe subtask %p inside task %p", sub, task);
+                *sub_slot = nullptr;
+            } else {
+                sanitize_task_chain(sub, depth + 1);
+            }
         }
     }
 }
