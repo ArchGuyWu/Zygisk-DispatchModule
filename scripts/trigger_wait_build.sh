@@ -27,7 +27,7 @@ while true; do
     pueue wait "$TASK_ID" >/dev/null 2>&1
     
     # 提取构建流信息
-    RUN_INFO=$(pueue log "$TASK_ID" | grep -E "(completed|in_progress|queued|waiting)")
+    RUN_INFO=$(pueue log "$TASK_ID" | grep -E "(completed|in_progress|queued|waiting)" || true)
     
     if [ -n "$RUN_INFO" ]; then
         STATUS=$(echo "$RUN_INFO" | awk '{print $1}')
