@@ -101,7 +101,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 26-Hook Defense System
+### 3. The 28-Hook Defense System
 Our solution intercepts all core lifecycles and virtual tables related to companion, pathfinding, hold-entity, gang follower, gang hassle, footstep, buoyancy, post-rendering, game saving, water-related, footstep landing, task destruction, asset downloading, Unicode character formatting, and font rendering tasks:
 
 1.  **Companion Virtual Table Protection** (`GetPartnerSequence` - 4 Hooks):
@@ -137,8 +137,10 @@ Our solution intercepts all core lifecycles and virtual tables related to compan
     *   `CPed::DoFootLanded` (When a pedestrian's foot lands, the engine attempts to trigger a footprint particle effect by retrieving the ped's particle system `FxSystem_c` pointer at offset `0x90`. If the particle system is uninitialized or has been deallocated (leaving its member at offset `0x18` as null), calling `AddParticle` on it dereferences `nullptr + 0x18`, causing a SIGSEGV crash. This hook dynamically intercepts the footstep landing event, verifies the particle system's validity, and safely skips particle generation if the system is uninitialized, preventing footstep-related particle crashes)
 14. **Mid-Process Task Destruction Protection** (`~CTask` - 1 Hook):
     *   `CTask::~CTask` (During pedestrian intelligence updates in `ProcessAfterPreRender`, some subtasks can be dynamically destructed by other active tasks. If their pointers remain in the task manager slots, the engine will attempt to access them later in the same frame, causing a SIGSEGV crash due to a null or garbage virtual table. This hook dynamically intercepts task destruction, checks if the task belongs to the currently executing `CPedIntelligence` context, and immediately clears its slot to `nullptr`, completely preventing mid-frame dangling pointer crashes)
-15. **Google Play Core Asset Delivery Safeguard** (`AssetPackManager_requestDownload` - 1 Hook):
-    *   `AssetPackManager_requestDownload` (On custom ROMs or devices without Google Play Services, the JNI initialization of the Play Core `AssetPackManager` returns an uninitialized or corrupt shared pointer. When the game attempts to request asset pack downloads, the destructor of this corrupt shared pointer dereferences `nullptr + 0x18`, causing a SIGSEGV crash. This hook intercepts the JNI call, safely returns `-101` (`ASSET_PACK_API_NOT_AVAILABLE`) to notify the game that Google Play Asset Delivery is unavailable, allowing it to fall back to local assets without crashing)
+15. **Google Play Core Asset Delivery Safeguards** (3 Hooks):
+    *   `AssetPackManager_requestDownload` (Intercepts JNI asset pack download requests and returns `-101` (`ASSET_PACK_API_NOT_AVAILABLE`) to safely trigger local asset fallback)
+    *   `AssetPackManager_init` (Intercepts JNI initialization of `AssetPackManager` and returns `nullptr` to prevent the creation of corrupt Java wrapper objects)
+    *   `playcore::AssetPackManager::Initialize` (Intercepts native C++ initialization of `AssetPackManager` and returns `0` (failure) to prevent uninitialized or corrupt internal `shared_ptr` destructors from crashing on startup/cleanup)
 16. **ICU Character Processing Safeguards** (5 Hooks):
     *   `icu_64::TimeZone::findID` (Prevents crashes when searching for timezone IDs with a null or unreadable `UnicodeString` reference)
     *   `icu_64::TimeZone::getDisplayName` (Prevents crashes when localizing time zones with a null or unreadable `TimeZone` instance)
