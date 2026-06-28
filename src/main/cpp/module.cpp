@@ -6070,6 +6070,23 @@ static void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
 
+// --- CPedIntelligence::ProcessStaticCounter Hook ---
+static void* g_stub_process_static_counter = nullptr;
+typedef void (*fn_ProcessStaticCounter_t)(void* self);
+static fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
+
+static void proxy_process_static_counter(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** p_ped = reinterpret_cast<void**>(self);
+        if (is_pointer_readable(p_ped)) {
+            sanitize_ped_tasks(*p_ped);
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_process_static_counter, self);
+}
+
+
 static void* g_stub_cbuoyancy_process_buoyancy = nullptr;
 typedef bool (*fn_cBuoyancy_ProcessBuoyancy_t)(void* physical, float f1, void* vec1, void* vec2);
 static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
@@ -6395,6 +6412,16 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_process_buoyancy));
     if (g_stub_process_buoyancy) LOGI("✅ Hooked CPed::ProcessBuoyancy");
     else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPedIntelligence::ProcessStaticCounter (防止更新静态计数器时对零填充任务解引用闪退)
+    g_stub_process_static_counter = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN16CPedIntelligence20ProcessStaticCounterEv",
+        reinterpret_cast<void*>(proxy_process_static_counter),
+        reinterpret_cast<void**>(&g_orig_process_static_counter));
+    if (g_stub_process_static_counter) LOGI("✅ Hooked CPedIntelligence::ProcessStaticCounter");
+    else LOGE("❌ Failed to hook CPedIntelligence::ProcessStaticCounter: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook cBuoyancy::ProcessBuoyancy (解决物理tick途中任务被销毁/空指针的竞态问题)
