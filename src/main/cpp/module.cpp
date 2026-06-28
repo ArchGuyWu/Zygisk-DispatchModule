@@ -5659,6 +5659,26 @@ static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
 }
 
 // --- CTaskComplexGangFollower::ControlSubTask Hook ---
+static inline void sanitize_ped_tasks(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return;
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(intel_slot)) return;
+    void* intel = *intel_slot;
+    if (!intel || !is_pointer_readable(intel)) return;
+    void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+    if (!is_pointer_readable(task_mgr)) return;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (is_pointer_readable(task_slot)) {
+            void* task = *task_slot;
+            if (task && !is_task_vtable_safe(task)) {
+                LOGW("⚠️ [Task Sanitizer] Clearing unsafe/zeroed task %p at slot %d in ped %p", task, i, ped);
+                *task_slot = nullptr;
+            }
+        }
+    }
+}
+
 typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
 
 static void* g_stub_ccgf_control = nullptr;
@@ -5673,17 +5693,21 @@ static void* proxy_ccgf_control(void* self, void* ped) {
         LOGW("⚠️ [GangFollower::ControlSubTask] unsafe ped!");
         return nullptr;
     }
+
+    // Sanitize follower ped
+    sanitize_ped_tasks(ped);
+
+    // Sanitize leader and partner peds
     char* self_bytes = reinterpret_cast<char*>(self);
-    void** leader_slot = reinterpret_cast<void**>(self_bytes + 0x18);
-    if (!is_pointer_readable(leader_slot)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] self + 0x18 slot unreadable!");
-        return nullptr;
+    void** p_leader = reinterpret_cast<void**>(self_bytes + 0x18);
+    if (is_pointer_readable(p_leader)) {
+        sanitize_ped_tasks(*p_leader);
     }
-    void* leader = *leader_slot;
-    if (leader && !is_pointer_readable(leader)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] leader (%p) is invalid/unreadable! Returning nullptr to prevent crash.", leader);
-        return nullptr;
+    void** p_partner = reinterpret_cast<void**>(self_bytes + 0x20);
+    if (is_pointer_readable(p_partner)) {
+        sanitize_ped_tasks(*p_partner);
     }
+
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
 }
 
@@ -5966,27 +5990,7 @@ static fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 
 static void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
-        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x5e8);
-        if (is_pointer_readable(intel_slot)) {
-            void* intel = *intel_slot;
-            if (intel && is_pointer_readable(intel)) {
-                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
-                if (is_pointer_readable(task_mgr)) {
-                    for (int i = 0; i < 11; ++i) {
-                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                        if (is_pointer_readable(task_slot)) {
-                            void* task = *task_slot;
-                            if (task && !is_task_vtable_safe(task)) {
-                                LOGW("⚠️ [ProcessBuoyancy Sanitizer] Clearing unsafe/zeroed task %p at slot %d inside CTaskManager %p", task, i, task_mgr);
-                                *task_slot = nullptr;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
 
@@ -6000,26 +6004,8 @@ static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullpt
 static bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
     bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
-    if (!res && physical && is_pointer_readable(physical)) {
-        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(physical) + 0x5e8);
-        if (is_pointer_readable(intel_slot)) {
-            void* intel = *intel_slot;
-            if (intel && is_pointer_readable(intel)) {
-                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
-                if (is_pointer_readable(task_mgr)) {
-                    for (int i = 0; i < 5; ++i) {
-                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                        if (is_pointer_readable(task_slot)) {
-                            void* task = *task_slot;
-                            if (task && !is_task_vtable_safe(task)) {
-                                LOGW("⚠️ [cBuoyancy::ProcessBuoyancy Sanitizer] Clearing unsafe/zeroed task %p at slot %d inside CTaskManager %p after physics tick", task, i, task_mgr);
-                                *task_slot = nullptr;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if (!res) {
+        sanitize_ped_tasks(physical);
     }
     return res;
 }
