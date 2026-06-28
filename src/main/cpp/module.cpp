@@ -6647,8 +6647,8 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook CCarCtrl::ScriptGenerateOneEmergencyServicesCar: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // 🤝 [CTaskComplexPartner & derived Hooks Registration]
-
+    // 🤝 [CTaskComplexPartner & derived Hooks Registration] (COMMENTED OUT FOR VERIFICATION)
+    /*
     // 1. GetPartnerSequence Deal
     g_stub_gps_deal = shadowhook_hook_sym_name(
         TARGET_LIB,
@@ -6848,6 +6848,7 @@ static void hook_thread_func() {
     if (g_stub_task_destructor) LOGI("✅ Hooked CTask::Destructor");
     else LOGE("❌ Failed to hook CTask::Destructor: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
+    */
 
     // Hook AssetPackManager_requestDownload (防止无谷歌服务环境下 Play Core 崩溃)
     g_stub_asset_pack_manager_request_download = shadowhook_hook_sym_name(
@@ -6904,13 +6905,14 @@ static void hook_thread_func() {
     if (g_stub_tt_runins) LOGI("✅ Hooked TT_RunIns");
     else LOGE("❌ Failed to hook TT_RunIns: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退)
-    g_stub_script_decision_maker_save = shadowhook_hook_sym_name(
+    // Hook CScriptDecisionMakerModifications::Save (防止存档时全局决策制造者失效导致解引用闪退) (COMMENTED OUT FOR VERIFICATION)
+    /*
+    g_stub_script_maker_save = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN33CScriptDecisionMakerModifications4SaveEv",
         reinterpret_cast<void*>(proxy_script_decision_maker_save),
         reinterpret_cast<void**>(&g_orig_script_decision_maker_save));
-    if (g_stub_script_decision_maker_save) LOGI("✅ Hooked CScriptDecisionMakerModifications::Save");
+    if (g_stub_script_maker_save) LOGI("✅ Hooked CScriptDecisionMakerModifications::Save");
     else LOGE("❌ Failed to hook CScriptDecisionMakerModifications::Save: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
@@ -6923,6 +6925,7 @@ static void hook_thread_func() {
     if (g_stub_task_complex_in_water_create_first_sub_task) LOGI("✅ Hooked CTaskComplexInWater::CreateFirstSubTask");
     else LOGE("❌ Failed to hook CTaskComplexInWater::CreateFirstSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
+    */
 
     // Patch base class pure virtual slots to neutral stubs
     void* pure_virtual_target = nullptr;
@@ -6957,10 +6960,13 @@ static void hook_thread_func() {
     if (pure_virtual_target) {
         g_pure_virtual_target = pure_virtual_target;
         LOGI("Found __cxa_pure_virtual at %p, scanning and patching base vtables...", pure_virtual_target);
+        // (COMMENTED OUT FOR VERIFICATION)
+        /*
         patch_vtable_pure_virtuals("_ZTV5CTask", g_vtable_CTask, 11, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
         patch_vtable_pure_virtuals("_ZTV11CTaskSimple", g_vtable_CTaskSimple, 13, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
         patch_vtable_pure_virtuals("_ZTV12CTaskComplex", g_vtable_CTaskComplex, 15, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
         patch_vtable_pure_virtuals("_ZTV6CEvent", g_vtable_CEvent, 19, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
+        */
     } else {
         LOGW("⚠️ __cxa_pure_virtual symbol not found! Vtable safety patch could not be applied.");
     }
