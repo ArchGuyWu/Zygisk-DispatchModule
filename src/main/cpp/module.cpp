@@ -444,12 +444,26 @@ static inline bool is_pointer_readable(const void* ptr) {
     return false;
 }
 
+static void* g_pure_virtual_target = nullptr;
+
 static inline bool is_task_vtable_safe(void* task) {
     if (!task) return true;
     if (!is_pointer_readable(task)) return false;
     void* vtable = *reinterpret_cast<void**>(task);
     if (!vtable) return false;
     if (!is_pointer_readable(vtable)) return false;
+
+    // Check if slot 2 (Clone) or slot 4 (IsSimple) points to __cxa_pure_virtual
+    if (g_pure_virtual_target) {
+        void** vtable_slots = reinterpret_cast<void**>(vtable);
+        if (is_pointer_readable(vtable_slots + 4) && vtable_slots[4] == g_pure_virtual_target) {
+            return false;
+        }
+        if (is_pointer_readable(vtable_slots + 2) && vtable_slots[2] == g_pure_virtual_target) {
+            return false;
+        }
+    }
+
     if (g_vtable_CTask && (vtable == g_vtable_CTask || vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTask) + 16))) return false;
     if (g_vtable_CTaskSimple && (vtable == g_vtable_CTaskSimple || vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskSimple) + 16))) return false;
     if (g_vtable_CTaskComplex && (vtable == g_vtable_CTaskComplex || vtable == reinterpret_cast<void*>(reinterpret_cast<char*>(g_vtable_CTaskComplex) + 16))) return false;
@@ -6618,6 +6632,7 @@ static void hook_thread_func() {
         }
     }
     if (pure_virtual_target) {
+        g_pure_virtual_target = pure_virtual_target;
         LOGI("Found __cxa_pure_virtual at %p, scanning and patching base vtables...", pure_virtual_target);
         patch_vtable_pure_virtuals("_ZTV5CTask", g_vtable_CTask, 11, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
         patch_vtable_pure_virtuals("_ZTV11CTaskSimple", g_vtable_CTaskSimple, 13, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
