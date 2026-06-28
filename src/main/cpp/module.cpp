@@ -5659,6 +5659,22 @@ static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
 }
 
 // --- CTaskComplexGangFollower::ControlSubTask Hook ---
+static inline void sanitize_task_tree(void* task) {
+    if (!task || !is_pointer_readable(task)) return;
+    void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x10);
+    if (is_pointer_readable(p_sub)) {
+        void* sub = *p_sub;
+        if (sub) {
+            if (!is_task_vtable_safe(sub)) {
+                LOGW("⚠️ [Task Tree Sanitizer] Clearing unsafe subtask %p inside parent task %p", sub, task);
+                *p_sub = nullptr;
+            } else {
+                sanitize_task_tree(sub);
+            }
+        }
+    }
+}
+
 static inline void sanitize_ped_tasks(void* ped) {
     if (!ped || !is_pointer_readable(ped)) return;
     void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
@@ -5671,9 +5687,13 @@ static inline void sanitize_ped_tasks(void* ped) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
         if (is_pointer_readable(task_slot)) {
             void* task = *task_slot;
-            if (task && !is_task_vtable_safe(task)) {
-                LOGW("⚠️ [Task Sanitizer] Clearing unsafe/zeroed task %p at slot %d in ped %p", task, i, ped);
-                *task_slot = nullptr;
+            if (task) {
+                if (!is_task_vtable_safe(task)) {
+                    LOGW("⚠️ [Task Sanitizer] Clearing unsafe/zeroed task %p at slot %d in ped %p", task, i, ped);
+                    *task_slot = nullptr;
+                } else {
+                    sanitize_task_tree(task);
+                }
             }
         }
     }
@@ -5709,6 +5729,73 @@ static void* proxy_ccgf_control(void* self, void* ped) {
     }
 
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
+}
+
+// --- CPedIntelligence::FindTaskByType Hook ---
+static void* g_stub_find_task_by_type = nullptr;
+typedef void* (*fn_FindTaskByType_t)(void* self, int type);
+static fn_FindTaskByType_t g_orig_find_task_by_type = nullptr;
+
+static void* proxy_find_task_by_type(void* self, int type) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** p_ped = reinterpret_cast<void**>(self);
+        if (is_pointer_readable(p_ped)) {
+            sanitize_ped_tasks(*p_ped);
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_find_task_by_type, self, type);
+}
+
+// --- CTaskComplexUsePairedAttractor::CreateNextSubTask Hook ---
+static void* g_stub_paired_attractor_create_next_sub_task = nullptr;
+typedef void* (*fn_PairedAttractorCreateNextSubTask_t)(void* self, void* ped);
+static fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next_sub_task = nullptr;
+
+static void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_pointer_readable(ped)) {
+        return nullptr;
+    }
+    
+    // Sanitize the ped's task manager
+    sanitize_ped_tasks(ped);
+
+    // 校验 Ped 是否真的拥有活动的 TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246 / 0xf6)
+    // 防止 FindActiveTaskByType 返回 nullptr 后官方引擎因缺少空指针校验而在 0x5709844 处解引用崩溃
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (is_pointer_readable(intel_slot)) {
+        void* intel = *intel_slot;
+        if (intel && is_pointer_readable(intel)) {
+            void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+            bool has_paired_attractor = false;
+            if (is_pointer_readable(task_mgr)) {
+                for (int i = 0; i < 11; ++i) {
+                    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                    if (is_pointer_readable(task_slot)) {
+                        void* task = *task_slot;
+                        if (task && is_task_vtable_safe(task)) {
+                            typedef int (*fn_GetTaskType_t)(void* t);
+                            void** vtable = *reinterpret_cast<void***>(task);
+                            if (is_pointer_readable(vtable + 5)) {
+                                fn_GetTaskType_t get_type = reinterpret_cast<fn_GetTaskType_t>(vtable[5]);
+                                if (get_type(task) == 246) {
+                                    has_paired_attractor = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!has_paired_attractor) {
+                LOGW("⚠️ [PairedAttractor Sanitizer] Ped %p does not have active TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246), intercepting CreateNextSubTask to prevent crash!", ped);
+                return nullptr;
+            }
+        }
+    }
+
+    return SHADOWHOOK_CALL_PREV(proxy_paired_attractor_create_next_sub_task, self, ped);
 }
 
 
@@ -5995,15 +6082,15 @@ static void proxy_process_buoyancy(void* self) {
 }
 
 // =====================================================================
-// 🛡️ [cBuoyancy::ProcessBuoyancy Hook]：防止物理浮力计算期间/之后任务被销毁导致 CPed::ProcessBuoyancy 闪退
+// 🛡️ [cBuoyancy::ProcessBuoyancy Hook]：防止物理浮力计算期间/之后任务被销毁导致 CPed::ProcessBuoyancy 闪退 (静态函数，首参为 CPhysical*)
 // =====================================================================
 static void* g_stub_cbuoyancy_process_buoyancy = nullptr;
-typedef bool (*fn_cBuoyancy_ProcessBuoyancy_t)(void* self, void* physical, float f1, void* vec1, void* vec2);
+typedef bool (*fn_cBuoyancy_ProcessBuoyancy_t)(void* physical, float f1, void* vec1, void* vec2);
 static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 
-static bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
+static bool proxy_cbuoyancy_process_buoyancy(void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
-    bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
+    bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, physical, f1, vec1, vec2);
     if (!res) {
         sanitize_ped_tasks(physical);
     }
@@ -6286,6 +6373,26 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_ccgf_control));
     if (g_stub_ccgf_control) LOGI("✅ Hooked CTaskComplexGangFollower::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexGangFollower::ControlSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPedIntelligence::FindTaskByType (防止递归查询子任务类型时虚表空指针解引用)
+    g_stub_find_task_by_type = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK16CPedIntelligence14FindTaskByTypeEi",
+        reinterpret_cast<void*>(proxy_find_task_by_type),
+        reinterpret_cast<void**>(&g_orig_find_task_by_type));
+    if (g_stub_find_task_by_type) LOGI("✅ Hooked CPedIntelligence::FindTaskByType");
+    else LOGE("❌ Failed to hook CPedIntelligence::FindTaskByType: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexUsePairedAttractor::CreateNextSubTask (防止找不到吸引子任务时解引用崩溃)
+    g_stub_paired_attractor_create_next_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN30CTaskComplexUsePairedAttractor17CreateNextSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_paired_attractor_create_next_sub_task),
+        reinterpret_cast<void**>(&g_orig_paired_attractor_create_next_sub_task));
+    if (g_stub_paired_attractor_create_next_sub_task) LOGI("✅ Hooked CTaskComplexUsePairedAttractor::CreateNextSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexUsePairedAttractor::CreateNextSubTask: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
