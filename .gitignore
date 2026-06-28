@@ -11,3 +11,6 @@ local.properties
 tombstone_*
 *.log
 .DS_Store
+__pycache__/
+extracted_module/
+.agents/

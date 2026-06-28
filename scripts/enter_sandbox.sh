@@ -5,7 +5,7 @@
 # =====================================================================
 set -euo pipefail
 
-WORKSPACE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+WORKSPACE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "📦 正在检索本地已安装的 proot-distro 容器..."
 DISTROS=$(proot-distro list | grep -E "alias:" | awk '{print $2}' || true)

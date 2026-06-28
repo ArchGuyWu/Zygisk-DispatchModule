@@ -5,7 +5,7 @@
 # =====================================================================
 set -euo pipefail
 
-WORKSPACE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+WORKSPACE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$WORKSPACE_DIR/tombstone_latest}"
 
 echo "🔍 正在检索 /data/tombstones/ 下最新生成的墓碑文件..."

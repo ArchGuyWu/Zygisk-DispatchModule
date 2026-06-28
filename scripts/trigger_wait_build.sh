@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORKSPACE_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 1. 如果有未提交的改动，先运行 auto_commit_push.sh
 if [ -n "$(git -C "$SCRIPT_DIR/.." status --porcelain)" ]; then

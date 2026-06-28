@@ -5,7 +5,7 @@
 # =====================================================================
 set -euo pipefail
 
-WORKSPACE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+WORKSPACE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$WORKSPACE_DIR/logcat_latest.log}"
 
 echo "🧹 正在清理历史 logcat 缓存..."

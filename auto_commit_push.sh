@@ -5,8 +5,8 @@
 # =====================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKSPACE_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$WORKSPACE_DIR"
 CONTAINER_NAME="ubuntu-build"
 
 echo "=== Zygisk-DispatchModule Auto Build & Auto Push System ==="
