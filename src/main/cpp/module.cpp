@@ -6057,6 +6057,19 @@ static void proxy_play_footsteps(void* self) {
 // =====================================================================
 // 🛡️ [cBuoyancy::ProcessBuoyancy Hook]：防止物理浮力计算期间/之后任务被销毁导致 CPed::ProcessBuoyancy 闪退 (静态函数，首参为 CPhysical*)
 // =====================================================================
+// =====================================================================
+// 🛡️ [CPed::ProcessBuoyancy Hook]：防止 ProcessBuoyancy 期间任务槽被置空/野指针导致虚表解引用闪退
+// =====================================================================
+static void* g_stub_process_buoyancy = nullptr;
+typedef void (*fn_ProcessBuoyancy_t)(void* self);
+static fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
+
+static void proxy_process_buoyancy(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    sanitize_ped_tasks(self);
+    SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
+}
+
 static void* g_stub_cbuoyancy_process_buoyancy = nullptr;
 typedef bool (*fn_cBuoyancy_ProcessBuoyancy_t)(void* physical, float f1, void* vec1, void* vec2);
 static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
@@ -6373,6 +6386,16 @@ static void hook_thread_func() {
 
 
 
+
+    // Hook CPed::ProcessBuoyancy (防止任务槽被置空/野指针导致 ProcessBuoyancy 虚表解引用闪退)
+    g_stub_process_buoyancy = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN4CPed15ProcessBuoyancyEv",
+        reinterpret_cast<void*>(proxy_process_buoyancy),
+        reinterpret_cast<void**>(&g_orig_process_buoyancy));
+    if (g_stub_process_buoyancy) LOGI("✅ Hooked CPed::ProcessBuoyancy");
+    else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook cBuoyancy::ProcessBuoyancy (解决物理tick途中任务被销毁/空指针的竞态问题)
     g_stub_cbuoyancy_process_buoyancy = shadowhook_hook_sym_name(
