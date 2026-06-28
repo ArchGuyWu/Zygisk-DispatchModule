@@ -6123,9 +6123,29 @@ static void proxy_play_footsteps(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
 
-    // 检查 m_pRwObject (offset 0x20) 是否为空，若为空则直接跳过，防止底层 PlayFootSteps 裸解引用 0x44 闪退
+    // 1. 检查 m_pRwObject (offset 0x20) 是否有效
     void** rw_obj_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
     if (!is_pointer_readable(rw_obj_slot) || *rw_obj_slot == nullptr) {
+        return;
+    }
+    void* rw_obj = *rw_obj_slot;
+
+    // 2. 检查 rw_obj->field_308 (offset 0x308) 是否有效
+    void** field_308_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(rw_obj) + 0x308);
+    if (!is_pointer_readable(field_308_slot) || *field_308_slot == nullptr) {
+        return;
+    }
+    void* field_308 = *field_308_slot;
+
+    // 3. 检查 field_308->field_10 (offset 0x10) 是否非零
+    int* field_10_ptr = reinterpret_cast<int*>(reinterpret_cast<char*>(field_308) + 0x10);
+    if (!is_pointer_readable(field_10_ptr) || *field_10_ptr == 0) {
+        return;
+    }
+
+    // 4. 检查 *field_308 是否有效
+    void** field_308_deref_slot = reinterpret_cast<void**>(field_308);
+    if (!is_pointer_readable(field_308_deref_slot) || *field_308_deref_slot == nullptr) {
         return;
     }
 
