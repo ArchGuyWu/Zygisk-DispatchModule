@@ -4589,6 +4589,13 @@ static bool is_emergency_vehicle_model(unsigned int model) {
 static std::unordered_map<void*, int64_t> g_civilian_panic_timers;
 static int64_t g_last_cleanup_panic_timers = 0;
 
+static bool is_vehicle_driven_by_player(void* veh) {
+    if (!veh || !g_FindPlayerPed || !g_IsDriver) return false;
+    void* player = g_FindPlayerPed(0);
+    if (!player) return false;
+    return g_IsDriver(veh, reinterpret_cast<const CPed*>(player));
+}
+
 static void apply_civilian_avoidance_field() {
     if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_GetMatrix) return;
 
@@ -4667,6 +4674,10 @@ static void apply_civilian_avoidance_field() {
             int handle = (i << 8) | flag;
             void* veh = g_GetPoolVehicle(handle);
             if (veh && is_vehicle_pointer_valid(veh)) {
+                
+                // 玩家驾驶的载具本身绝不参与避让
+                if (is_vehicle_driven_by_player(veh)) continue;
+
                 unsigned int model = get_entity_model_index(veh);
                 if (!is_emergency_vehicle_model(model) && is_vehicle_occupied_by_driver(veh)) {
                     CVector civ_pos = get_entity_pos(veh);
@@ -4680,25 +4691,22 @@ static void apply_civilian_avoidance_field() {
                         float dz = civ_pos.z - ev.pos.z;
                         float dist = sqrtf(dx * dx + dy * dy + dz * dz);
 
-                        // 恐惧场作用范围：前方 25 米，横向 5 米
-                        if (dist < 25.0f && dist > 0.1f) {
-                            // 投影到应急车的前向向量和右向向量上
+                        // 恐惧场作用范围：前方 22 米，横向 4.5 米
+                        if (dist < 22.0f && dist > 0.1f) {
+                            // 投影到应急车的前向向量 and 右向向量
                             float dot_forward = dx * ev.dir.x + dy * ev.dir.y + dz * ev.dir.z;
                             float dot_right = dx * ev.right.x + dy * ev.right.y + dz * ev.right.z;
 
-                            // 如果平民车处于应急车的前方（dot_forward > 0），且横向距离较近（|dot_right| < 5.0m）
-                            if (dot_forward > 0.0f && dot_forward < 25.0f && fabsf(dot_right) < 5.0f) {
-                                // 计算避让方向（横向避让：向左或向右分流）
+                            // 如果平民车处于应急车的前方，且横向距离较近
+                            if (dot_forward > 0.0f && dot_forward < 22.0f && fabsf(dot_right) < 4.5f) {
                                 float avoid_sign = (dot_right >= 0.0f) ? 1.0f : -1.0f;
                                 
                                 // 平民车越近，避让力度越强。使用渐进的平滑系数
-                                float intensity = (25.0f - dot_forward) / 25.0f; // 0.0 -> 1.0
-                                float side_shove = intensity * 0.45f; // 最大单次横移 0.45 米
+                                float intensity = (22.0f - dot_forward) / 22.0f; // 0.0 -> 1.0
                                 
-                                // 惊慌按喇叭与原生急刹车尾灯细节：
-                                // [Note] 经过现场排查，高频高并发对全城平民车辆施加原生伤害事件 (g_VehicleInflictDamage)
-                                // 会导致某些特定载具类型或处于特殊AI状态的车辆触发 'Pure virtual function called!' 闪退。
-                                // 为保证系统 100% 绝对稳定性，此处不采用不安全的物理受击事件。
+                                // 每帧微小的平滑偏移（高频更新，杜绝瞬移感与悬空）
+                                float side_shove = intensity * 0.035f; 
+                                float brake_shove = intensity * 0.025f;
 
                                 CMatrix* mat = g_GetMatrix(veh);
                                 float civ_up_x = 0.0f;
@@ -4708,9 +4716,6 @@ static void apply_civilian_avoidance_field() {
                                     civ_up_y = mat->up_y;
                                 }
 
-                                // 刹车物理减速模拟：基于强度向车辆自身的后向向量（-mat->up）施加反向力
-                                float brake_shove = intensity * 0.35f; // 最大单次物理急刹车拖拽 0.35 米
-
                                 CVector new_civ_pos = civ_pos;
                                 // 1. 施加横向避让位移
                                 new_civ_pos.x += ev.right.x * avoid_sign * side_shove;
@@ -4718,12 +4723,11 @@ static void apply_civilian_avoidance_field() {
                                 // 2. 施加物理急刹车拖拽（退后位置分量，降低实际前进速度）
                                 new_civ_pos.x -= civ_up_x * brake_shove;
                                 new_civ_pos.y -= civ_up_y * brake_shove;
-                                
-                                new_civ_pos.z += 0.05f; // 稍微抬升防止轮子陷入路面
+                                // 移除 Z 轴硬性提升，防止车辆在避让时产生悬空感，让物理引擎自身贴地
 
-                                // 施加微弱的 Yaw 角度旋转，让其车头指向避让方向，看起来非常像在“打方向盘避让”！
+                                // 施加微弱的 Yaw 角度旋转，让其车头指向避让方向
                                 if (mat) {
-                                    float rot_angle = avoid_sign * intensity * 0.08f; // 约 4.5 度偏角
+                                    float rot_angle = avoid_sign * intensity * 0.006f; 
                                     float cos_a = cosf(rot_angle);
                                     float sin_a = sinf(rot_angle);
 
@@ -4739,10 +4743,6 @@ static void apply_civilian_avoidance_field() {
                                 }
 
                                 set_entity_pos(veh, new_civ_pos);
-
-                                if (dist < 8.0f) {
-                                    LOGI("🚗💨 [Fear Field] Civilian vehicle %p panic-steered to avoid emergency vehicle %p (dist: %.1fm)", veh, ev.veh, dist);
-                                }
                                 break; // 响应最近的一个避让源即可
                             }
                         }
@@ -4754,6 +4754,9 @@ static void apply_civilian_avoidance_field() {
 }
 
 static void on_main_thread_tick() {
+    // 1. 每帧高频平滑避让更新（无感避让）
+    apply_civilian_avoidance_field();
+
     int64_t cur_time = now_ms();
     if (cur_time - g_last_tick_time_ms < 250) {
         return;
@@ -4773,9 +4776,6 @@ static void on_main_thread_tick() {
 
     // 运行急救与消防车辆的自主脱困、避障与高级物理救援心跳
     emergency_vehicles_tick();
-
-    // 运行平民车辆智能避让恐惧场
-    apply_civilian_avoidance_field();
 
     // 周期性释放已到期的临时道路关闭
     {
