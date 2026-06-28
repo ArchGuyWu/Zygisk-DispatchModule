@@ -6238,26 +6238,6 @@ static void* g_stub_asset_pack_manager_request_download = nullptr;
 typedef int (*fn_AssetPackManager_requestDownload_t)(void* env, void* thiz, void* packNames);
 static fn_AssetPackManager_requestDownload_t g_orig_asset_pack_manager_request_download = nullptr;
 
-static void* g_stub_asset_pack_manager_init = nullptr;
-typedef void* (*fn_AssetPackManager_init_t)(void* env, void* thiz);
-static fn_AssetPackManager_init_t g_orig_asset_pack_manager_init = nullptr;
-
-static void* proxy_asset_pack_manager_init(void* env, void* thiz) {
-    SHADOWHOOK_STACK_SCOPE();
-    LOGW("⚠️ [AssetPackManager_init Hook] Bypassing JNI init (returning nullptr)");
-    return nullptr;
-}
-
-static void* g_stub_asset_pack_manager_initialize = nullptr;
-typedef int (*fn_AssetPackManager_Initialize_t)(void* self, void* obj);
-static fn_AssetPackManager_Initialize_t g_orig_asset_pack_manager_initialize = nullptr;
-
-static int proxy_asset_pack_manager_initialize(void* self, void* obj) {
-    SHADOWHOOK_STACK_SCOPE();
-    LOGW("⚠️ [AssetPackManager::Initialize Hook] Bypassing native initialization to prevent crash.");
-    return 0; // Return 0 (failure/disabled)
-}
-
 static int proxy_asset_pack_manager_request_download(void* env, void* thiz, void* packNames) {
     SHADOWHOOK_STACK_SCOPE();
     LOGW("⚠️ [AssetPackManager Hook] Bypassing AssetPackManager_requestDownload to prevent Play Core crash (returning -101)");
@@ -6892,23 +6872,7 @@ static void hook_thread_func() {
     else LOGE("❌ Failed to hook AssetPackManager_requestDownload: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook AssetPackManager_init (JNI)
-    g_stub_asset_pack_manager_init = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "AssetPackManager_init",
-        reinterpret_cast<void*>(proxy_asset_pack_manager_init),
-        reinterpret_cast<void**>(&g_orig_asset_pack_manager_init));
-    if (g_stub_asset_pack_manager_init) LOGI("✅ Hooked AssetPackManager_init");
-    else LOGE("❌ Failed to hook AssetPackManager_init: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook playcore::AssetPackManager::Initialize (Native)
-    g_stub_asset_pack_manager_initialize = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN8playcore16AssetPackManager10InitializeEP8_jobject",
-        reinterpret_cast<void*>(proxy_asset_pack_manager_initialize),
-        reinterpret_cast<void**>(&g_orig_asset_pack_manager_initialize));
-    if (g_stub_asset_pack_manager_initialize) LOGI("✅ Hooked AssetPackManager::Initialize");
-    else LOGE("❌ Failed to hook AssetPackManager::Initialize: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook TimeZone::findID (防止本地化时区查找空指针崩溃)
     g_stub_timezone_find_id = shadowhook_hook_sym_name(
