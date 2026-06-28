@@ -5743,6 +5743,30 @@ typedef void (*fn_ManageTasks_t)(void* self);
 static void* g_stub_manage_tasks = nullptr;
 static fn_ManageTasks_t g_orig_manage_tasks = nullptr;
 
+static void sanitize_task_chain(void* task, int depth = 0) {
+    if (!task || depth > 10) return;
+    if (!is_pointer_readable(task)) return;
+
+    sanitize_task_pointers(task);
+
+    void** parent_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 8);
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 16);
+
+    if (is_pointer_readable(parent_slot)) {
+        void* parent = *parent_slot;
+        if (parent && is_task_vtable_safe(parent)) {
+            sanitize_task_chain(parent, depth + 1);
+        }
+    }
+
+    if (is_pointer_readable(sub_slot)) {
+        void* sub = *sub_slot;
+        if (sub && is_task_vtable_safe(sub)) {
+            sanitize_task_chain(sub, depth + 1);
+        }
+    }
+}
+
 static void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self) {
@@ -5751,9 +5775,13 @@ static void proxy_manage_tasks(void* self) {
         for (int i = 0; i < 11; ++i) {
             void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
             void* task = *task_slot;
-            if (task && !is_task_vtable_safe(task)) {
-                LOGW("⚠️ [CTaskManager::ManageTasks] Found unsafe/zeroed task %p at slot %d inside CTaskManager %p. Clearing it to prevent crash.", task, i, self);
-                *task_slot = nullptr;
+            if (task) {
+                if (!is_task_vtable_safe(task)) {
+                    LOGW("⚠️ [CTaskManager::ManageTasks] Found unsafe/zeroed task %p at slot %d inside CTaskManager %p. Clearing it to prevent crash.", task, i, self);
+                    *task_slot = nullptr;
+                } else {
+                    sanitize_task_chain(task);
+                }
             }
         }
     }
@@ -5841,6 +5869,19 @@ static void proxy_CalcTargetOffset(void* self) {
     }
     
     SHADOWHOOK_CALL_PREV(proxy_CalcTargetOffset, self);
+}
+
+// --- CPed::DoFootLanded Hook ---
+typedef void (*fn_DoFootLanded_t)(void* ped, bool left_foot, unsigned char surface_type);
+static void* g_stub_do_foot_landed = nullptr;
+static fn_DoFootLanded_t g_orig_do_foot_landed = nullptr;
+
+static void proxy_do_foot_landed(void* ped, bool left_foot, unsigned char surface_type) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_ped_pointer_valid_safe(ped) || !*reinterpret_cast<void**>(ped)) {
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_do_foot_landed, ped, left_foot, surface_type);
 }
 
 static void* g_stub_add_police_occupants = nullptr;
