@@ -5483,26 +5483,7 @@ static inline bool is_partner_task_safe(void* self) {
 }
 
 static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
-    if (!task) return;
-    if (!is_pointer_readable(task)) return;
-    char* task_bytes = reinterpret_cast<char*>(task);
-    for (int offset = 8; offset < max_size_bytes; offset += 8) {
-        if (!is_pointer_readable(task_bytes + offset)) break;
-        void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
-        void* ptr = *ptr_slot;
-        if (ptr) {
-            if (!is_pointer_readable(ptr)) {
-                LOGW("⚠️ [sanitize_task_pointers] Found completely UNREADABLE pointer %p at offset 0x%X in task %p. Clearing it!", ptr, offset, task);
-                *ptr_slot = nullptr;
-            } else {
-                void* vtable = *reinterpret_cast<void**>(ptr);
-                if (vtable == nullptr) {
-                    LOGW("⚠️ [sanitize_task_pointers] Found zero-filled object pointer %p at offset 0x%X in task %p. Clearing it!", ptr, offset, task);
-                    *ptr_slot = nullptr;
-                }
-            }
-        }
-    }
+    // No-op to prevent memory corruption of non-pointer fields (e.g. float arrays, coordinates, timers)
 }
 
 // --- GetPartnerSequence Hooks ---
@@ -6186,8 +6167,6 @@ static void hook_thread_func() {
     RESOLVE_SYM(lib, g_p_GMalloc, "GMalloc", FMalloc**);
     RESOLVE_SYM(lib, g_CSequenceManager_ms_instance, "_ZN16CSequenceManager11ms_instanceE", void**);
 
-    xdl_close(lib);
-
     // --- 安装 Hooks ---
     LOGI("Installing hooks...");
 
@@ -6500,6 +6479,10 @@ static void hook_thread_func() {
         patch_vtable_pure_virtuals("_ZTV6CEvent", g_vtable_CEvent, 19, pure_virtual_target, reinterpret_cast<void*>(safe_pure_virtual_stub));
     } else {
         LOGW("⚠️ __cxa_pure_virtual symbol not found! Vtable safety patch could not be applied.");
+    }
+
+    if (lib) {
+        xdl_close(lib);
     }
 
     LOGI("=== All hooks installed ===");
