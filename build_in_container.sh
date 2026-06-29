@@ -202,7 +202,11 @@ target_link_libraries(shadowhook log)
 add_library(shadowhook_nothing SHARED ${SHADOWHOOK_CPP_DIR}/nothing/sh_nothing.c)
 
 # 编译我们的模块并静态链接 shadowhook
-add_library(policemod SHARED module.cpp)
+add_library(policemod SHARED
+    module.cpp
+    hooks_stability.cpp
+    ecs_systems.cpp
+)
 target_link_libraries(policemod
     PRIVATE
     log

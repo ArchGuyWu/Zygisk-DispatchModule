@@ -7,14 +7,16 @@ GTA SA DE Android 警力派发 Zygisk 模组源码结构说明。
 ```text
 mod-workspace/
 ├── src/main/cpp/
-│   ├── include/                 # 从 module.cpp 拆出的可复用头文件
-│   │   ├── log.hpp              # Android log 宏
-│   │   ├── game_config.hpp      # 包名、PedType、模型 ID
-│   │   ├── game_types.hpp       # 引擎结构体、枚举、函数指针 typedef
-│   │   └── pointer_sanitizer.hpp# pipe 可读性检测 (is_pointer_readable)
-│   ├── zygisk/                  # Zygisk API 头文件
-│   ├── ecs_engine.hpp           # 轻量 ECS（警员/载具组件与系统）
-│   ├── module.cpp               # 主逻辑：Hook、派发、ECS 系统注册 (~7k 行)
+│   ├── include/
+│   │   ├── log.hpp / game_config.hpp / game_types.hpp / pointer_sanitizer.hpp
+│   │   ├── dispatch_types.hpp   # CrimeEvent、CopVehicleBinding
+│   │   ├── hooks_stability_types.hpp  # 稳定性 Hook 回调 typedef
+│   │   └── mod_shared.hpp       # 跨文件 extern 全局量与共享 API
+│   ├── zygisk/
+│   ├── ecs_engine.hpp
+│   ├── module.cpp               # 派发玩法 + Hook 安装 + Zygisk 入口 (~6.1k 行)
+│   ├── hooks_stability.cpp      # 稳定性防御 Hook 代理 (~840 行)
+│   ├── ecs_systems.cpp          # init_ecs_systems() (~530 行)
 │   └── CMakeLists.txt
 ├── third_party/
 │   └── shadowhook-src/          # ShadowHook 源码（构建时下载）
@@ -41,7 +43,7 @@ mod-workspace/
 | ECS 系统 | `init_ecs_systems()` 内各 System lambda |
 | Zygisk 入口 | `PoliceModModule` + `REGISTER_ZYGISK_MODULE` |
 
-后续拆分建议（未实施）：将「稳定性 Hook」与「派发玩法」分别迁入 `hooks_stability.cpp` / `dispatch_logic.cpp`，保持 `module.cpp` 仅作装配入口。
+已完成拆分：`hooks_stability.cpp`（稳定性 Hook）、`ecs_systems.cpp`（ECS 系统注册）。`module.cpp` 仍含派发玩法与 Hook 安装线程。后续可将派发逻辑迁入 `dispatch_logic.cpp`。
 
 ## 构建产物
 

@@ -49,63 +49,56 @@
 #include "include/game_types.hpp"
 #include "include/pointer_sanitizer.hpp"
 #include "ecs_engine.hpp"
+#include "include/mod_shared.hpp"
 
 // =====================================================================
 // 全局函数指针（运行时通过 dlsym 解析）
 // =====================================================================
-static fn_FindPlayerPed_t            g_FindPlayerPed = nullptr;
-static fn_FindPlayerCoors_t          g_FindPlayerCoors = nullptr;
-static fn_GetPedType_t               g_GetPedType = nullptr;
-static fn_GetMatrix_t                g_GetMatrix = nullptr;
-static fn_FindDistToNearestPedOfType_t g_FindDistToNearestCop = nullptr;
-static fn_ScriptGenEmergencyCar_t    g_ScriptGenEmergencyCar = nullptr;
-static fn_GenOneEmergencyCar_t       g_GenOneEmergencyCar = nullptr;
-static fn_AddPoliceOccupants_t       g_AddPoliceOccupants = nullptr;
-static fn_AddCriminalToKill_t        g_AddCriminalToKill = nullptr;
-static fn_GiveWeapon_t               g_GiveWeapon = nullptr;
-static fn_SetCurrentWeapon_t         g_SetCurrentWeapon = nullptr;
-static fn_GiveWeaponAtStartOfFight_t g_GiveWeaponAtStartOfFight = nullptr;
+fn_FindPlayerPed_t            g_FindPlayerPed = nullptr;
+fn_FindPlayerCoors_t          g_FindPlayerCoors = nullptr;
+fn_GetPedType_t               g_GetPedType = nullptr;
+fn_GetMatrix_t                g_GetMatrix = nullptr;
+fn_FindDistToNearestPedOfType_t g_FindDistToNearestCop = nullptr;
+fn_ScriptGenEmergencyCar_t    g_ScriptGenEmergencyCar = nullptr;
+fn_GenOneEmergencyCar_t       g_GenOneEmergencyCar = nullptr;
+fn_AddPoliceOccupants_t       g_AddPoliceOccupants = nullptr;
+fn_AddCriminalToKill_t        g_AddCriminalToKill = nullptr;
+fn_GiveWeapon_t               g_GiveWeapon = nullptr;
+fn_SetCurrentWeapon_t         g_SetCurrentWeapon = nullptr;
+fn_GiveWeaponAtStartOfFight_t g_GiveWeaponAtStartOfFight = nullptr;
 
 // 火源检测与避让系统全局变量与类型定义
-static void* g_FireManager = nullptr;
+void* g_FireManager = nullptr;
 typedef void* (*fn_FindNearestFire_t)(void* fire_manager_this, const CVector& pos, bool bCheckScriptFires, bool bCheckNormalFires);
-static fn_FindNearestFire_t g_FindNearestFire = nullptr;
+fn_FindNearestFire_t g_FindNearestFire = nullptr;
 
 // 假枪声所需函数指针与类型定义
 typedef void (*fn_CEventGunShot_ctor_t)(void*, CEntity*, CVector, CVector, bool);
 typedef void (*fn_CEventGunShot_dtor_t)(void*);
 typedef void (*fn_CEventGroup_Add_t)(void*, void*, bool);
 
-static fn_CEventGunShot_ctor_t g_CEventGunShot_ctor = nullptr;
-static fn_CEventGunShot_dtor_t g_CEventGunShot_dtor = nullptr;
-static fn_CEventGroup_Add_t    g_CEventGroup_Add = nullptr;
+fn_CEventGunShot_ctor_t g_CEventGunShot_ctor = nullptr;
+fn_CEventGunShot_dtor_t g_CEventGunShot_dtor = nullptr;
+fn_CEventGroup_Add_t    g_CEventGroup_Add = nullptr;
 
-// Unreal Engine 4 内存分配器接口与全局指针声明
-class FMalloc {
-public:
-    virtual ~FMalloc() {}
-    virtual void* Malloc(size_t Count, uint32_t Alignment = 0) = 0;
-    virtual void* Realloc(void* Original, size_t Count, uint32_t Alignment = 0) = 0;
-    virtual void Free(void* Original) = 0;
-};
-static FMalloc** g_p_GMalloc = nullptr;
+FMalloc** g_p_GMalloc = nullptr;
 
-static fn_RegisterKill_t             g_RegisterKill = nullptr;
-static fn_GetWeaponLockOnTarget_t    g_GetWeaponLockOnTarget = nullptr;
-static fn_IsAlive_t                  g_IsAlive = nullptr;
-static fn_VehicleInflictDamage_t     g_VehicleInflictDamage = nullptr;
-static fn_GetPoolPed_t               g_GetPoolPed = nullptr;
-static void*                         g_ms_pPedPool = nullptr;
-static void**                        g_CSequenceManager_ms_instance = nullptr;
-static void*                         g_ms_pVehiclePool = nullptr;
+fn_RegisterKill_t             g_RegisterKill = nullptr;
+fn_GetWeaponLockOnTarget_t    g_GetWeaponLockOnTarget = nullptr;
+fn_IsAlive_t                  g_IsAlive = nullptr;
+fn_VehicleInflictDamage_t     g_VehicleInflictDamage = nullptr;
+fn_GetPoolPed_t               g_GetPoolPed = nullptr;
+void*                         g_ms_pPedPool = nullptr;
+void**                        g_CSequenceManager_ms_instance = nullptr;
+void*                         g_ms_pVehiclePool = nullptr;
 
 // 摄像机/视野判定相关符号
-static void*                         g_TheCamera = nullptr;
+void*                         g_TheCamera = nullptr;
 typedef CVector (*fn_GetGameCamPosition_t)(void*);
 typedef CVector (*fn_GetLookDirection_t)(void*);
 
-static fn_GetGameCamPosition_t       g_GetGameCamPosition = nullptr;
-static fn_GetLookDirection_t         g_GetLookDirection = nullptr;
+fn_GetGameCamPosition_t       g_GetGameCamPosition = nullptr;
+fn_GetLookDirection_t         g_GetLookDirection = nullptr;
 
 // 任务与载具交互相关符号
 typedef bool (*fn_IsDriver_t)(const void* vehicle_this, const CPed* ped);
@@ -113,63 +106,63 @@ typedef bool (*fn_IsPassenger_t)(const void* vehicle_this, const CPed* ped);
 typedef void (*fn_TellOccupantsToLeaveCar_t)(void* vehicle);
 typedef void* (*fn_GetPoolVehicle_t)(int);
 
-static fn_IsDriver_t                g_IsDriver = nullptr;
-static fn_IsPassenger_t             g_IsPassenger = nullptr;
-static fn_TellOccupantsToLeaveCar_t g_TellOccupantsToLeaveCar = nullptr;
-static fn_GetPoolVehicle_t          g_GetPoolVehicle = nullptr;
+fn_IsDriver_t                g_IsDriver = nullptr;
+fn_IsPassenger_t             g_IsPassenger = nullptr;
+fn_TellOccupantsToLeaveCar_t g_TellOccupantsToLeaveCar = nullptr;
+fn_GetPoolVehicle_t          g_GetPoolVehicle = nullptr;
 
 typedef void (*fn_GetCarToGoToCoors_t)(void* vehicle, CVector* coors, int drivingMode, bool flag);
-static fn_GetCarToGoToCoors_t        g_GetCarToGoToCoors = nullptr;
+fn_GetCarToGoToCoors_t        g_GetCarToGoToCoors = nullptr;
 
 typedef void (*fn_SwitchRoadsOffInArea_t)(void* instance, float minX, float minY, float minZ, float maxX, float maxY, float maxZ, bool bSwitchOff, bool bKeepVehicles, bool bAllowBoats);
-static fn_SwitchRoadsOffInArea_t     g_SwitchRoadsOffInArea = nullptr;
-static void*                         g_ThePaths = nullptr;
+fn_SwitchRoadsOffInArea_t     g_SwitchRoadsOffInArea = nullptr;
+void*                         g_ThePaths = nullptr;
 
 typedef void* (*fn_TaskNew_t)(unsigned long);
-static fn_TaskNew_t                  g_TaskNew = nullptr;
-static fn_TaskKillCriminal_ctor_t    g_TaskKillCriminal_ctor = nullptr;
-static fn_SetTask_t                  g_SetTask = nullptr;
-static fn_TaskEnterCar_ctor_t        g_TaskEnterCar_ctor = nullptr;
-static void*                         g_vtable_KillCriminal = nullptr;
-static void*                         g_vtable_EnterCar = nullptr;
+fn_TaskNew_t                  g_TaskNew = nullptr;
+fn_TaskKillCriminal_ctor_t    g_TaskKillCriminal_ctor = nullptr;
+fn_SetTask_t                  g_SetTask = nullptr;
+fn_TaskEnterCar_ctor_t        g_TaskEnterCar_ctor = nullptr;
+void*                         g_vtable_KillCriminal = nullptr;
+void*                         g_vtable_EnterCar = nullptr;
 
-static void*                         g_vtable_CTask = nullptr;
-static void*                         g_vtable_CTaskSimple = nullptr;
-static void*                         g_vtable_CTaskComplex = nullptr;
-static void*                         g_vtable_CEvent = nullptr;
+void*                         g_vtable_CTask = nullptr;
+void*                         g_vtable_CTaskSimple = nullptr;
+void*                         g_vtable_CTaskComplex = nullptr;
+void*                         g_vtable_CEvent = nullptr;
 
 typedef void (*fn_AddTaskPrimaryMaybeInGroup_t)(void* ped_intel_this, CTask* task, bool writeToEventLog);
-static fn_AddTaskPrimaryMaybeInGroup_t g_AddTaskPrimaryMaybeInGroup = nullptr;
+fn_AddTaskPrimaryMaybeInGroup_t g_AddTaskPrimaryMaybeInGroup = nullptr;
 
 typedef void* (*fn_FindTaskByType_t)(const void* ped_intel_this, int task_type);
-static fn_FindTaskByType_t g_FindTaskByType = nullptr;
+fn_FindTaskByType_t g_FindTaskByType = nullptr;
 
-static constexpr int TASK_COMPLEX_KILL_CRIMINAL = 1105;
+constexpr int TASK_COMPLEX_KILL_CRIMINAL = 1105;
 
 // =====================================================================
 // Hook 存根
 // =====================================================================
-static void* g_stub_report_crime = nullptr;
-static fn_ReportCrime_orig_t g_orig_report_crime = nullptr;
-static void* g_stub_register_kill = nullptr;
-static void* g_stub_set_wanted = nullptr;
-static void* g_stub_generate_damage_event = nullptr;
-static fn_GenerateDamageEvent_orig_t g_orig_generate_damage_event = nullptr;
+void* g_stub_report_crime = nullptr;
+fn_ReportCrime_orig_t g_orig_report_crime = nullptr;
+void* g_stub_register_kill = nullptr;
+void* g_stub_set_wanted = nullptr;
+void* g_stub_generate_damage_event = nullptr;
+fn_GenerateDamageEvent_orig_t g_orig_generate_damage_event = nullptr;
 
-static void* g_stub_the_scripts_process = nullptr;
+void* g_stub_the_scripts_process = nullptr;
 typedef void (*fn_TheScriptsProcess_t)();
-static fn_TheScriptsProcess_t g_orig_the_scripts_process = nullptr;
+fn_TheScriptsProcess_t g_orig_the_scripts_process = nullptr;
 
-static void* g_stub_event_damage_ctor_c1 = nullptr;
-static void* g_stub_event_damage_ctor_c2 = nullptr;
+void* g_stub_event_damage_ctor_c1 = nullptr;
+void* g_stub_event_damage_ctor_c2 = nullptr;
 typedef void (*fn_EventDamage_ctor_t)(void* event_this, CEntity* damageSource, unsigned int startTime, eWeaponType weaponType, int pieceType, unsigned char damageSeverity, bool b1, bool b2);
-static fn_EventDamage_ctor_t g_orig_event_damage_ctor_c1 = nullptr;
-static fn_EventDamage_ctor_t g_orig_event_damage_ctor_c2 = nullptr;
+fn_EventDamage_ctor_t g_orig_event_damage_ctor_c1 = nullptr;
+fn_EventDamage_ctor_t g_orig_event_damage_ctor_c2 = nullptr;
 
-static void* g_stub_set_current_weapon = nullptr;
-static fn_SetCurrentWeapon_t g_orig_SetCurrentWeapon = nullptr;
+void* g_stub_set_current_weapon = nullptr;
+fn_SetCurrentWeapon_t g_orig_SetCurrentWeapon = nullptr;
 
-static std::atomic<int> g_player_wanted_level{0};
+std::atomic<int> g_player_wanted_level{0};
 
 // =====================================================================
 // 辅助函数
@@ -212,7 +205,7 @@ static bool is_ped_pointer_valid_safe(void* target_ped) {
     return false;
 }
 
-static void* g_pure_virtual_target = nullptr;
+void* g_pure_virtual_target = nullptr;
 
 static inline bool is_task_vtable_safe(void* task) {
     if (!task) return true;
@@ -678,88 +671,35 @@ static CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, flo
 // =====================================================================
 // 犯罪事件追踪系统
 // =====================================================================
-struct CrimeEvent {
-    CPed* criminal = nullptr;      // 犯罪 NPC
-    CVector location;              // 犯罪坐标
-    bool is_firearm = false;       // 是否使用枪械
-    int64_t detect_time_ms = 0;    // 检测到的时间戳
-    bool dispatch_sent = false;    // 是否已发送调度
-    bool cancelled = false;        // 是否被取消
-    int cops_dispatched = 0;       // 已出警的警察数量
-    int cops_killed = 0;           // 牺牲的警察数量
-    int reinforcements_sent = 0;   // 已增派次数 (最多3次)
-
-    // 并案机制：同一区域内多个犯罪分子的并案追踪
-    std::vector<CPed*> consolidated_criminals;
-    std::vector<bool> criminal_is_firearm;
-
-    struct CriminalState {
-        int first_threat_category = 0;   // 0: 无武装, 1: 近战, 2: 枪械 (用于武器降级保护)
-        int current_threat_category = 0; // 当前武器分类
-        bool is_active = true;           // 是否活跃
-        bool shooting_air = false;       // 是否对空气开枪 (次级活跃)
-        bool fleeing = false;            // 是否在逃跑 (不活跃)
-    };
-    std::unordered_map<CPed*, CriminalState> criminal_states;
-
-    // 接警车信息
-    void* spawned_vehicle = nullptr;
-    bool occupants_ordered_out = false;
-    int64_t spawn_time_ms = 0;
-
-    // 异步任务回调队列结构 (免除 std::thread 多线程开销和幽灵车 Bug)
-    struct DelayedTask {
-        int64_t execute_time_ms;
-        std::function<void()> callback;
-    };
-    std::vector<DelayedTask> pending_tasks;
-
-    // 警戒区路段禁行相关信息
-    bool road_closure_active = false;
-    CVector road_closure_center;
-
-    // 多并发调度独立状态机状态变量
-    int dispatch_state = 0; // STATE_IDLE
-    int64_t timer_start = 0;
-    int dispatch_delay_ms = 0;
-    int last_cops_killed = 0;
-    int64_t on_scene_start = 0;
-    std::vector<void*> case_vehicles;
-    uint64_t case_id = 0;
-};
-
-static std::recursive_mutex g_crime_mutex;
-static std::vector<std::shared_ptr<CrimeEvent>> g_active_crimes;
-static uint64_t g_next_case_id = 1;
+std::recursive_mutex g_crime_mutex;
+std::vector<std::shared_ptr<CrimeEvent>> g_active_crimes;
+uint64_t g_next_case_id = 1;
 
 static void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime);
 
 // 兼容层：原全局活跃标志兼容
-struct CrimeActiveCompat {
-    bool load() const {
-        std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-        for (const auto& crime : g_active_crimes) {
-            if (crime && !crime->cancelled) return true;
-        }
-        return false;
+bool CrimeActiveCompat::load() const {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    for (const auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) return true;
     }
-    void store(bool active) {
-        // 留空以向下兼容原有的状态修改
-    }
-    operator bool() const {
-        return load();
-    }
-};
-static CrimeActiveCompat g_crime_active;
+    return false;
+}
+
+void CrimeActiveCompat::store(bool /*active*/) {
+    // 留空以向下兼容原有的状态修改
+}
+
+CrimeActiveCompat g_crime_active;
 
 // 兼容层：dummy 案件
-static std::shared_ptr<CrimeEvent> g_dummy_crime = []() {
+std::shared_ptr<CrimeEvent> g_dummy_crime = []() {
     auto d = std::make_shared<CrimeEvent>();
     d->cancelled = true;
     return d;
 }();
 
-static std::shared_ptr<CrimeEvent> get_primary_active_crime() {
+std::shared_ptr<CrimeEvent> get_primary_active_crime() {
     std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
     if (g_active_crimes.empty()) {
         return g_dummy_crime;
@@ -789,35 +729,33 @@ static std::shared_ptr<CrimeEvent> get_primary_active_crime() {
     return g_dummy_crime;
 }
 
-#define g_active_crime (*get_primary_active_crime())
-
 // 玩家协助追踪
-static std::atomic<CPed*> g_tracked_criminal{nullptr};
-static std::atomic<int64_t> g_last_assist_time_ms{0};
-static std::atomic<bool>    g_is_generating_custom_dispatch{false};    // 是否正在生成自定义调度车辆
+std::atomic<CPed*> g_tracked_criminal{nullptr};
+std::atomic<int64_t> g_last_assist_time_ms{0};
+std::atomic<bool>    g_is_generating_custom_dispatch{false};    // 是否正在生成自定义调度车辆
 
 // 玩家在协助警察时造成的流弹/误伤优化追踪
-static std::atomic<bool>    g_player_stray_bullet_flag{false};         // 是否误伤了市民
-static std::atomic<int64_t> g_player_stray_bullet_time{0};             // 市民误伤时间戳
-static std::atomic<int>     g_friendly_fire_cop_hits{0};               // 误伤警察次数计数
-static std::atomic<int64_t> g_last_friendly_fire_cop_time{0};          // 最后一次误伤警察时间戳
-static std::atomic<bool>    g_player_friendly_fire_blocked{false};     // 是否拦截本次误伤通缉
+std::atomic<bool>    g_player_stray_bullet_flag{false};         // 是否误伤了市民
+std::atomic<int64_t> g_player_stray_bullet_time{0};             // 市民误伤时间戳
+std::atomic<int>     g_friendly_fire_cop_hits{0};               // 误伤警察次数计数
+std::atomic<int64_t> g_last_friendly_fire_cop_time{0};          // 最后一次误伤警察时间戳
+std::atomic<bool>    g_player_friendly_fire_blocked{false};     // 是否拦截本次误伤通缉
 
 // 用于判定 NPC 是否为自卫
 struct AttackedNPC {
     CPed* npc;
     int64_t attack_time;
 };
-static std::vector<AttackedNPC> g_player_attacked_npcs;
-static std::mutex g_attacked_npcs_mutex;
+std::vector<AttackedNPC> g_player_attacked_npcs;
+std::mutex g_attacked_npcs_mutex;
 
 // 暴动限流：限频命令同一犯罪 NPC
 struct CommandedCriminal {
     CPed* criminal;
     int64_t command_time;
 };
-static std::vector<CommandedCriminal> g_commanded_criminals;
-static std::mutex g_commanded_criminals_mutex;
+std::vector<CommandedCriminal> g_commanded_criminals;
+std::mutex g_commanded_criminals_mutex;
 
 // 📡 [临时寻路规避区]：用于记录中途意外（如警车卡死塞车等）临时关闭的路网，以供后续按时开启
 struct TemporaryRoadClosure {
@@ -825,8 +763,8 @@ struct TemporaryRoadClosure {
     float radius;
     int64_t reopen_time_ms;
 };
-static std::vector<TemporaryRoadClosure> g_temp_road_closures;
-static std::mutex                         g_temp_closures_mutex;
+std::vector<TemporaryRoadClosure> g_temp_road_closures;
+std::mutex                         g_temp_closures_mutex;
 
 void make_cops_attack_criminal_immediate(CPed* criminal);
 static bool is_specific_criminal_armed_with_firearm(CPed* target_criminal);
@@ -1586,7 +1524,7 @@ static void proxy_SetCurrentWeapon(CPed* ped, eWeaponType weaponType) {
 
 // =====================================================================
 // 获取 Ped 的 CTaskManager
-static void* get_ped_intelligence(CPed* ped) {
+void* get_ped_intelligence(CPed* ped) {
     if (!ped) return nullptr;
     return *reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5E8);
 }
@@ -1648,14 +1586,14 @@ static void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
 // 🚧 [Event Group Fix]：在 64 位 Android (Definitive Edition) 下，CPedIntelligence 中的 CEventGroup 
 // 偏移量确定为 0xC8 (200 字节)。之前使用的 0x30~0xC0 范围扫描在 0x60 处有假阳性指针，
 // 传入 Add 会导致严重的 SIGSEGV 崩溃。此处改为直接安全偏移，100% 解决崩溃。
-static void* get_ped_event_group(CPed* ped) {
+void* get_ped_event_group(CPed* ped) {
     void* intelligence = get_ped_intelligence(ped);
     if (!intelligence) return nullptr;
     return reinterpret_cast<void*>(reinterpret_cast<char*>(intelligence) + 0xC8);
 }
 
 // 在载具池中查找最靠近指定坐标的载具（支持排除指定载具）
-static void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nullptr) {
+void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nullptr) {
     if (!g_ms_pVehiclePool || !g_GetPoolVehicle) return nullptr;
     void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
     if (!pool) return nullptr;
@@ -1689,7 +1627,7 @@ static void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_v
 }
 
 // 查找并返回该警员所在的载具指针
-static void* find_vehicle_of_cop(CPed* cop) {
+void* find_vehicle_of_cop(CPed* cop) {
     if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_IsDriver || !g_IsPassenger) return nullptr;
     void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
     if (!pool) return nullptr;
@@ -1791,16 +1729,11 @@ static void command_cop_vehicle_to_scene(void* vehicle, const CVector& target_lo
 
 // Commanded cop vector removed to use FindTaskByType(1105) dynamically
 
-struct CopVehicleBinding {
-    CPed* cop;
-    void* vehicle;
-    bool as_driver;
-};
-static std::vector<CopVehicleBinding> g_cop_vehicle_bindings;
-static std::mutex g_bindings_mutex;
+std::vector<CopVehicleBinding> g_cop_vehicle_bindings;
+std::mutex g_bindings_mutex;
 
 // 查找警员先前绑定的警车
-static void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
+void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
     std::lock_guard<std::mutex> lock(g_bindings_mutex);
     for (const auto& binding : g_cop_vehicle_bindings) {
         if (binding.cop == cop) {
@@ -1825,37 +1758,37 @@ static bool is_alive_bound_driver_exists(void* vehicle) {
     return false;
 }
 
-static std::vector<void*> g_spawned_cop_vehicles;
-static std::mutex g_spawned_cop_vehicles_mutex;
+std::vector<void*> g_spawned_cop_vehicles;
+std::mutex g_spawned_cop_vehicles_mutex;
 
 struct CopExitRecord {
     CPed* cop;
     int64_t exit_time;
 };
-static std::vector<CopExitRecord> g_cop_exits;
-static std::mutex g_exits_mutex;
+std::vector<CopExitRecord> g_cop_exits;
+std::mutex g_exits_mutex;
 
 // Missing global variables and mutexes for dispatched vehicle & cop state tracking
-static std::set<void*> g_vehicles_emptied;
-static std::mutex g_vehicles_emptied_mutex;
+std::set<void*> g_vehicles_emptied;
+std::mutex g_vehicles_emptied_mutex;
 
-static std::map<void*, int64_t> g_dispatched_vehicles_time;
-static std::mutex g_dispatched_vehicles_time_mutex;
+std::map<void*, int64_t> g_dispatched_vehicles_time;
+std::mutex g_dispatched_vehicles_time_mutex;
 
-static std::map<std::pair<CPed*, CPed*>, int64_t> g_cop_attack_assign_time;
-static std::mutex g_cop_attack_assign_mutex;
+std::map<std::pair<CPed*, CPed*>, int64_t> g_cop_attack_assign_time;
+std::mutex g_cop_attack_assign_mutex;
 
-static std::map<CPed*, int64_t> g_armed_cops_time;
-static std::mutex g_armed_cops_mutex;
+std::map<CPed*, int64_t> g_armed_cops_time;
+std::mutex g_armed_cops_mutex;
 
-static std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
-static std::mutex g_cop_assigned_weapon_mutex;
+std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
+std::mutex g_cop_assigned_weapon_mutex;
 
-static std::set<void*> g_vehicles_ordered_to_scene;
-static std::mutex g_vehicles_mutex; // as used in line 2981 and 2447
+std::set<void*> g_vehicles_ordered_to_scene;
+std::mutex g_vehicles_mutex; // as used in line 2981 and 2447
 
-static std::set<void*> g_vehicles_siren_awakened;
-static std::mutex g_vehicles_siren_awakened_mutex;
+std::set<void*> g_vehicles_siren_awakened;
+std::mutex g_vehicles_siren_awakened_mutex;
 
 // Helper functions for vehicle status queries and modifications
 static bool is_vehicle_emptied(void* vehicle) {
@@ -1903,11 +1836,11 @@ struct StuckTracker {
     float last_dir_y = 0.0f;
     int spin_count = 0;
 };
-static std::map<void*, StuckTracker> g_stuck_vehicles;
-static std::mutex g_stuck_vehicles_mutex;
+std::map<void*, StuckTracker> g_stuck_vehicles;
+std::mutex g_stuck_vehicles_mutex;
 
-static std::set<void*> g_spawned_swats;
-static std::mutex g_spawned_swats_mutex;
+std::set<void*> g_spawned_swats;
+std::mutex g_spawned_swats_mutex;
 
 static void register_spawned_swat(void* vehicle) {
     if (!vehicle) return;
@@ -3851,14 +3784,14 @@ static void dispatch_spawn_emergency_car(unsigned int model, CVector pos) {
 // =====================================================================
 // 🚑🚒 [Emergency Vehicle Escaper]：救护车与消防车的高级物理脱困、导航与避障机制
 // =====================================================================
-static std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
-static std::mutex g_emergency_stuck_vehicles_mutex;
+std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
+std::mutex g_emergency_stuck_vehicles_mutex;
 
-static std::vector<void*> g_emergency_vehicles_emptied;
-static std::mutex g_emergency_vehicles_emptied_mutex;
+std::vector<void*> g_emergency_vehicles_emptied;
+std::mutex g_emergency_vehicles_emptied_mutex;
 
-static constexpr int PED_TYPE_MEDIC     = 18;
-static constexpr int PED_TYPE_FIREMAN   = 19;
+constexpr int PED_TYPE_MEDIC     = 18;
+constexpr int PED_TYPE_FIREMAN   = 19;
 
 static void emergency_vehicles_tick() {
     if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return;
@@ -4335,7 +4268,7 @@ static bool is_emergency_vehicle_model(unsigned int model) {
 }
 
 // 🚗💨 平民车辆避让时的惊慌按喇叭与急刹车冷却定时器
-static std::unordered_map<void*, int64_t> g_civilian_panic_timers;
+std::unordered_map<void*, int64_t> g_civilian_panic_timers;
 static int64_t g_last_cleanup_panic_timers = 0;
 
 static bool is_vehicle_driven_by_player(void* veh) {
@@ -5239,561 +5172,13 @@ static void proxy_the_scripts_process() {
 }
 
 // =====================================================================
-// 🤝 [CTaskComplexPartner & derived Hooks]：防止各种伴随/打招呼序列空指针、野指针或零值状态导致的 Sequence Manager 空指针闪退
-// =====================================================================
-static inline bool is_sequence_manager_safe() {
-    if (!g_CSequenceManager_ms_instance || !*g_CSequenceManager_ms_instance) {
-        return false;
-    }
-    void* manager = *g_CSequenceManager_ms_instance;
-    return is_pointer_readable(manager);
-}
-
-static inline bool is_partner_task_safe(void* self) {
-    if (!self || !is_task_vtable_safe(self)) {
-        return false;
-    }
-    return true;
-}
-
-static inline void sanitize_partner_task_pointers(void* task) {
-    // 禁用伙伴任务“净化器”以防误伤非指针数据成员
-}
-
-static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
-    // 【彻底修复说明】
-    // 禁用盲目扫描内存的“净化器”。
-    // 盲目扫描（按8字节步长解引用）会把非指针数据（如 float 数组、CVector 坐标、计时器等）误判为“已被析构清空的 C++ 对象”并置为 nullptr。
-    // 例如：BoneNode_c::Limit(float) 在限制骨骼角度时会调用 BoneNode_c::GetLimits(int, float*, float*)。
-    // 如果任务对象中包含指向此类限制值 float 数组的指针，且数组前两个 float 恰好为 0.0f（前8字节为0），
-    // 盲扫就会将该指针强行置为 nullptr，导致 GetLimits 写入时发生空指针解引用闪退（fault addr 0x10）。
-    //
-    // 【后续彻底重构要求】
-    // 若未来需要重新启用此净化器以防止其他未挂钩子处的虚函数闪退，必须通过逆向分析（如使用 IDA/r2）
-    // 找出 CTask 各个子类（如 CTaskComplexPartner 等）中存放子任务或 Ped 指针的【精确偏移量】（Offsets），
-    // 并仅针对这些特定偏移量进行安全校验与置空，严禁进行盲目全内存扫描。
-}
-
-// --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---
-typedef void (*fn_SetPedPosition_t)(void* self, void* ped);
-
-static void* g_stub_set_ped_pos = nullptr;
-static fn_SetPedPosition_t g_orig_set_ped_pos = nullptr;
-static void proxy_set_ped_pos(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) {
-        LOGW("⚠️ [SetPedPosition] unsafe self! Skipping.");
-        return;
-    }
-    if (ped && !is_pointer_readable(ped)) {
-        LOGW("⚠️ [SetPedPosition] unsafe ped! Skipping.");
-        return;
-    }
-    if (self && ped) {
-        // Check if the pointer at ped + 0x648 is null or unreadable
-        char* ped_bytes = reinterpret_cast<char*>(ped);
-        void** clump_slot = reinterpret_cast<void**>(ped_bytes + 0x648);
-        if (!is_pointer_readable(clump_slot)) {
-            LOGW("⚠️ [SetPedPosition] ped + 0x648 slot unreadable! Skipping to prevent crash.");
-            return;
-        }
-        void* clump = *clump_slot;
-        if (clump && !is_pointer_readable(clump)) {
-            LOGW("⚠️ [SetPedPosition] ped->clump (%p) is invalid/unreadable! Skipping original to prevent crash.", clump);
-            return;
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_set_ped_pos, self, ped);
-}
-
-
-// =====================================================================
-// 🛠️ [CTaskManager & CAttractorScanner Safety Hooks]
-// =====================================================================
-typedef void (*fn_ManageTasks_t)(void* self);
-static void* g_stub_manage_tasks = nullptr;
-static fn_ManageTasks_t g_orig_manage_tasks = nullptr;
-
-typedef bool (*fn_IsSimple_t)(void* self);
-
-static inline bool is_task_simple(void* task) {
-    if (!task || !is_pointer_readable(task)) return true;
-    void** vtable = *reinterpret_cast<void***>(task);
-    if (!is_pointer_readable(vtable)) return true;
-
-    // IsSimple is at offset 0x20 (index 4 in 64-bit vtable)
-    fn_IsSimple_t is_simple_fn = reinterpret_cast<fn_IsSimple_t>(vtable[4]);
-    if (is_pointer_readable(reinterpret_cast<void*>(is_simple_fn))) {
-        return is_simple_fn(task);
-    }
-    return true;
-}
-
-static void sanitize_task_chain(void* task, int depth = 0) {
-    if (!task || depth > 10) return;
-    if (!is_pointer_readable(task)) return;
-
-    sanitize_task_pointers(task);
-
-    // Only CTaskComplex (where is_task_simple returns false) has m_pSubTask at offset 16.
-    // Wiping offset 16 of a CTaskSimple will corrupt its subclass member variables.
-    if (!is_task_simple(task)) {
-        void** parent_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 8);
-        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 16);
-
-        if (is_pointer_readable(parent_slot)) {
-            void* parent = *parent_slot;
-            if (parent && !is_task_vtable_safe(parent)) {
-                LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe parent task %p inside task %p", parent, task);
-                *parent_slot = nullptr;
-            }
-        }
-
-        if (is_pointer_readable(sub_slot)) {
-            void* sub = *sub_slot;
-            if (sub) {
-                if (!is_task_vtable_safe(sub)) {
-                    LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe subtask %p inside task %p", sub, task);
-                    *sub_slot = nullptr;
-                } else {
-                    sanitize_task_chain(sub, depth + 1);
-                }
-            }
-        }
-    } else {
-        // For CTaskSimple, we only sanitize its parent task pointer at offset 8.
-        void** parent_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 8);
-        if (is_pointer_readable(parent_slot)) {
-            void* parent = *parent_slot;
-            if (parent && !is_task_vtable_safe(parent)) {
-                LOGW("⚠️ [Task Chain Sanitizer] Clearing unsafe parent task %p inside simple task %p", parent, task);
-                *parent_slot = nullptr;
-            }
-        }
-    }
-}
-
-static void proxy_manage_tasks(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
-        // Total 11 slots of pointers starting at offset 0 of CTaskManager.
-        for (int i = 0; i < 11; ++i) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            void* task = *task_slot;
-            if (task) {
-                if (!is_task_vtable_safe(task)) {
-                    LOGW("⚠️ [CTaskManager::ManageTasks] Found unsafe/zeroed task %p at slot %d inside CTaskManager %p. Clearing it to prevent crash.", task, i, self);
-                    *task_slot = nullptr;
-                } else {
-                    sanitize_task_chain(task);
-                }
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
-}
-
-typedef void (*fn_ScanForAttractorsInRange_t)(void* self, void* ped);
-static void* g_stub_scan_for_attractors_in_range = nullptr;
-static fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
-
-static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (ped && !is_ped_pointer_valid_safe(ped)) return;
-    if (ped) {
-        void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-        if (intel) {
-            for (int offset = 0x8; offset <= 0x28; offset += 8) {
-                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + offset);
-                void* task = *task_slot;
-                if (task && !is_task_vtable_safe(task)) {
-                    LOGW("⚠️ [ScanForAttractorsInRange] Intercepted unsafe/destructing task %p at offset 0x%X in CPedIntelligence %p. Clearing it to prevent crash.", task, offset, intel);
-                    *task_slot = nullptr;
-                }
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
-}
-
-// --- CTaskComplexGangFollower::ControlSubTask Hook ---
-static inline void sanitize_task_tree(void* task) {
-    if (!task || !is_pointer_readable(task)) return;
-    
-    // Only CTaskComplex has m_pSubTask at offset 16 (0x10).
-    // Wiping offset 16 of a CTaskSimple will corrupt its member variables!
-    if (!is_task_simple(task)) {
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub) {
-                if (!is_task_vtable_safe(sub)) {
-                    LOGW("⚠️ [Task Tree Sanitizer] Clearing unsafe subtask %p inside parent task %p", sub, task);
-                    *p_sub = nullptr;
-                } else {
-                    sanitize_task_tree(sub);
-                }
-            }
-        }
-    }
-}
-
-static inline void sanitize_ped_tasks(void* ped) {
-    if (!ped || !is_pointer_readable(ped)) return;
-    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-    if (!is_pointer_readable(intel_slot)) return;
-    void* intel = *intel_slot;
-    if (!intel || !is_pointer_readable(intel)) return;
-    void* task_mgr = reinterpret_cast<char*>(intel) + 8;
-    if (!is_pointer_readable(task_mgr)) return;
-    for (int i = 0; i < 11; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-        if (is_pointer_readable(task_slot)) {
-            void* task = *task_slot;
-            if (task) {
-                if (!is_task_vtable_safe(task)) {
-                    LOGW("⚠️ [Task Sanitizer] Clearing unsafe/zeroed task %p at slot %d in ped %p", task, i, ped);
-                    *task_slot = nullptr;
-                } else {
-                    sanitize_task_tree(task);
-                }
-            }
-        }
-    }
-}
-
-typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
-
-static void* g_stub_ccgf_control = nullptr;
-static fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
-static void* proxy_ccgf_control(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe self!");
-        return nullptr;
-    }
-    if (ped && !is_pointer_readable(ped)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe ped!");
-        return nullptr;
-    }
-
-    if (ped) {
-        // Sanitize follower ped
-        sanitize_ped_tasks(ped);
-    }
-
-    if (self) {
-        // Sanitize leader and partner peds
-        char* self_bytes = reinterpret_cast<char*>(self);
-        void** p_leader = reinterpret_cast<void**>(self_bytes + 0x18);
-        if (is_pointer_readable(p_leader)) {
-            sanitize_ped_tasks(*p_leader);
-        }
-        void** p_partner = reinterpret_cast<void**>(self_bytes + 0x20);
-        if (is_pointer_readable(p_partner)) {
-            sanitize_ped_tasks(*p_partner);
-        }
-    }
-
-    return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
-}
-
-
-// --- CTaskComplexUsePairedAttractor::CreateNextSubTask Hook ---
-static void* g_stub_paired_attractor_create_next_sub_task = nullptr;
-typedef void* (*fn_PairedAttractorCreateNextSubTask_t)(void* self, void* ped);
-static fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next_sub_task = nullptr;
-
-static void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (ped && !is_pointer_readable(ped)) {
-        return nullptr;
-    }
-    
-    if (ped) {
-        // Sanitize the ped's task manager
-        sanitize_ped_tasks(ped);
-
-        // 校验 Ped 是否真的拥有活动的 TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246 / 0xf6)
-        // 防止 FindActiveTaskByType 返回 nullptr 后官方引擎因缺少空指针校验而在 0x5709844 处解引用崩溃
-        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-        if (is_pointer_readable(intel_slot)) {
-            void* intel = *intel_slot;
-            if (intel && is_pointer_readable(intel)) {
-                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
-                bool has_paired_attractor = false;
-                if (is_pointer_readable(task_mgr)) {
-                    for (int i = 0; i < 11; ++i) {
-                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                        if (is_pointer_readable(task_slot)) {
-                            void* task = *task_slot;
-                            if (task && is_task_vtable_safe(task)) {
-                                typedef int (*fn_GetTaskType_t)(void* t);
-                                void** vtable = *reinterpret_cast<void***>(task);
-                                if (is_pointer_readable(vtable + 5)) {
-                                    fn_GetTaskType_t get_type = reinterpret_cast<fn_GetTaskType_t>(vtable[5]);
-                                    if (get_type(task) == 246) {
-                                        has_paired_attractor = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!has_paired_attractor) {
-                    LOGW("⚠️ [PairedAttractor Sanitizer] Ped %p does not have active TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246), intercepting CreateNextSubTask to prevent crash!", ped);
-                    return nullptr;
-                }
-            }
-        }
-    }
-
-    return SHADOWHOOK_CALL_PREV(proxy_paired_attractor_create_next_sub_task, self, ped);
-}
-
-// --- CTaskComplexFacial Destructor Hook ---
-static void* g_stub_facial_dtor = nullptr;
-typedef void (*fn_FacialDtor_t)(void* self);
-static fn_FacialDtor_t g_orig_facial_dtor = nullptr;
-
-static void proxy_facial_dtor(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub && !is_task_vtable_safe(sub)) {
-                LOGW("⚠️ [Facial Dtor] Clearing unsafe subtask %p inside facial task %p before destruction", sub, self);
-                *p_sub = nullptr;
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
-}
-
-// --- CTaskManager::FindActiveTaskByType Hook ---
-static void* g_stub_find_active_task = nullptr;
-typedef void* (*fn_FindActiveTask_t)(void* self, int type);
-static fn_FindActiveTask_t g_orig_find_active_task = nullptr;
-
-static void* proxy_find_active_task(void* self, int type) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
-
-    if (self) {
-        // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
-        // Total 11 slots of pointers starting at offset 0 of CTaskManager.
-        for (int i = 0; i < 11; ++i) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            if (is_pointer_readable(task_slot)) {
-                void* task = *task_slot;
-                if (task) {
-                    if (!is_task_vtable_safe(task)) {
-                        LOGW("⚠️ [FindActiveTaskByType Sanitizer] Sanitizing unsafe task %p at slot %d inside CTaskManager %p", task, i, self);
-                        *task_slot = nullptr;
-                    } else {
-                        sanitize_task_tree(task);
-                    }
-                }
-            }
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
-}
-
-
-// --- CTaskManager Destructor Hook ---
-static void* g_stub_task_manager_destructor = nullptr;
-typedef void (*fn_TaskManagerDestructor_t)(void* self);
-static fn_TaskManagerDestructor_t g_orig_task_manager_destructor = nullptr;
-
-static void proxy_task_manager_destructor(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        for (int i = 0; i < 11; ++i) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            if (is_pointer_readable(task_slot)) {
-                void* task = *task_slot;
-                if (task) {
-                    if (!is_task_vtable_safe(task)) {
-                        LOGW("⚠️ [CTaskManager Destructor Sanitizer] Sanitizing unsafe task %p at slot %d inside CTaskManager %p before destruction", task, i, self);
-                        *task_slot = nullptr;
-                    }
-                }
-            }
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_task_manager_destructor, self);
-}
-
-// --- CTaskComplexPartnerGreet::GetPartnerSequence Hook ---
-static void* g_stub_partner_greet_get_sequence = nullptr;
-typedef void* (*fn_GetPartnerSequence_t)(void* self);
-static fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence = nullptr;
-
-static void* proxy_partner_greet_get_sequence(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_task_vtable_safe(self)) {
-        return nullptr;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_partner_greet_get_sequence, self);
-}
-
-// --- CAEPedSpeechAudioEntity::PlayLoadedSound Hook ---
-static void* g_stub_play_loaded_sound = nullptr;
-typedef void (*fn_PlayLoadedSound_t)(void* self);
-static fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
-
-static void proxy_play_loaded_sound(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
-        if (is_pointer_readable(p_ped)) {
-            void* ped = *p_ped;
-            if (ped && is_pointer_readable(ped)) {
-                void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-                if (is_pointer_readable(p_intel)) {
-                    void* intel = *p_intel;
-                    if (intel && is_pointer_readable(intel)) {
-                        void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
-                        if (is_pointer_readable(p_speech)) {
-                            void* speech = *p_speech;
-                            if (speech && is_pointer_readable(speech)) {
-                                SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        LOGW("⚠️ [PlayLoadedSound Sanitizer] Skipping PlayLoadedSound on %p to prevent null speech manager crash!", self);
-    } else {
-        SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
-    }
-}
-
-// --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
-static void* g_stub_check_if_within_range = nullptr;
-typedef bool (*fn_CheckIfWithinRange_t)(void* self);
-static fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
-static void*** g_p_ms_pPedPool = nullptr;
-
-static bool proxy_check_if_within_range(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
-    
-    if (g_FindPlayerPed) {
-        void* player = g_FindPlayerPed(0);
-        if (!player || !is_ped_pointer_valid_safe(player)) {
-            return false;
-        }
-        void* player1 = g_FindPlayerPed(1);
-        if (player1 && !is_ped_pointer_valid_safe(player1)) {
-            return false;
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
-}
-
-// --- CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask Hook ---
-static void* g_stub_avoid_ped_control = nullptr;
-typedef void* (*fn_AvoidPedControl_t)(void* self, void* ped);
-static fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
-
-static void* proxy_avoid_ped_control(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
-        void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(subtask_ptr)) {
-            void* subtask = *subtask_ptr;
-            if (subtask && !is_task_vtable_safe(subtask)) {
-                LOGW("⚠️ [ControlSubTask Sanitizer] Sanitizing unsafe subtask %p inside CTaskComplexAvoidOtherPedWhileWandering %p", subtask, self);
-                *subtask_ptr = nullptr;
-            }
-        }
-    }
-    if (ped && is_ped_pointer_valid_safe(ped)) {
-        sanitize_ped_tasks(ped);
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_avoid_ped_control, self, ped);
-}
-
-
-// --- CTaskGangHassleVehicle::CalcTargetOffset Hook ---
-typedef void (*fn_CalcTargetOffset_t)(void* self);
-static void* g_stub_CalcTargetOffset = nullptr;
-static fn_CalcTargetOffset_t g_orig_CalcTargetOffset = nullptr;
-
-static void proxy_CalcTargetOffset(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-    
-    if (self) {
-        // Check offset 0x18 (target vehicle)
-        void** pVehicle = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
-        if (is_pointer_readable(pVehicle)) {
-            void* vehicle = *pVehicle;
-            if (vehicle && !is_pointer_readable(vehicle)) {
-                LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
-                return;
-            }
-        }
-        
-        // Check offset 0x10 (target entity)
-        void** pEntity = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(pEntity)) {
-            void* entity = *pEntity;
-            if (entity && !is_pointer_readable(entity)) {
-                LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target entity is invalid (%p) at offset 0x10! Skipping calculation to prevent SIGSEGV.", entity);
-                return;
-            }
-        }
-    }
-    
-    SHADOWHOOK_CALL_PREV(proxy_CalcTargetOffset, self);
-}
-
-// --- CPed::DoFootLanded Hook ---
-typedef void (*fn_DoFootLanded_t)(void* ped, bool left_foot, unsigned char surface_type);
-static void* g_stub_do_foot_landed = nullptr;
-static fn_DoFootLanded_t g_orig_do_foot_landed = nullptr;
-
-static void proxy_do_foot_landed(void* ped, bool left_foot, unsigned char surface_type) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (ped && (!is_ped_pointer_valid_safe(ped) || !*reinterpret_cast<void**>(ped))) {
-        return;
-    }
-    SHADOWHOOK_CALL_PREV(proxy_do_foot_landed, ped, left_foot, surface_type);
-}
-
-static void* g_stub_add_police_occupants = nullptr;
-static fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
-
-static void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm) {
-    SHADOWHOOK_STACK_SCOPE();
-    SHADOWHOOK_CALL_PREV(proxy_add_police_occupants, vehicle, bSirenOrAlarm);
-    bind_vehicle_occupants(vehicle);
-}
-
-// =====================================================================
 // 👮‍♂️ [Wanted-System Spawning Protection]
 // =====================================================================
-static std::atomic<bool> g_in_wanted_update{false};
+std::atomic<bool> g_in_wanted_update{false};
 
-static void* g_stub_wanted_update = nullptr;
+void* g_stub_wanted_update = nullptr;
 typedef void (*fn_WantedUpdate_t)(void*);
-static fn_WantedUpdate_t g_orig_wanted_update = nullptr;
+fn_WantedUpdate_t g_orig_wanted_update = nullptr;
 
 static void proxy_wanted_update(void* this_wanted) {
     SHADOWHOOK_STACK_SCOPE();
@@ -5802,9 +5187,9 @@ static void proxy_wanted_update(void* this_wanted) {
     g_in_wanted_update.store(false);
 }
 
-static void* g_stub_add_ped = nullptr;
+void* g_stub_add_ped = nullptr;
 typedef CPed* (*fn_AddPed_t)(int, unsigned int, const CVector&, bool);
-static fn_AddPed_t g_orig_add_ped = nullptr;
+fn_AddPed_t g_orig_add_ped = nullptr;
 
 static CPed* proxy_add_ped(int pedType, unsigned int modelIndex, const CVector& pos, bool bUnknown) {
     SHADOWHOOK_STACK_SCOPE();
@@ -5920,8 +5305,8 @@ static bool relocate_police_car_spawn(unsigned int model, CVector& pos) {
     return true;
 }
 
-static void* g_stub_generate_one_emergency_car = nullptr;
-static fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
+void* g_stub_generate_one_emergency_car = nullptr;
+fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
 
 static void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
@@ -5960,8 +5345,8 @@ static void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_CALL_PREV(proxy_generate_one_emergency_car, model, pos);
 }
 
-static void* g_stub_script_generate_one_emergency_car = nullptr;
-static fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nullptr;
+void* g_stub_script_generate_one_emergency_car = nullptr;
+fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nullptr;
 
 static void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
@@ -5992,8 +5377,8 @@ static void proxy_script_generate_one_emergency_car(unsigned int model, CVector 
     SHADOWHOOK_CALL_PREV(proxy_script_generate_one_emergency_car, model, pos);
 }
 
-static void* g_stub_tell_occupants_leave_car = nullptr;
-static fn_TellOccupantsToLeaveCar_t g_orig_tell_occupants_leave_car = nullptr;
+void* g_stub_tell_occupants_leave_car = nullptr;
+fn_TellOccupantsToLeaveCar_t g_orig_tell_occupants_leave_car = nullptr;
 
 static void proxy_tell_occupants_leave_car(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
@@ -6001,6 +5386,11 @@ static void proxy_tell_occupants_leave_car(void* vehicle) {
     record_exit_start_for_occupants(vehicle);
     SHADOWHOOK_CALL_PREV(proxy_tell_occupants_leave_car, vehicle);
 }
+
+
+
+
+
 
 
 // =====================================================================
@@ -6022,7 +5412,7 @@ extern "C" void* safe_pure_virtual_stub() {
     return nullptr;
 }
 
-static void* find_pure_virtual_target(void* vtable_symbol, int num_slots) {
+void* find_pure_virtual_target(void* vtable_symbol, int num_slots) {
     if (!vtable_symbol) return nullptr;
     void** slots = reinterpret_cast<void**>(vtable_symbol);
     std::unordered_map<void*, int> counts;
@@ -6042,7 +5432,7 @@ static void* find_pure_virtual_target(void* vtable_symbol, int num_slots) {
     return best_target;
 }
 
-static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, int num_slots, void* pure_virtual_target, void* stub_func) {
+void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, int num_slots, void* pure_virtual_target, void* stub_func) {
     if (!vtable_symbol || !pure_virtual_target || !stub_func || num_slots <= 0) return;
     
     void** slots = reinterpret_cast<void**>(vtable_symbol);
@@ -6078,271 +5468,10 @@ static void patch_vtable_pure_virtuals(const char* name, void* vtable_symbol, in
         LOGI("ℹ️ No pure virtual slot(s) found/patched in %s (%p)", name, vtable_symbol);
     }
 }
-
-// =====================================================================
-// 🛡️ [CPed::PlayFootSteps Hook]：防止转场期间玩家 Clump 临时脱离导致空指针解引用闪退
-// =====================================================================
-static void* g_stub_play_footsteps = nullptr;
-typedef void (*fn_PlayFootSteps_t)(void* self);
-static fn_PlayFootSteps_t g_orig_play_footsteps = nullptr;
-
-static void proxy_play_footsteps(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        // 1. 检查 m_pRwObject (offset 0x20) 是否有效
-        void** rw_obj_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
-        if (!is_pointer_readable(rw_obj_slot) || *rw_obj_slot == nullptr) {
-            return;
-        }
-        void* rw_obj = *rw_obj_slot;
-
-        // 2. 检查 rw_obj->field_308 (offset 0x308) 是否有效
-        void** field_308_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(rw_obj) + 0x308);
-        if (!is_pointer_readable(field_308_slot) || *field_308_slot == nullptr) {
-            return;
-        }
-        void* field_308 = *field_308_slot;
-
-        // 3. 检查 field_308->field_10 (offset 0x10) 是否非零
-        int* field_10_ptr = reinterpret_cast<int*>(reinterpret_cast<char*>(field_308) + 0x10);
-        if (!is_pointer_readable(field_10_ptr) || *field_10_ptr == 0) {
-            return;
-        }
-
-        // 4. 检查 *field_308 是否有效
-        void** field_308_deref_slot = reinterpret_cast<void**>(field_308);
-        if (!is_pointer_readable(field_308_deref_slot) || *field_308_deref_slot == nullptr) {
-            return;
-        }
-    }
-
-    SHADOWHOOK_CALL_PREV(proxy_play_footsteps, self);
-}
-
-
-// =====================================================================
-// 🛡️ [cBuoyancy::ProcessBuoyancy Hook]：防止物理浮力计算期间/之后任务被销毁导致 CPed::ProcessBuoyancy 闪退 (静态函数，首参为 CPhysical*)
-// =====================================================================
-// =====================================================================
-// 🛡️ [CPed::ProcessBuoyancy Hook]：防止 ProcessBuoyancy 期间任务槽被置空/野指针导致虚表解引用闪退
-// =====================================================================
-static void* g_stub_process_buoyancy = nullptr;
-typedef void (*fn_ProcessBuoyancy_t)(void* self);
-static fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
-
-static void proxy_process_buoyancy(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-    sanitize_ped_tasks(self);
-    SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
-}
-
-// --- CPedIntelligence::ProcessStaticCounter Hook ---
-static void* g_stub_process_static_counter = nullptr;
-typedef void (*fn_ProcessStaticCounter_t)(void* self);
-static fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
-
-static void proxy_process_static_counter(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-    if (self) {
-        void** p_ped = reinterpret_cast<void**>(self);
-        if (is_pointer_readable(p_ped)) {
-            sanitize_ped_tasks(*p_ped);
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_process_static_counter, self);
-}
-
-
-static void* g_stub_cbuoyancy_process_buoyancy = nullptr;
-typedef bool (*fn_cBuoyancy_ProcessBuoyancy_t)(void* physical, float f1, void* vec1, void* vec2);
-static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
-
-static bool proxy_cbuoyancy_process_buoyancy(void* physical, float f1, void* vec1, void* vec2) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (physical && !is_pointer_readable(physical)) return false;
-    bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, physical, f1, vec1, vec2);
-    if (!res) {
-        if (physical && is_ped_pointer_valid_safe(physical)) {
-            sanitize_ped_tasks(physical);
-        }
-    }
-    return res;
-}
-
-// =====================================================================
-// 🛡️ [u_strlen_64 Hook]：防止 ICU 计算 Unicode 字符串长度时传入野指针闪退
-// =====================================================================
-static void* g_stub_u_strlen = nullptr;
-typedef int32_t (*fn_u_strlen_t)(const void* s);
-static fn_u_strlen_t g_orig_u_strlen = nullptr;
-
-static int32_t proxy_u_strlen(const void* s) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (s && !is_pointer_readable(s)) {
-        LOGW("⚠️ [u_strlen_64 Hook] wild pointer detected! Returning 0.");
-        return 0;
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
-}
-
-// --- CTaskComplexSequence::Flush Hook ---
-static void* g_stub_sequence_flush = nullptr;
-typedef void (*fn_SequenceFlush_t)(void* self);
-static fn_SequenceFlush_t g_orig_sequence_flush = nullptr;
-
-static void proxy_sequence_flush(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        // Sanitize any zero-filled task pointers inside the sequence
-        sanitize_task_pointers(self, 128);
-    }
-    SHADOWHOOK_CALL_PREV(proxy_sequence_flush, self);
-}
-
-// --- CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB Hook ---
-static void* g_stub_finish_anim_evasive_step_cb = nullptr;
-typedef void (*fn_FinishAnimEvasiveStepCB_t)(void* anim, void* context);
-static fn_FinishAnimEvasiveStepCB_t g_orig_finish_anim_evasive_step_cb = nullptr;
-
-static void proxy_finish_anim_evasive_step_cb(void* anim, void* context) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (context && !is_pointer_readable(context)) {
-        LOGW("⚠️ [EvasiveStep CB] context (%p) is invalid/unreadable! Intercepting callback to prevent crash.", context);
-        return;
-    }
-    if (context) {
-        // Check if the context object (the task) is zero-filled
-        void** vtable_ptr = reinterpret_cast<void**>(context);
-        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
-            LOGW("⚠️ [EvasiveStep CB] context (%p) is zero-filled! Intercepting callback to prevent crash.", context);
-            return;
-        }
-    }
-    if (anim && !is_pointer_readable(anim)) {
-        LOGW("⚠️ [EvasiveStep CB] anim (%p) is invalid/unreadable! Intercepting callback to prevent crash.", anim);
-        return;
-    }
-    SHADOWHOOK_CALL_PREV(proxy_finish_anim_evasive_step_cb, anim, context);
-}
-
-// --- CTaskComplexBeInGroup::ControlSubTask Hook ---
-static void* g_stub_be_in_group_control_sub_task = nullptr;
-typedef void* (*fn_BeInGroupControlSubTask_t)(void* self, void* ped);
-static fn_BeInGroupControlSubTask_t g_orig_be_in_group_control_sub_task = nullptr;
-
-static void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
-    if (ped && !is_pointer_readable(ped)) return nullptr;
-
-    if (self) {
-        void** vtable_ptr = reinterpret_cast<void**>(self);
-        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
-            LOGW("⚠️ [BeInGroup] self (%p) is zero-filled! Intercepting ControlSubTask to prevent crash.", self);
-            return nullptr;
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_be_in_group_control_sub_task, self, ped);
-}
-
-// --- IKChainManager_c::Update Hook ---
-static void* g_stub_ik_chain_update = nullptr;
-typedef void (*fn_IKChainUpdate_t)(void* self, float dt);
-static fn_IKChainUpdate_t g_orig_ik_chain_update = nullptr;
-
-static void proxy_ik_chain_update(void* self, float dt) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-    SHADOWHOOK_CALL_PREV(proxy_ik_chain_update, self, dt);
-}
-
-// --- CCam::Process_FollowPed_SA Hook ---
-static void* g_stub_process_follow_ped_sa = nullptr;
-typedef void (*fn_ProcessFollowPedSA_t)(void* self, const CVector& target, float f1, float f2, float f3, bool b1);
-static fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa = nullptr;
-
-static void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-    SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
-}
-
-// --- CTaskComplexLeaveCar::MakeAbortable Hook ---
-static void* g_stub_leave_car_make_abortable = nullptr;
-typedef bool (*fn_LeaveCarMakeAbortable_t)(void* self, void* ped, int priority, void* event);
-static fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
-
-static bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* event) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
-    if (ped && !is_pointer_readable(ped)) return false;
-
-    if (self) {
-        // Offset 0x10 is m_pSubTask in CTaskComplex
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub == nullptr) {
-                return true; // If subtask is null, the task is already abortable
-            }
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_leave_car_make_abortable, self, ped, priority, event);
-}
-
-// --- CCarAI::UpdateCarAI Hook ---
-static void* g_stub_update_car_ai = nullptr;
-typedef void (*fn_UpdateCarAI_t)(void* vehicle);
-static fn_UpdateCarAI_t g_orig_update_car_ai = nullptr;
-
-static void proxy_update_car_ai(void* vehicle) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (vehicle && !is_pointer_readable(vehicle)) return;
-    if (vehicle) {
-        void** vtable_ptr = reinterpret_cast<void**>(vehicle);
-        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
-            LOGW("⚠️ [UpdateCarAI] vehicle (%p) is zero-filled! Intercepting to prevent crash.", vehicle);
-            return;
-        }
-    }
-    SHADOWHOOK_CALL_PREV(proxy_update_car_ai, vehicle);
-}
-
-// --- CTaskComplexFacial::ControlSubTask Hook ---
-static void* g_stub_facial_control_sub_task = nullptr;
-typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
-static fn_FacialControlSubTask_t g_orig_facial_control_sub_task = nullptr;
-
-static void* proxy_facial_control_sub_task(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
-    if (ped && !is_pointer_readable(ped)) return nullptr;
-
-    if (self) {
-        // Offset 0x10 is m_pSubTask in CTaskComplex
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub == nullptr) {
-                return nullptr; // Prevent crash when subtask is null
-            }
-        }
-    }
-    return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
-}
-
-
-
 // =====================================================================
 // Hook 安装线程
 // =====================================================================
-static void hook_thread_func() {
+void hook_thread_func() {
     LOGI("Hook thread started, waiting for %s...", TARGET_LIB);
 
     constexpr int MAX_WAIT_MS = 120000;
@@ -6888,7 +6017,7 @@ static void hook_thread_func() {
 // =====================================================================
 // 伴生库写入逻辑
 // =====================================================================
-static void write_nothing_so(const std::string& path) {
+void write_nothing_so(const std::string& path) {
     int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0755);
     if (fd >= 0) {
         ssize_t written = write(fd, sh_nothing_so, sh_nothing_so_len);
@@ -6903,7 +6032,7 @@ static void write_nothing_so(const std::string& path) {
     }
 }
 
-static void extract_nothing_so(const char* process_name) {
+void extract_nothing_so(const char* process_name) {
     // 提取基础包名（防止子进程包含冒号导致路径失效）
     std::string pkg_name(process_name);
     size_t colon_pos = pkg_name.find(':');
@@ -6922,7 +6051,7 @@ static void extract_nothing_so(const char* process_name) {
     write_nothing_so(path);
 }
 
-static void cleanup_nothing_so(const char* process_name) {
+void cleanup_nothing_so(const char* process_name) {
     std::string pkg_name(process_name);
     size_t colon_pos = pkg_name.find(':');
     if (colon_pos != std::string::npos) {
@@ -6932,506 +6061,6 @@ static void cleanup_nothing_so(const char* process_name) {
     std::string path = std::string("/data/user/0/") + pkg_name + "/code_cache/libshadowhook_nothing.so";
     unlink(path.c_str());
     LOGI("Cleaned up libshadowhook_nothing.so from disk");
-}
-
-// =====================================================================
-// ECS & 事件驱动系统初始化 (init_ecs_systems)
-// =====================================================================
-void init_ecs_systems() {
-    LOGI("⚡️ [ECS Engine] Initializing ECS Systems...");
-
-    // 1. CleanupSystem: 监听实体销毁事件
-    ecs::EventDispatcher::get().subscribe<ecs::EntityCleanupEvent>("EntityCleanupEvent", [](const ecs::EntityCleanupEvent& ev) {
-        if (ev.entity) {
-            ecs::EntityManager::get().destroy_entity(ev.entity);
-        }
-    });
-
-    // 2. CopDispatchSystem: 监听犯罪通报事件 & 伤害事件
-    ecs::EventDispatcher::get().subscribe<ecs::CrimeReportEvent>("CrimeReportEvent", [](const ecs::CrimeReportEvent& ev) {
-        auto* criminal = static_cast<CPed*>(ev.criminal);
-        if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
-
-        // 在 ECS 中注册并初始化/更新犯罪分子组件
-        auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(criminal);
-        if (!crim_comp) {
-            crim_comp = ecs::EntityManager::get().add_component<ecs::CriminalComponent>(criminal, criminal);
-            if (crim_comp) {
-                crim_comp->first_detect_time_ms = ev.time_ms;
-                crim_comp->initial_weapon_category = ev.weapon_category;
-            }
-        } else {
-            // Weapon Downgrade Protection: Keep highest/first weapon category
-            if (ev.weapon_category > crim_comp->initial_weapon_category) {
-                crim_comp->initial_weapon_category = ev.weapon_category;
-            }
-        }
-
-        if (crim_comp) {
-            crim_comp->last_attack_time_ms = ev.time_ms;
-
-            if (ev.victim) {
-                crim_comp->is_active = true;
-                crim_comp->is_air_shooter = false;
-                crim_comp->is_fleeing = false;
-                crim_comp->current_victim = ev.victim;
-            } else {
-                if (ev.weapon_category == 2) { // FIREARM
-                    crim_comp->is_active = true; // Mark active for FIREARM_AIR_SHOOT
-                    crim_comp->is_air_shooter = true;
-                    crim_comp->is_fleeing = false;
-                    crim_comp->current_victim = nullptr;
-                } else {
-                    crim_comp->is_active = false;
-                    crim_comp->is_air_shooter = false;
-                    crim_comp->is_fleeing = false;
-                    crim_comp->current_victim = nullptr;
-                }
-            }
-        }
-
-        // 尝试并案
-        bool merged = try_consolidate_crime(criminal, ev.location, ev.is_firearm);
-        if (!merged) {
-            // 如果未能并案，且符合激活条件，则激活为全新犯罪现场或顶替旧案
-            if (should_activate_or_hijack_crime(ev.location, ev.is_firearm)) {
-                std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-
-                // 初始化并启动新案对象
-                auto new_crime = std::make_shared<CrimeEvent>();
-                new_crime->case_id = g_next_case_id++;
-                new_crime->location = ev.location;
-                new_crime->criminal = criminal;
-                new_crime->is_firearm = ev.is_firearm;
-                new_crime->consolidated_criminals.push_back(criminal);
-                new_crime->criminal_is_firearm.push_back(ev.is_firearm);
-                
-                // 写入嫌疑人详细犯罪分级与状态
-                CrimeEvent::CriminalState c_state;
-                c_state.first_threat_category = ev.is_firearm ? 2 : (ev.weapon_category == 1 ? 1 : 0);
-                c_state.current_threat_category = c_state.first_threat_category;
-                c_state.is_active = crim_comp ? crim_comp->is_active : false;
-                c_state.shooting_air = crim_comp ? crim_comp->is_air_shooter : false;
-                c_state.fleeing = crim_comp ? crim_comp->is_fleeing : false;
-                new_crime->criminal_states[criminal] = c_state;
-
-                new_crime->dispatch_sent = false;
-                new_crime->road_closure_active = false;
-                new_crime->cops_killed = 0;
-                new_crime->cancelled = false;
-                new_crime->dispatch_state = STATE_IDLE; // STATE_IDLE
-
-                g_active_crimes.push_back(new_crime);
-                g_crime_active.store(true);
-                g_tracked_criminal.store(criminal);
-
-                LOGI("📡 [ECS CopDispatchSystem] Activated new crime event Case %llu! Perp: %p, Firearm: %d, Pos: (%.1f, %.1f, %.1f)",
-                     (unsigned long long)new_crime->case_id, criminal, ev.is_firearm, ev.location.x, ev.location.y, ev.location.z);
-            }
-        }
-
-        // 重新评估案件主犯与警力路由
-        update_primary_criminal_by_threat();
-    });
-
-    ecs::EventDispatcher::get().subscribe<ecs::DamageEvent>("DamageEvent", [](const ecs::DamageEvent& ev) {
-        auto* victim_cop = static_cast<CPed*>(ev.victim);
-        auto* attacker_perp = static_cast<CPed*>(ev.attacker);
-        if (victim_cop && is_ped_pointer_valid_safe(victim_cop) &&
-            attacker_perp && is_ped_pointer_valid_safe(attacker_perp)) {
-
-            // 注册警员与其战斗状态
-            auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(victim_cop);
-            if (!cop_comp) {
-                cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(victim_cop, victim_cop);
-            }
-            auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(victim_cop);
-            if (!combat_comp) {
-                combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(victim_cop);
-            }
-            if (combat_comp) {
-                combat_comp->target_entity = attacker_perp;
-            }
-
-            // 警员受袭，触发即时自卫反击 (不强制更新武器模型，防止重置攻击动画)
-            make_single_cop_attack_criminal(victim_cop, attacker_perp, false);
-        }
-    });
-
-    // 3. CopWeaponSelectionSystem: 监听武器切换事件 & 周期性 Tick 事件
-    ecs::EventDispatcher::get().subscribe<ecs::WeaponSwitchEvent>("WeaponSwitchEvent", [](const ecs::WeaponSwitchEvent& ev) {
-        auto* ped = static_cast<CPed*>(ev.ped);
-        if (!ped || !is_ped_pointer_valid_safe(ped)) return;
-
-        // 如果是执勤警员切枪，更新其余下的 CombatComponent 记录
-        int ped_type = g_GetPedType ? g_GetPedType(ped) : 0;
-        if (ped_type == PED_TYPE_COP) {
-            auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
-            if (combat) {
-                combat->current_weapon_type = ev.current_weapon;
-                combat->last_weapon_switch_time_ms = ev.time_ms;
-            }
-            return;
-        }
-
-        // 如果是处于侦测中/并案列表中的犯罪分子切枪，则处理案件的即时升级与降级冻结
-        if (g_crime_active.load() && !g_active_crime.cancelled) {
-            bool is_our_criminal = false;
-            size_t criminal_idx = 0;
-            {
-                std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-                for (size_t idx = 0; idx < g_active_crime.consolidated_criminals.size(); ++idx) {
-                    if (g_active_crime.consolidated_criminals[idx] == ped) {
-                        is_our_criminal = true;
-                        criminal_idx = idx;
-                        break;
-                    }
-                }
-
-                if (is_our_criminal) {
-                    auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(ped);
-                    if (crim_comp) {
-                        int new_weap_cat = 0;
-                        if (ev.current_weapon >= WEAPON_PISTOL && ev.current_weapon <= WEAPON_MINIGUN) {
-                            new_weap_cat = 2; // FIREARM
-                        } else if (ev.current_weapon == WEAPON_UNARMED) {
-                            new_weap_cat = 0; // UNARMED
-                        } else {
-                            new_weap_cat = 1; // MELEE
-                        }
-
-                        if (new_weap_cat > crim_comp->initial_weapon_category) {
-                            crim_comp->initial_weapon_category = new_weap_cat;
-                            crim_comp->is_active = true;
-                            crim_comp->is_fleeing = false;
-                            crim_comp->is_air_shooter = false;
-                            crim_comp->last_attack_time_ms = ev.time_ms; // 刷新其威胁时间，保证不因旧的时间戳被判为超时
-                            LOGI("⚡️ [ECS WeaponSwitch] Criminal %p upgraded weapon category to %d! Escalated threat level to active.", ped, new_weap_cat);
-                        } else if (new_weap_cat < crim_comp->initial_weapon_category) {
-                            // Weapon Downgrade: freeze weapon tier, but mark them as inactive (fleeing)
-                            crim_comp->is_active = false;
-                            crim_comp->is_air_shooter = false;
-                            crim_comp->is_fleeing = true;
-                            LOGI("⚡️ [ECS WeaponSwitch] Criminal %p downgraded weapon to %d. Classifying as Inactive & Fleeing of initial category %d.", 
-                                 ped, ev.current_weapon, crim_comp->initial_weapon_category);
-                        }
-                    }
-
-                    bool firearm = (ev.current_weapon >= WEAPON_PISTOL && ev.current_weapon <= WEAPON_MINIGUN);
-                    if (firearm) {
-                        bool escalated = false;
-                        if (criminal_idx < g_active_crime.criminal_is_firearm.size()) {
-                            if (!g_active_crime.criminal_is_firearm[criminal_idx]) {
-                                g_active_crime.criminal_is_firearm[criminal_idx] = true;
-                                escalated = true;
-                            }
-                        }
-                        if (!g_active_crime.is_firearm) {
-                            g_active_crime.is_firearm = true;
-                            escalated = true;
-                        }
-
-                        if (escalated) {
-                            LOGI("⚡️ [ECS CopWeaponSelectionSystem] Criminal %p switched weapon to firearm %d! Escalating case immediately.", ped, ev.current_weapon);
-                        }
-                    }
-                }
-            }
-
-            if (is_our_criminal) {
-                update_cops_targeting_criminal_event_driven(ped);
-            }
-        }
-    });
-
-    // 4. CopStuckAndWeaponSelectionSystem: 周期性 Tick 事件
-    ecs::EventDispatcher::get().subscribe<ecs::TickEvent>("TickEvent", [](const ecs::TickEvent& ev) {
-        int64_t cur_time = ev.current_time_ms;
-
-        // 1. CriminalComponent 周期维护
-        auto criminals = ecs::EntityManager::get().get_entities_with<ecs::CriminalComponent>();
-        for (auto crim_ent : criminals) {
-            auto* ped = static_cast<CPed*>(crim_ent);
-            if (!ped || !is_ped_pointer_valid_safe(ped) || (g_IsAlive && !g_IsAlive(ped))) {
-                ecs::EntityManager::get().destroy_entity(crim_ent);
-                continue;
-            }
-
-            auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(ped);
-            if (crim_comp) {
-                // 1.1 检查受害者状态
-                auto* victim_ped = static_cast<CPed*>(crim_comp->current_victim);
-                if (victim_ped && is_ped_pointer_valid_safe(victim_ped)) {
-                    if (g_IsAlive && !g_IsAlive(victim_ped)) {
-                        crim_comp->is_active = false;
-                        crim_comp->current_victim = nullptr;
-                        LOGI("⚡ [ECS TickEvent] Criminal %p victim died. Classifying as inactive.", ped);
-                    }
-                }
-
-                // 1.2 检查攻击超时 (8秒无攻击通报/伤害产生)
-                if (crim_comp->is_active && (cur_time - crim_comp->last_attack_time_ms > 8000)) {
-                    crim_comp->is_active = false;
-                    crim_comp->is_air_shooter = false;
-                    LOGI("⚡ [ECS TickEvent] Criminal %p active state timed out (8s no attack).", ped);
-                }
-            }
-
-            update_primary_criminal_by_threat();
-        }
-
-        // 2. CopStuckAndWeaponSelectionSystem:
-        // 遍历所有已绑定的警员实体，进行自动化战术升级与卡死检测
-        auto cops = ecs::EntityManager::get().get_entities_with<ecs::CopComponent>();
-        for (auto cop_ent : cops) {
-            auto* cop = static_cast<CPed*>(cop_ent);
-            if (!cop || !is_ped_pointer_valid_safe(cop) || (g_IsAlive && !g_IsAlive(cop))) {
-                ecs::EntityManager::get().destroy_entity(cop_ent);
-                continue;
-            }
-
-            auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
-            auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
-
-            // 2.1 警员卡死检测与智能重新寻路路由 (Automated Stuck routing)
-            if (cop_comp) {
-                // 每 2 秒进行一次卡死坐标检查
-                if (ev.current_time_ms - cop_comp->last_stuck_check_time_ms > 2000) {
-                    cop_comp->last_stuck_check_time_ms = ev.current_time_ms;
-                    CVector pos = get_entity_pos(cop);
-
-                    // 仅在非载具内追杀敌人的状态下检测卡死
-                    if (!cop_comp->is_in_vehicle && combat_comp && combat_comp->target_entity) {
-                        float dx = pos.x - cop_comp->last_pos_x;
-                        float dy = pos.y - cop_comp->last_pos_y;
-                        float dist_moved = sqrtf(dx * dx + dy * dy);
-
-                        if (dist_moved < 0.20f) {
-                            cop_comp->stuck_count++;
-                            if (cop_comp->stuck_count >= 3) { // 连续卡死 6 秒以上
-                                auto* target = static_cast<CPed*>(combat_comp->target_entity);
-                                if (target && is_ped_pointer_valid_safe(target)) {
-                                    LOGW("⚠️ [ECS StuckSolver] Ground cop %p is stuck pursuing %p. Force resetting task for pathfinding routing.", cop, target);
-                                    make_single_cop_attack_criminal(cop, target, true);
-                                }
-                                cop_comp->stuck_count = 0;
-                            }
-                        } else {
-                            cop_comp->stuck_count = 0;
-                        }
-                    } else {
-                        cop_comp->stuck_count = 0;
-                    }
-
-                    cop_comp->last_pos_x = pos.x;
-                    cop_comp->last_pos_y = pos.y;
-                    cop_comp->last_pos_z = pos.z;
-                }
-            }
-
-            // 2.3 步行警员响应调度沿途发生的同级及以上活跃犯罪 (EnRoute Rerouting for foot cops)
-            if (cop_comp && !cop_comp->is_in_vehicle && combat_comp && combat_comp->target_entity) {
-                std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-                std::shared_ptr<CrimeEvent> case_A = nullptr;
-                for (const auto& crime : g_active_crimes) {
-                    if (!crime || crime->cancelled) continue;
-                    bool found = false;
-                    if (crime->criminal == combat_comp->target_entity) {
-                        found = true;
-                    } else {
-                        for (CPed* crim : crime->consolidated_criminals) {
-                            if (crim == combat_comp->target_entity) {
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (found) {
-                        case_A = crime;
-                        break;
-                    }
-                }
-
-                if (case_A) {
-                    CVector cop_pos = get_entity_pos(cop);
-                    std::shared_ptr<CrimeEvent> best_case_B = nullptr;
-                    float best_dist = 999999.0f;
-
-                    for (const auto& case_B : g_active_crimes) {
-                        if (!case_B || case_B->cancelled || case_B == case_A) continue;
-                        if (!case_B->criminal || !is_ped_pointer_valid_safe(case_B->criminal)) continue;
-
-                        int threat_A = case_A->is_firearm ? 2 : 1;
-                        int threat_B = case_B->is_firearm ? 2 : 1;
-
-                        if (threat_B >= threat_A) {
-                            CVector crim_pos = get_entity_pos(case_B->criminal);
-                            float dx = cop_pos.x - crim_pos.x;
-                            float dy = cop_pos.y - crim_pos.y;
-                            float dz = cop_pos.z - crim_pos.z;
-                            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-
-                            float av_range = case_B->is_firearm ? 75.0f : 35.0f;
-
-                            if (dist <= av_range && dist < best_dist) {
-                                best_dist = dist;
-                                best_case_B = case_B;
-                            }
-                        }
-                    }
-
-                    if (best_case_B) {
-                        LOGI("🚨 [dispatchCenter - FootCopReroute] Foot cop %p (originally pursuing Case %llu, threat: %d) encountered Case %llu (threat: %d) en route! Rerouting to Case %llu (dist: %.1fm).",
-                             cop, (unsigned long long)case_A->case_id, case_A->is_firearm ? 2 : 1,
-                             (unsigned long long)best_case_B->case_id, best_case_B->is_firearm ? 2 : 1,
-                             (unsigned long long)best_case_B->case_id, best_dist);
-
-                        make_single_cop_attack_criminal(cop, best_case_B->criminal, true);
-                        if (combat_comp) {
-                            combat_comp->last_weapon_switch_time_ms = 0;
-                        }
-                    }
-                }
-            }
-
-            // 2.2 智能武器选择与高响应收枪控制链 (零延迟、高响应性切枪与即时自动收枪机制)
-            bool should_disarm = false;
-            CPed* target = nullptr;
-
-            if (combat_comp) {
-                target = static_cast<CPed*>(combat_comp->target_entity);
-            }
-
-            // A. 自适应判定是否应当收枪退敌 (战斗结束、离队、车内或目标失效)
-            if (cop_comp && cop_comp->is_in_vehicle) {
-                should_disarm = true; // 载具内不需要本模块强行控制手持武器，交还底层的默认状态
-            } else if (!target) {
-                should_disarm = true; // 无追杀目标
-            } else if (!is_ped_pointer_valid_safe(target)) {
-                should_disarm = true; // 目标指针已失效或被引擎清理
-            } else if (g_IsAlive && !g_IsAlive(target)) {
-                should_disarm = true; // 目标已被击毙
-            } else if (!g_crime_active.load()) {
-                should_disarm = true; // 警情已全局解除
-            } else {
-                // 校验该目标是否属于任何一个活跃的犯罪现场
-                bool target_is_active_criminal = false;
-                {
-                    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-                    for (const auto& crime : g_active_crimes) {
-                        if (crime && !crime->cancelled) {
-                            if (crime->criminal == target) {
-                                target_is_active_criminal = true;
-                                break;
-                            }
-                            for (CPed* c : crime->consolidated_criminals) {
-                                if (c == target) {
-                                    target_is_active_criminal = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!target_is_active_criminal) {
-                    should_disarm = true; // 目标在任何警情中均已不再活跃，或被并案系统剔除
-                }
-            }
-
-            // 追加测距脱离检测：如果追击目标超过 100 米未果，算作跟丢脱战，立即收枪
-            if (!should_disarm && target) {
-                CVector cop_pos = get_entity_pos(cop);
-                CVector tgt_pos = get_entity_pos(target);
-                float dx = cop_pos.x - tgt_pos.x;
-                float dy = cop_pos.y - tgt_pos.y;
-                float dz = cop_pos.z - tgt_pos.z;
-                float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-                if (dist > 100.0f) {
-                    should_disarm = true;
-                }
-            }
-
-            if (should_disarm) {
-                // 警员当前并不处于任何有效的攻击或战斗态
-                bool is_currently_armed = (combat_comp && combat_comp->current_weapon_type != (int)WEAPON_UNARMED);
-                
-                if (is_currently_armed) {
-                    if (g_SetCurrentWeapon) {
-                        g_SetCurrentWeapon(cop, WEAPON_UNARMED);
-                    }
-                    if (combat_comp) {
-                        combat_comp->current_weapon_type = (int)WEAPON_UNARMED;
-                        combat_comp->target_entity = nullptr;
-                        combat_comp->last_weapon_switch_time_ms = ev.current_time_ms;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-                        g_cop_assigned_weapon.erase(cop);
-                    }
-                    LOGI("🎯 [ECS WeaponSelectionSystem - DISARM] Cop %p successfully disarmed (target dead or lost).", cop);
-                }
-
-                // 重点提升：既然此警员任务完全解除且已安全收枪，先命令其返回原本绑定的车辆
-                if (cop_comp && !cop_comp->is_in_vehicle) {
-                    bool is_driver = false;
-                    void* bound_veh = find_bound_vehicle_of_cop(cop, is_driver);
-                    if (bound_veh) {
-                        // 驾驶员生存性晋升系统 (Driver Survivability Promotion)
-                        // 如果当前警员是乘客，但该车原绑定的驾驶员已经殉职/不存在，则自动将该警员晋升为驾驶员！
-                        if (!is_driver && !is_alive_bound_driver_exists(bound_veh)) {
-                            is_driver = true;
-                            // 同步更新绑定关系
-                            {
-                                std::lock_guard<std::mutex> lock(g_bindings_mutex);
-                                for (auto& binding : g_cop_vehicle_bindings) {
-                                    if (binding.cop == cop) {
-                                        binding.as_driver = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            LOGW("👮 [ECS - DriverPromotion] Passenger cop %p promoted to DRIVER for vehicle %p because the bound driver is deceased/missing.", cop, bound_veh);
-                        }
-                        make_cop_enter_vehicle(cop, bound_veh, is_driver);
-                    }
-                }
-
-                // 重点提升：既然此警员任务完全解除且已安全收枪，直接移除其绑定的战术组件，不再占用下一帧的轮询资源
-                ecs::EntityManager::get().remove_component<ecs::CopComponent>(cop);
-                ecs::EntityManager::get().remove_component<ecs::CombatComponent>(cop);
-            } 
-            else if (combat_comp && target) {
-                // B. 自适应高灵敏战术武器切换
-                bool firearm_threat = is_specific_criminal_armed_with_firearm(target);
-                eWeaponType target_weapon = determine_weapon_for_cop(cop, target, firearm_threat);
-
-                // 2 秒强制武器强化周期，用来解决由于下车动作、摔倒或受击导致游戏底层自动重置武器为拳头的 bug
-                bool cop_is_in_veh = (find_vehicle_of_cop(cop) != nullptr);
-                bool periodic_reinforce = (!cop_is_in_veh) && (ev.current_time_ms - combat_comp->last_weapon_switch_time_ms > 2000);
-
-                if (target_weapon != (eWeaponType)combat_comp->current_weapon_type || periodic_reinforce) {
-                    // 战术规则优化：
-                    // 1. 紧急升级判定：如果是枪械威胁，属于紧急升级，一秒都不能等，直接无视冷却强制切枪！
-                    // 2. 正常状态调整：对于普通距离或威胁调整，冷却时间大幅从 5 秒缩减到 1 秒 (1000ms)，保障姿态极速跟进，同时免除高频摆动。
-                    bool is_urgent_upgrade = (target_weapon == WEAPON_PISTOL && combat_comp->current_weapon_type != (int)WEAPON_PISTOL);
-                    bool time_cooldown_passed = (ev.current_time_ms - combat_comp->last_weapon_switch_time_ms > 1000);
-
-                    if (is_urgent_upgrade || time_cooldown_passed || periodic_reinforce) {
-                        if (g_GiveWeapon && g_SetCurrentWeapon) {
-                            g_GiveWeapon(cop, target_weapon, 9999, true);
-                            g_SetCurrentWeapon(cop, target_weapon);
-                            combat_comp->current_weapon_type = (int)target_weapon;
-                            combat_comp->last_weapon_switch_time_ms = ev.current_time_ms;
-                            LOGI("🎯 [ECS WeaponSelectionSystem - SWITCH/REINFORCE] Cop %p weapon updated to match threat (urgent=%d, reinforce=%d): %d", 
-                                 cop, is_urgent_upgrade, periodic_reinforce, (int)target_weapon);
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    LOGI("✅ [ECS Engine] All systems successfully initialized!");
 }
 
 // =====================================================================
