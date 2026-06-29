@@ -38,6 +38,8 @@ typedef bool (*fn_IKChainIsFacingTarget_t)(void* self, void* ped, int index);
 typedef void* (*fn_GetSimplestActiveTask_t)(void* self);
 typedef void (*fn_ProcessFollowPedSA_t)(void* self, const CVector& target, float f1, float f2, float f3, bool b1);
 typedef bool (*fn_LeaveCarMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_GoToPointMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_AchieveHeadingMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void (*fn_UpdateCarAI_t)(void* vehicle);
 typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
 typedef void* (*fn_GetTaskMain_t)(void* self, void* ped);
@@ -80,6 +82,8 @@ extern fn_VehiclePursuitAiThunk_t g_orig_vehicle_pursuit_ai_thunk;
 extern fn_WanderLookForChatPartners_t g_orig_wander_look_for_chat_partners;
 extern fn_IKChainIsFacingTarget_t g_orig_ik_chain_is_facing_target;
 extern fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task;
+extern fn_GoToPointMakeAbortable_t g_orig_goto_point_make_abortable;
+extern fn_AchieveHeadingMakeAbortable_t g_orig_achieve_heading_make_abortable;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -119,3 +123,5 @@ void* proxy_vehicle_pursuit_ai_thunk(void* vehicle);
 void proxy_wander_look_for_chat_partners(void* self, void* ped);
 bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index);
 void* proxy_get_simplest_active_task(void* self);
+bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, void* event);

@@ -194,6 +194,8 @@ extern void* g_stub_vehicle_pursuit_ai_thunk;
 extern void* g_stub_wander_look_for_chat_partners;
 extern void* g_stub_ik_chain_is_facing_target;
 extern void* g_stub_get_simplest_active_task;
+extern void* g_stub_goto_point_make_abortable;
+extern void* g_stub_achieve_heading_make_abortable;
 
 // Dispatch state (defined in dispatch_logic.cpp)
 extern std::recursive_mutex g_crime_mutex;

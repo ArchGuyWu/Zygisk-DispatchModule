@@ -597,6 +597,26 @@ void hook_thread_func() {
     if (g_stub_leave_car_make_abortable) LOGI("✅ Hooked CTaskComplexLeaveCar::MakeAbortable");
     else LOGE("❌ Failed to hook CTaskComplexLeaveCar::MakeAbortable: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CTaskSimpleGoToPoint::MakeAbortable (CEventHandler path, ped intel+0x58 chain; tombstone_25)
+    g_stub_goto_point_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN20CTaskSimpleGoToPoint13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_goto_point_make_abortable),
+        reinterpret_cast<void**>(&g_orig_goto_point_make_abortable));
+    if (g_stub_goto_point_make_abortable) LOGI("✅ Hooked CTaskSimpleGoToPoint::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskSimpleGoToPoint::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskSimpleAchieveHeading::MakeAbortable (stale ped +0x788 write; tombstone_26/27)
+    g_stub_achieve_heading_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN25CTaskSimpleAchieveHeading13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_achieve_heading_make_abortable),
+        reinterpret_cast<void**>(&g_orig_achieve_heading_make_abortable));
+    if (g_stub_achieve_heading_make_abortable) LOGI("✅ Hooked CTaskSimpleAchieveHeading::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskSimpleAchieveHeading::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CCarAI::UpdateCarAI
     g_stub_update_car_ai = shadowhook_hook_sym_name(
         TARGET_LIB,

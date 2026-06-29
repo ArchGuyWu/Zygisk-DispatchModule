@@ -754,6 +754,36 @@ void proxy_ik_chain_update(void* self, float dt) {
 void* g_stub_ik_chain_is_facing_target = nullptr;
 fn_IKChainIsFacingTarget_t g_orig_ik_chain_is_facing_target = nullptr;
 
+// ped→intel→+0x58→+0x10 node (MakeAbortable / IK abort paths; tombstone_25).
+inline bool ped_intel_ik_table_node_unsafe(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return true;
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(intel_slot) || !*intel_slot) return true;
+    void* intel = *intel_slot;
+    if (!is_pointer_readable(intel)) return true;
+    void** table_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x58);
+    if (!is_pointer_readable(table_slot) || !*table_slot) return true;
+    void* table = *table_slot;
+    if (!is_pointer_readable(table)) return true;
+    void** node_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(table) + 0x10);
+    if (!is_pointer_readable(node_slot) || !*node_slot) return true;
+    return !is_pointer_readable(*node_slot);
+}
+
+inline bool ped_heading_abort_write_safe(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return false;
+    if (!is_ped_pointer_valid_safe(ped)) return false;
+    if (!is_pointer_readable(reinterpret_cast<char*>(ped) + 0x784)) return false;
+    if (!is_pointer_readable(reinterpret_cast<char*>(ped) + 0x788)) return false;
+    void** aux_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x7e8);
+    if (is_pointer_readable(aux_slot) && *aux_slot) {
+        void* aux = *aux_slot;
+        if (!is_pointer_readable(aux)) return false;
+        if (!is_pointer_readable(reinterpret_cast<char*>(aux) + 0x20)) return false;
+    }
+    return true;
+}
+
 inline bool ik_facing_target_ped_chain_unsafe(void* ped, int index) {
     if (!ped || !is_pointer_readable(ped)) return true;
     if (index < 0 || index > 32) return true;
@@ -880,6 +910,46 @@ bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* e
         sanitize_unsafe_subtask_at(self, 0x10);
     }
     return SHADOWHOOK_CALL_PREV(proxy_leave_car_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskSimpleGoToPoint::MakeAbortable Hook ---
+void* g_stub_goto_point_make_abortable = nullptr;
+fn_GoToPointMakeAbortable_t g_orig_goto_point_make_abortable = nullptr;
+
+bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    if (ped && ped_intel_ik_table_node_unsafe(ped)) {
+        LOGW("⚠️ [GoToPoint::MakeAbortable] broken ped intel ik chain — return false");
+        return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_goto_point_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskSimpleAchieveHeading::MakeAbortable Hook ---
+void* g_stub_achieve_heading_make_abortable = nullptr;
+fn_AchieveHeadingMakeAbortable_t g_orig_achieve_heading_make_abortable = nullptr;
+
+bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    if (ped && ped_intel_ik_table_node_unsafe(ped)) {
+        LOGW("⚠️ [AchieveHeading::MakeAbortable] broken ped intel ik chain — return false");
+        return false;
+    }
+    if (ped && !ped_heading_abort_write_safe(ped)) {
+        LOGW("⚠️ [AchieveHeading::MakeAbortable] stale ped %p heading fields — return false", ped);
+        return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_achieve_heading_make_abortable, self, ped, priority, event);
 }
 
 // --- CCarAI::UpdateCarAI Hook ---
