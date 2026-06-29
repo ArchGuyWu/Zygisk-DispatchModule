@@ -438,6 +438,17 @@ static inline bool is_task_vtable_safe(void* task) {
     if (!vtable) return false;
     if (!is_pointer_readable(vtable)) return false;
 
+    // Verify that the vtable is within the address space of libUE4.so.
+    // We use g_vtable_CTask as a reference point.
+    if (g_vtable_CTask) {
+        uintptr_t ref = reinterpret_cast<uintptr_t>(g_vtable_CTask);
+        uintptr_t vt = reinterpret_cast<uintptr_t>(vtable);
+        uintptr_t diff = (vt > ref) ? (vt - ref) : (ref - vt);
+        if (diff > 250000000ULL) { // 250 MB
+            return false; // Too far from libUE4.so data segment, likely garbage/freed memory
+        }
+    }
+
     // Check if slot 2 (Clone) or slot 4 (IsSimple) points to __cxa_pure_virtual
     if (g_pure_virtual_target) {
         void** vtable_slots = reinterpret_cast<void**>(vtable);
@@ -6463,6 +6474,30 @@ static void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
     return SHADOWHOOK_CALL_PREV(proxy_be_in_group_control_sub_task, self, ped);
 }
 
+// --- IKChainManager_c::Update Hook ---
+static void* g_stub_ik_chain_update = nullptr;
+typedef void (*fn_IKChainUpdate_t)(void* self, float dt);
+static fn_IKChainUpdate_t g_orig_ik_chain_update = nullptr;
+
+static void proxy_ik_chain_update(void* self, float dt) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+    if (!self) return; // Protect against null manager during transitions
+    SHADOWHOOK_CALL_PREV(proxy_ik_chain_update, self, dt);
+}
+
+// --- CCam::Process_FollowPed_SA Hook ---
+static void* g_stub_process_follow_ped_sa = nullptr;
+typedef void (*fn_ProcessFollowPedSA_t)(void* self, const CVector& target, float f1, float f2, float f3, bool b1);
+static fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa = nullptr;
+
+static void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+    if (!self) return; // Protect against null camera during transitions
+    SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
+}
+
 
 
 // =====================================================================
@@ -6898,6 +6933,24 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_be_in_group_control_sub_task));
     if (g_stub_be_in_group_control_sub_task) LOGI("✅ Hooked CTaskComplexBeInGroup::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexBeInGroup::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook IKChainManager_c::Update
+    g_stub_ik_chain_update = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN16IKChainManager_c6UpdateEf",
+        reinterpret_cast<void*>(proxy_ik_chain_update),
+        reinterpret_cast<void**>(&g_orig_ik_chain_update));
+    if (g_stub_ik_chain_update) LOGI("✅ Hooked IKChainManager_c::Update");
+    else LOGE("❌ Failed to hook IKChainManager_c::Update: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CCam::Process_FollowPed_SA
+    g_stub_process_follow_ped_sa = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN4CCam20Process_FollowPed_SAERK7CVectorfffb",
+        reinterpret_cast<void*>(proxy_process_follow_ped_sa),
+        reinterpret_cast<void**>(&g_orig_process_follow_ped_sa));
+    if (g_stub_process_follow_ped_sa) LOGI("✅ Hooked CCam::Process_FollowPed_SA");
+    else LOGE("❌ Failed to hook CCam::Process_FollowPed_SA: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CWanted::Update (通缉系统更新)
     g_stub_wanted_update = shadowhook_hook_sym_name(
