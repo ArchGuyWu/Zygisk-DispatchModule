@@ -194,7 +194,8 @@ extern std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
 extern std::mutex g_cop_assigned_weapon_mutex;
 
 std::shared_ptr<CrimeEvent> get_primary_active_crime();
-#define g_active_crime (*get_primary_active_crime())
+std::shared_ptr<CrimeEvent> find_crime_containing_criminal(CPed* criminal);
+bool any_active_firearm_case_blocking(CPed* criminal);
 
 // --- 跨文件共享函数 ---
 bool is_firearm(eCrimeType crime);

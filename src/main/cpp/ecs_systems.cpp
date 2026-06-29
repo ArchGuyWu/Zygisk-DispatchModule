@@ -172,70 +172,66 @@ void init_ecs_systems() {
         }
 
         // 如果是处于侦测中/并案列表中的犯罪分子切枪，则处理案件的即时升级与降级冻结
-        if (g_crime_active.load() && !g_active_crime.cancelled) {
+        auto crime = find_crime_containing_criminal(ped);
+        if (crime && !crime->cancelled) {
             bool is_our_criminal = false;
             size_t criminal_idx = 0;
-            {
-                std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-                for (size_t idx = 0; idx < g_active_crime.consolidated_criminals.size(); ++idx) {
-                    if (g_active_crime.consolidated_criminals[idx] == ped) {
-                        is_our_criminal = true;
-                        criminal_idx = idx;
-                        break;
-                    }
-                }
-
-                if (is_our_criminal) {
-                    auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(ped);
-                    if (crim_comp) {
-                        int new_weap_cat = 0;
-                        if (ev.current_weapon >= WEAPON_PISTOL && ev.current_weapon <= WEAPON_MINIGUN) {
-                            new_weap_cat = 2; // FIREARM
-                        } else if (ev.current_weapon == WEAPON_UNARMED) {
-                            new_weap_cat = 0; // UNARMED
-                        } else {
-                            new_weap_cat = 1; // MELEE
-                        }
-
-                        if (new_weap_cat > crim_comp->initial_weapon_category) {
-                            crim_comp->initial_weapon_category = new_weap_cat;
-                            crim_comp->is_active = true;
-                            crim_comp->is_fleeing = false;
-                            crim_comp->is_air_shooter = false;
-                            crim_comp->last_attack_time_ms = ev.time_ms; // 刷新其威胁时间，保证不因旧的时间戳被判为超时
-                            LOGI("⚡️ [ECS WeaponSwitch] Criminal %p upgraded weapon category to %d! Escalated threat level to active.", ped, new_weap_cat);
-                        } else if (new_weap_cat < crim_comp->initial_weapon_category) {
-                            // Weapon Downgrade: freeze weapon tier, but mark them as inactive (fleeing)
-                            crim_comp->is_active = false;
-                            crim_comp->is_air_shooter = false;
-                            crim_comp->is_fleeing = true;
-                            LOGI("⚡️ [ECS WeaponSwitch] Criminal %p downgraded weapon to %d. Classifying as Inactive & Fleeing of initial category %d.", 
-                                 ped, ev.current_weapon, crim_comp->initial_weapon_category);
-                        }
-                    }
-
-                    bool firearm = (ev.current_weapon >= WEAPON_PISTOL && ev.current_weapon <= WEAPON_MINIGUN);
-                    if (firearm) {
-                        bool escalated = false;
-                        if (criminal_idx < g_active_crime.criminal_is_firearm.size()) {
-                            if (!g_active_crime.criminal_is_firearm[criminal_idx]) {
-                                g_active_crime.criminal_is_firearm[criminal_idx] = true;
-                                escalated = true;
-                            }
-                        }
-                        if (!g_active_crime.is_firearm) {
-                            g_active_crime.is_firearm = true;
-                            escalated = true;
-                        }
-
-                        if (escalated) {
-                            LOGI("⚡️ [ECS CopWeaponSelectionSystem] Criminal %p switched weapon to firearm %d! Escalating case immediately.", ped, ev.current_weapon);
-                        }
-                    }
+            for (size_t idx = 0; idx < crime->consolidated_criminals.size(); ++idx) {
+                if (crime->consolidated_criminals[idx] == ped) {
+                    is_our_criminal = true;
+                    criminal_idx = idx;
+                    break;
                 }
             }
 
             if (is_our_criminal) {
+                auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(ped);
+                if (crim_comp) {
+                    int new_weap_cat = 0;
+                    if (ev.current_weapon >= WEAPON_PISTOL && ev.current_weapon <= WEAPON_MINIGUN) {
+                        new_weap_cat = 2; // FIREARM
+                    } else if (ev.current_weapon == WEAPON_UNARMED) {
+                        new_weap_cat = 0; // UNARMED
+                    } else {
+                        new_weap_cat = 1; // MELEE
+                    }
+
+                    if (new_weap_cat > crim_comp->initial_weapon_category) {
+                        crim_comp->initial_weapon_category = new_weap_cat;
+                        crim_comp->is_active = true;
+                        crim_comp->is_fleeing = false;
+                        crim_comp->is_air_shooter = false;
+                        crim_comp->last_attack_time_ms = ev.time_ms;
+                        LOGI("⚡️ [ECS WeaponSwitch] Criminal %p upgraded weapon category to %d! Escalated threat level to active.", ped, new_weap_cat);
+                    } else if (new_weap_cat < crim_comp->initial_weapon_category) {
+                        crim_comp->is_active = false;
+                        crim_comp->is_air_shooter = false;
+                        crim_comp->is_fleeing = true;
+                        LOGI("⚡️ [ECS WeaponSwitch] Criminal %p downgraded weapon to %d. Classifying as Inactive & Fleeing of initial category %d.",
+                             ped, ev.current_weapon, crim_comp->initial_weapon_category);
+                    }
+                }
+
+                bool firearm = (ev.current_weapon >= WEAPON_PISTOL && ev.current_weapon <= WEAPON_MINIGUN);
+                if (firearm) {
+                    bool escalated = false;
+                    if (criminal_idx < crime->criminal_is_firearm.size()) {
+                        if (!crime->criminal_is_firearm[criminal_idx]) {
+                            crime->criminal_is_firearm[criminal_idx] = true;
+                            escalated = true;
+                        }
+                    }
+                    if (!crime->is_firearm) {
+                        crime->is_firearm = true;
+                        escalated = true;
+                    }
+
+                    if (escalated) {
+                        LOGI("⚡️ [ECS CopWeaponSelectionSystem] Criminal %p switched weapon to firearm %d! Escalating case %llu immediately.",
+                             ped, ev.current_weapon, (unsigned long long)crime->case_id);
+                    }
+                }
+
                 update_cops_targeting_criminal_event_driven(ped);
             }
         }

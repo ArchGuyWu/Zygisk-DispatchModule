@@ -89,6 +89,37 @@ std::shared_ptr<CrimeEvent> get_primary_active_crime() {
     return g_dummy_crime;
 }
 
+std::shared_ptr<CrimeEvent> find_crime_containing_criminal(CPed* criminal) {
+    if (!criminal) return nullptr;
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    for (const auto& crime : g_active_crimes) {
+        if (!crime || crime->cancelled) continue;
+        if (crime->criminal == criminal) return crime;
+        for (CPed* c : crime->consolidated_criminals) {
+            if (c == criminal) return crime;
+        }
+    }
+    return nullptr;
+}
+
+bool any_active_firearm_case_blocking(CPed* criminal) {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    for (const auto& crime : g_active_crimes) {
+        if (!crime || crime->cancelled || !crime->is_firearm) continue;
+        bool in_case = (crime->criminal == criminal);
+        if (!in_case) {
+            for (CPed* c : crime->consolidated_criminals) {
+                if (c == criminal) {
+                    in_case = true;
+                    break;
+                }
+            }
+        }
+        if (!in_case) return true;
+    }
+    return false;
+}
+
 // 玩家协助追踪
 std::atomic<CPed*> g_tracked_criminal{nullptr};
 std::atomic<int64_t> g_last_assist_time_ms{0};
@@ -684,11 +715,8 @@ bool proxy_generate_damage_event(CPed* victim,
                 bool is_self_defense = false;
                 if (victim == reinterpret_cast<CPed*>(player)) {
                     bool already_criminal = false;
-                    {
-                        std::lock_guard<std::recursive_mutex> lock_crime(g_crime_mutex);
-                        if (g_crime_active.load() && g_active_crime.criminal == reinterpret_cast<CPed*>(perpetrator)) {
-                            already_criminal = true;
-                        }
+                    if (find_crime_containing_criminal(reinterpret_cast<CPed*>(perpetrator))) {
+                        already_criminal = true;
                     }
                     if (!already_criminal) {
                         std::lock_guard<std::mutex> lock(g_attacked_npcs_mutex);
@@ -1391,12 +1419,11 @@ static void make_cops_attack_criminal(CPed* criminal) {
     if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
     if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return;
 
-    // 优先解决枪击大案：若当前附近已经存在活跃的枪击大案，且当前准备调度的嫌犯并非该枪击犯（是个低优先级的普通嫌犯），
-    // 则直接暂缓该低优先级嫌犯的警力调度，全力优先消灭持枪悍匪。这也免除了不必要的 0 伤害产生和 pool 轮询开销。
-    if (g_crime_active.load() && !g_active_crime.cancelled) {
-        if (g_active_crime.is_firearm && g_active_crime.criminal && g_active_crime.criminal != criminal) {
-            return;
-        }
+    std::shared_ptr<CrimeEvent> crime_case = find_crime_containing_criminal(criminal);
+
+    // 若存在其他活跃枪击案且当前嫌犯不在那些案件中，暂缓低优先级调度。
+    if (any_active_firearm_case_blocking(criminal)) {
+        return;
     }
 
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
@@ -1523,12 +1550,12 @@ static void make_cops_attack_criminal(CPed* criminal) {
 
     // 动态提取枪械案件状态
     bool is_active_firearm = false;
-    if (g_crime_active.load() && !g_active_crime.cancelled) {
-        if (g_active_crime.is_firearm) {
+    if (crime_case && !crime_case->cancelled) {
+        if (crime_case->is_firearm) {
             is_active_firearm = true;
         } else {
-            auto& list = g_active_crime.consolidated_criminals;
-            auto& is_fire_list = g_active_crime.criminal_is_firearm;
+            auto& list = crime_case->consolidated_criminals;
+            auto& is_fire_list = crime_case->criminal_is_firearm;
             for (size_t idx = 0; idx < list.size(); ++idx) {
                 if (list[idx] == criminal && idx < is_fire_list.size() && is_fire_list[idx]) {
                     is_active_firearm = true;
@@ -1552,8 +1579,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
             
             // 判定该 NPC 是否属于并案列表中的罪犯之一
             bool is_cop_not_criminal = true;
-            if (g_crime_active.load() && !g_active_crime.cancelled) {
-                for (CPed* c : g_active_crime.consolidated_criminals) {
+            if (crime_case && !crime_case->cancelled) {
+                for (CPed* c : crime_case->consolidated_criminals) {
                     if (ped == c) {
                         is_cop_not_criminal = false;
                         break;
@@ -1574,7 +1601,7 @@ static void make_cops_attack_criminal(CPed* criminal) {
                         // 警员在载具中，且该载具已被调度
                         if (vector_contains(vehicles_ordered_to_scene_snapshot, veh) || 
                             vector_contains(vehicles_siren_awakened_snapshot, veh) || 
-                            veh == g_active_crime.spawned_vehicle) {
+                            veh == crime_case->spawned_vehicle) {
                             if (!vector_contains(counted_vehicles, veh)) {
                                 counted_vehicles.push_back(veh);
                                 active_vehicles_count++;
@@ -1583,8 +1610,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     } else {
                         // 地面散步/巡逻警员
                         int64_t last_assign = 0;
-                        if (g_crime_active.load() && !g_active_crime.cancelled) {
-                            for (CPed* c : g_active_crime.consolidated_criminals) {
+                        if (crime_case && !crime_case->cancelled) {
+                            for (CPed* c : crime_case->consolidated_criminals) {
                                 auto key = std::make_pair(ped, c);
                                 for (const auto& item : cop_attack_assign_time_snapshot) {
                                     if (item.first == key) {
@@ -1607,8 +1634,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                         if (g_GetWeaponLockOnTarget) {
                             CEntity* target = g_GetWeaponLockOnTarget(ped);
                             if (target) {
-                                if (g_crime_active.load() && !g_active_crime.cancelled) {
-                                    for (CPed* c : g_active_crime.consolidated_criminals) {
+                                if (crime_case && !crime_case->cancelled) {
+                                    for (CPed* c : crime_case->consolidated_criminals) {
                                         if (target == reinterpret_cast<CEntity*>(c)) {
                                             already_targeting = true;
                                             break;
@@ -1638,9 +1665,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
     int max_vehicles = 2;
     int max_foot_cops = 2;
 
-    if (g_crime_active.load() && !g_active_crime.cancelled) {
-        auto& list = g_active_crime.consolidated_criminals;
-        auto& is_fire_list = g_active_crime.criminal_is_firearm;
+    if (crime_case && !crime_case->cancelled) {
+        auto& list = crime_case->consolidated_criminals;
+        auto& is_fire_list = crime_case->criminal_is_firearm;
         
         int total_criminals = list.size();
         int armed_criminals = 0;
@@ -1650,7 +1677,7 @@ static void make_cops_attack_criminal(CPed* criminal) {
             }
         }
         
-        int cops_killed = g_active_crime.cops_killed;
+        int cops_killed = crime_case->cops_killed;
         
         if (cops_killed > 0) {
             max_vehicles = 3;
@@ -1700,8 +1727,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
             
             // 判定该 NPC 是否属于并案列表中的罪犯之一
             bool is_cop_not_criminal = true;
-            if (g_crime_active.load() && !g_active_crime.cancelled) {
-                for (CPed* c : g_active_crime.consolidated_criminals) {
+            if (crime_case && !crime_case->cancelled) {
+                for (CPed* c : crime_case->consolidated_criminals) {
                     if (ped == c) {
                         is_cop_not_criminal = false;
                         break;
@@ -1722,9 +1749,9 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     CPed* target_criminal = criminal;
 
                     // 🚀 【黑科技 1】动态目标重定向：多犯罪NPC并案下，就近选择攻击对象，极速消灭威胁
-                    if (g_crime_active.load() && !g_active_crime.cancelled) {
+                    if (crime_case && !crime_case->cancelled) {
                         float best_d = 999999.0f;
-                        for (CPed* c : g_active_crime.consolidated_criminals) {
+                        for (CPed* c : crime_case->consolidated_criminals) {
                             if (c && is_ped_pointer_valid_safe(c)) {
                                 CVector c_pos = get_entity_pos(c);
                                 float dx_c = cop_pos.x - c_pos.x;
@@ -1836,8 +1863,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                     vehicles_emptied_snapshot.push_back(veh); // 局部同步
                                     pending_vehicles_emptied.push_back(veh);
 
-                                    if (veh == g_active_crime.spawned_vehicle) {
-                                        g_active_crime.occupants_ordered_out = true;
+                                    if (veh == crime_case->spawned_vehicle) {
+                                        if (crime_case) crime_case->occupants_ordered_out = true;
                                     }
                                     LOGI("Vehicle exit triggered (dist=%.1f, elapsed=%lld ms): Stopped Autopilot & Ordered cops to leave vehicle %p", 
                                          v_dist, (long long)elapsed, veh);
@@ -1846,7 +1873,7 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                 // 检查是否已被调度，若不是，则进入配额判定
                                 bool already_dispatched = vector_contains(vehicles_ordered_to_scene_snapshot, veh) || 
                                                           vector_contains(vehicles_siren_awakened_snapshot, veh) || 
-                                                          veh == g_active_crime.spawned_vehicle;
+                                                          veh == crime_case->spawned_vehicle;
 
                                 // =====================================================================
                                 // 检测卡死的警车并尝试重新调度
@@ -1912,8 +1939,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                     }
                                                     vehicles_emptied_snapshot.push_back(veh);
                                                     pending_vehicles_emptied.push_back(veh);
-                                                    if (veh == g_active_crime.spawned_vehicle) {
-                                                        g_active_crime.occupants_ordered_out = true;
+                                                    if (veh == crime_case->spawned_vehicle) {
+                                                        if (crime_case) crime_case->occupants_ordered_out = true;
                                                     }
                                                     LOGW("[dispatchCenter - ProactiveWaterRescue] CINEMATIC RESCUE! Vehicle %p predicted to plunge into deep water. Safe bulk exit triggered!", veh);
                                                 }
@@ -1957,8 +1984,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                         }
                                                         vehicles_emptied_snapshot.push_back(veh);
                                                         pending_vehicles_emptied.push_back(veh);
-                                                        if (veh == g_active_crime.spawned_vehicle) {
-                                                            g_active_crime.occupants_ordered_out = true;
+                                                        if (veh == crime_case->spawned_vehicle) {
+                                                            if (crime_case) crime_case->occupants_ordered_out = true;
                                                         }
                                                         LOGW("🔄 [Anti-Spin Guard] Circle spinning detected in close range (%.1fm). Safe bulk exit triggered!", dist_vc);
                                                     }
@@ -2211,8 +2238,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                                     }
                                                                     vehicles_emptied_snapshot.push_back(veh);
                                                                     pending_vehicles_emptied.push_back(veh);
-                                                                    if (veh == g_active_crime.spawned_vehicle) {
-                                                                        g_active_crime.occupants_ordered_out = true;
+                                                                    if (veh == crime_case->spawned_vehicle) {
+                                                                        if (crime_case) crime_case->occupants_ordered_out = true;
                                                                     }
                                                                     LOGW("🔥 [dispatchCenter - FireEmergencyExit] TRAPPED BY FIRE! Vehicle %p is too close to fire (dist=%.1f, speed=%.2f). Safe bulk exit triggered!", veh, fire_dist, speed);
                                                                 }
@@ -2287,8 +2314,8 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                         }
                                         vehicles_emptied_snapshot.push_back(veh);
                                         pending_vehicles_emptied.push_back(veh);
-                                        if (veh == g_active_crime.spawned_vehicle) {
-                                            g_active_crime.occupants_ordered_out = true;
+                                        if (veh == crime_case->spawned_vehicle) {
+                                            if (crime_case) crime_case->occupants_ordered_out = true;
                                         }
                                         LOGW("[dispatchCenter - WaterAvoidance] Vehicle %p at extreme low sea level (Z=%.2f). Emergency bulk exit!", veh, current_pos.z);
                                     }
@@ -2384,7 +2411,7 @@ static void make_cops_attack_criminal(CPed* criminal) {
                                                             if (other_veh && other_veh != veh && is_vehicle_pointer_valid(other_veh)) {
                                                                 bool is_other_cop = vector_contains(vehicles_ordered_to_scene_snapshot, other_veh) || 
                                                                                     vector_contains(vehicles_siren_awakened_snapshot, other_veh) || 
-                                                                                    other_veh == g_active_crime.spawned_vehicle;
+                                                                                    other_veh == crime_case->spawned_vehicle;
                                                                 if (!is_other_cop) {
                                                                     CVector other_pos = get_entity_pos(other_veh);
                                                                     float ov_dx = other_pos.x - current_pos.x;
@@ -2625,7 +2652,7 @@ static void make_cops_attack_criminal(CPed* criminal) {
                     }
 
                     // 避免穿帮音效：如果当前活跃案件是枪击案 (is_firearm == true)，听觉自然唤醒。但极近距离强行唤醒。
-                    if (!is_extremely_nearby && g_crime_active.load() && g_active_crime.is_firearm && !g_active_crime.cancelled) {
+                    if (!is_extremely_nearby && g_crime_active.load() && crime_case->is_firearm && !crime_case->cancelled) {
                         if (g_FindPlayerCoors) {
                             CVector player_pos = g_FindPlayerCoors(0);
                             float p_dx = cop_pos.x - player_pos.x;
@@ -2870,20 +2897,19 @@ void make_cops_attack_criminal_immediate(CPed* criminal) {
 
 bool is_specific_criminal_armed_with_firearm(CPed* target_criminal) {
     if (!target_criminal) return false;
-    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-    if (g_crime_active.load() && !g_active_crime.cancelled) {
-        auto& list = g_active_crime.consolidated_criminals;
-        auto& is_fire_list = g_active_crime.criminal_is_firearm;
-        for (size_t idx = 0; idx < list.size(); ++idx) {
-            if (list[idx] == target_criminal) {
-                if (idx < is_fire_list.size()) {
-                    return is_fire_list[idx];
-                }
+    auto crime = find_crime_containing_criminal(target_criminal);
+    if (!crime || crime->cancelled) return false;
+    auto& list = crime->consolidated_criminals;
+    auto& is_fire_list = crime->criminal_is_firearm;
+    for (size_t idx = 0; idx < list.size(); ++idx) {
+        if (list[idx] == target_criminal) {
+            if (idx < is_fire_list.size()) {
+                return is_fire_list[idx];
             }
         }
-        if (g_active_crime.criminal == target_criminal) {
-            return g_active_crime.is_firearm;
-        }
+    }
+    if (crime->criminal == target_criminal) {
+        return crime->is_firearm;
     }
     return false;
 }
@@ -3002,16 +3028,13 @@ void update_cops_targeting_criminal_event_driven(CPed* criminal) {
     }
 }
 
-void update_primary_criminal_by_threat() {
-    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-    if (!g_crime_active.load() || g_active_crime.cancelled) {
-        return;
-    }
+static void update_primary_criminal_for_case(CrimeEvent& crime) {
+    if (crime.cancelled) return;
 
     CPed* best_criminal = nullptr;
     ecs::CriminalThreatLevel highest_threat = ecs::CriminalThreatLevel::UNARMED_INACTIVE;
 
-    for (CPed* ped : g_active_crime.consolidated_criminals) {
+    for (CPed* ped : crime.consolidated_criminals) {
         if (!ped || !is_ped_pointer_valid_safe(ped)) {
             continue;
         }
@@ -3029,19 +3052,19 @@ void update_primary_criminal_by_threat() {
             best_criminal = ped;
             highest_threat = threat;
         } else if ((int)threat == (int)highest_threat) {
-            if (g_active_crime.criminal == ped) {
+            if (crime.criminal == ped) {
                 best_criminal = ped;
             }
         }
     }
 
-    if (best_criminal && best_criminal != g_active_crime.criminal) {
-        CPed* old_criminal = g_active_crime.criminal;
-        g_active_crime.criminal = best_criminal;
+    if (best_criminal && best_criminal != crime.criminal) {
+        CPed* old_criminal = crime.criminal;
+        crime.criminal = best_criminal;
         g_tracked_criminal.store(best_criminal);
 
-        LOGI("⚡️ [ECS ThreatPrioritizer] Primary target switched due to threat priority: %p -> %p (Threat: %d)",
-             old_criminal, best_criminal, (int)highest_threat);
+        LOGI("⚡️ [ECS ThreatPrioritizer] Case %llu primary target switched: %p -> %p (Threat: %d)",
+             (unsigned long long)crime.case_id, old_criminal, best_criminal, (int)highest_threat);
 
         std::vector<CPed*> cops_to_redirect;
         {
@@ -3058,6 +3081,15 @@ void update_primary_criminal_by_threat() {
 
         for (CPed* cop : cops_to_redirect) {
             make_single_cop_attack_criminal(cop, best_criminal, true);
+        }
+    }
+}
+
+void update_primary_criminal_by_threat() {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    for (auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) {
+            update_primary_criminal_for_case(*crime);
         }
     }
 }
