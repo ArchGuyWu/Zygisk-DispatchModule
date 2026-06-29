@@ -189,7 +189,7 @@ bool is_vehicle_occupied_by_driver(void* veh) {
 // 智能驾驶 AI 控制逻辑：
 // 1. 尽量限制在正常路网上，防止开上人行道
 // 2. 距离目标较近时温柔减速，防止直接蛮力撞击犯罪 NPC / 玩家
-static void command_vehicle_ai(void* vehicle, const CVector& target_loc, float dist_to_target) {
+void command_vehicle_ai(void* vehicle, const CVector& target_loc, float dist_to_target) {
     if (!g_GetCarToGoToCoors || !vehicle) return;
 
     // 当距离目标非常近（例如 < 32 米）时：
