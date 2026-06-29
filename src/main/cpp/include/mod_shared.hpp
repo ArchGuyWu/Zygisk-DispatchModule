@@ -185,6 +185,9 @@ extern void* g_stub_update_car_ai;
 extern void* g_stub_facial_control_sub_task;
 extern void* g_stub_get_task_main;
 extern void* g_stub_get_nearest_car_door;
+extern void* g_stub_sequence_create_next_sub_task;
+extern void* g_stub_event_script_command_get_priority;
+extern void* g_stub_flush_tasks;
 
 // Dispatch state (defined in dispatch_logic.cpp)
 extern std::recursive_mutex g_crime_mutex;

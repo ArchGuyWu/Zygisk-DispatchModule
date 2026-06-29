@@ -617,10 +617,40 @@ int32_t proxy_u_strlen(const void* s) {
 void* g_stub_sequence_flush = nullptr;
 fn_SequenceFlush_t g_orig_sequence_flush = nullptr;
 
+inline void sanitize_sequence_task_slots(void* self) {
+    if (!self || !is_pointer_readable(self)) return;
+    for (int i = 0; i < 8; ++i) {
+        void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8 + 0x20);
+        if (!is_pointer_readable(slot)) continue;
+        void* task = *slot;
+        if (task && !is_task_vtable_safe(task)) {
+            LOGW("⚠️ [Sequence] Clearing unsafe task %p at index %d", task, i);
+            *slot = nullptr;
+        }
+    }
+}
+
 void proxy_sequence_flush(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
+    if (self) {
+        sanitize_sequence_task_slots(self);
+    }
     SHADOWHOOK_CALL_PREV(proxy_sequence_flush, self);
+}
+
+// --- CTaskComplexSequence::CreateNextSubTask Hook ---
+void* g_stub_sequence_create_next_sub_task = nullptr;
+fn_SequenceCreateNextSubTask_t g_orig_sequence_create_next_sub_task = nullptr;
+
+void* proxy_sequence_create_next_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
+    if (self) {
+        sanitize_sequence_task_slots(self);
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_sequence_create_next_sub_task, self, ped);
 }
 
 // --- CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB Hook ---
@@ -705,10 +735,81 @@ bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* do
 void* g_stub_ik_chain_update = nullptr;
 fn_IKChainUpdate_t g_orig_ik_chain_update = nullptr;
 
+inline bool ik_chain_has_null_entity_slot(void* self) {
+    if (!self || !is_pointer_readable(self)) return false;
+    void** head_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x1600);
+    if (!is_pointer_readable(head_slot)) return false;
+    void* node = *head_slot;
+    for (int guard = 0; node && guard < 64; ++guard) {
+        if (!is_pointer_readable(node)) return true;
+        void** entity_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x10);
+        if (!is_pointer_readable(entity_slot) || !*entity_slot) {
+            return true;
+        }
+        void** next_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x8);
+        if (!is_pointer_readable(next_slot)) return true;
+        node = *next_slot;
+    }
+    return false;
+}
+
 void proxy_ik_chain_update(void* self, float dt) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
+    // Original cbz x0 falls through to ldr [x0,#0x20] (tombstone_09, fault 0x20).
+    if (self && ik_chain_has_null_entity_slot(self)) {
+        LOGW("⚠️ [IKChainManager::Update] chain node with null entity — skip original");
+        return;
+    }
     SHADOWHOOK_CALL_PREV(proxy_ik_chain_update, self, dt);
+}
+
+// --- CEventScriptCommand::GetEventPriority Hook ---
+void* g_stub_event_script_command_get_priority = nullptr;
+fn_EventScriptCommandGetPriority_t g_orig_event_script_command_get_priority = nullptr;
+
+int proxy_event_script_command_get_priority(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && is_pointer_readable(self)) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+        if (is_pointer_readable(task_slot)) {
+            void* task = *task_slot;
+            if (task && !is_task_vtable_safe(task)) {
+                LOGW("⚠️ [CEventScriptCommand::GetEventPriority] clearing unsafe task %p", task);
+                *task_slot = nullptr;
+            }
+            if (!*task_slot) {
+                return 0;
+            }
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_event_script_command_get_priority, self);
+}
+
+// --- CPedGroupIntelligence::FlushTasks Hook ---
+void* g_stub_flush_tasks = nullptr;
+fn_FlushTasks_t g_orig_flush_tasks = nullptr;
+
+inline void sanitize_ped_task_pair_slots(void* pair) {
+    if (!pair || !is_pointer_readable(pair)) return;
+    static constexpr size_t kTaskOffsets[] = {0x8, 0x28, 0x48, 0x68, 0x88, 0xa8, 0xc8, 0xe8};
+    for (size_t off : kTaskOffsets) {
+        void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(pair) + off);
+        if (!is_pointer_readable(slot)) continue;
+        void* task = *slot;
+        if (task && !is_task_vtable_safe(task)) {
+            LOGW("⚠️ [FlushTasks] Clearing unsafe task %p at pair+0x%zx", task, off);
+            *slot = nullptr;
+        }
+    }
+}
+
+void proxy_flush_tasks(void* self, void* pair, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (pair) {
+        sanitize_ped_task_pair_slots(pair);
+    }
+    SHADOWHOOK_CALL_PREV(proxy_flush_tasks, self, pair, ped);
 }
 
 // --- CCam::Process_FollowPed_SA Hook ---

@@ -498,6 +498,15 @@ void hook_thread_func() {
     if (g_stub_sequence_flush) LOGI("✅ Hooked CTaskComplexSequence::Flush");
     else LOGE("❌ Failed to hook CTaskComplexSequence::Flush: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CTaskComplexSequence::CreateNextSubTask (序列推进时对零填充任务解引用 vtable+0x10 闪退)
+    g_stub_sequence_create_next_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN20CTaskComplexSequence17CreateNextSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_sequence_create_next_sub_task),
+        reinterpret_cast<void**>(&g_orig_sequence_create_next_sub_task));
+    if (g_stub_sequence_create_next_sub_task) LOGI("✅ Hooked CTaskComplexSequence::CreateNextSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexSequence::CreateNextSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB (解决躲避动作结束回调时任务已被零填充析构的崩溃问题)
     g_stub_finish_anim_evasive_step_cb = shadowhook_hook_sym_name(
         TARGET_LIB,
@@ -525,6 +534,15 @@ void hook_thread_func() {
     if (g_stub_get_task_main) LOGI("✅ Hooked CPedGroupIntelligence::GetTaskMain");
     else LOGE("❌ Failed to hook CPedGroupIntelligence::GetTaskMain: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CPedGroupIntelligence::FlushTasks (刷新组任务时对零填充任务析构闪退)
+    g_stub_flush_tasks = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN21CPedGroupIntelligence10FlushTasksEP12CPedTaskPairP4CPed",
+        reinterpret_cast<void*>(proxy_flush_tasks),
+        reinterpret_cast<void**>(&g_orig_flush_tasks));
+    if (g_stub_flush_tasks) LOGI("✅ Hooked CPedGroupIntelligence::FlushTasks");
+    else LOGE("❌ Failed to hook CPedGroupIntelligence::FlushTasks: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook IKChainManager_c::Update
     g_stub_ik_chain_update = shadowhook_hook_sym_name(
         TARGET_LIB,
@@ -533,6 +551,15 @@ void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_ik_chain_update));
     if (g_stub_ik_chain_update) LOGI("✅ Hooked IKChainManager_c::Update");
     else LOGE("❌ Failed to hook IKChainManager_c::Update: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CEventScriptCommand::GetEventPriority (事件优先级查询时对零填充任务调 vtable+0x28 闪退)
+    g_stub_event_script_command_get_priority = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK19CEventScriptCommand16GetEventPriorityEv",
+        reinterpret_cast<void*>(proxy_event_script_command_get_priority),
+        reinterpret_cast<void**>(&g_orig_event_script_command_get_priority));
+    if (g_stub_event_script_command_get_priority) LOGI("✅ Hooked CEventScriptCommand::GetEventPriority");
+    else LOGE("❌ Failed to hook CEventScriptCommand::GetEventPriority: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CCam::Process_FollowPed_SA
     g_stub_process_follow_ped_sa = shadowhook_hook_sym_name(
