@@ -502,6 +502,10 @@ void* proxy_avoid_ped_control(void* self, void* ped) {
                 *subtask_ptr = nullptr;
             }
         }
+        // Other ped at +0x18: engine walks its intel task slots → vtable+0x18 (tombstone_23).
+        sanitize_optional_ped_at_slot(
+            reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18),
+            "AvoidOtherPed other");
     }
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
@@ -938,21 +942,41 @@ void proxy_ik_manager_process_ped(void* self, void* ped) {
 }
 
 // --- CCarCtrl::IsPoliceVehicleInPursuit Hook ---
-// Vehicle+0x10 sub-object null → vtable read at +0x2bc (tombstone_14, fault 0x0).
+// Outer entry takes pool index; inner thunk at +0x2b8 loads vehicle+0x10 without guard (tombstone_14/21/22/24).
 void* g_stub_is_police_vehicle_in_pursuit = nullptr;
 fn_IsPoliceVehicleInPursuit_t g_orig_is_police_vehicle_in_pursuit = nullptr;
+void* g_stub_vehicle_pursuit_ai_thunk = nullptr;
+fn_VehiclePursuitAiThunk_t g_orig_vehicle_pursuit_ai_thunk = nullptr;
+
+inline bool vehicle_ai_subobject_chain_safe(void* vehicle) {
+    if (!vehicle || !is_pointer_readable(vehicle)) return false;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) return false;
+    void* sub = *sub_slot;
+    if (!is_pointer_readable(sub)) return false;
+    void** vtable_slot = reinterpret_cast<void**>(sub);
+    if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return false;
+    void** fn_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(*vtable_slot) + 0x38);
+    return is_pointer_readable(fn_slot) && *fn_slot && is_pointer_readable(*fn_slot);
+}
+
+void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!vehicle_ai_subobject_chain_safe(vehicle)) {
+        LOGW("⚠️ [IsPoliceVehicleInPursuit thunk] vehicle %p ai chain unsafe — skip", vehicle);
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_vehicle_pursuit_ai_thunk, vehicle);
+}
 
 bool proxy_is_police_vehicle_in_pursuit(int vehicle_index) {
     SHADOWHOOK_STACK_SCOPE();
+    if (vehicle_index < 0) return false;
     if (g_GetPoolVehicle) {
         void* vehicle = g_GetPoolVehicle(vehicle_index);
-        if (!vehicle || !is_pointer_readable(vehicle)) return false;
-        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
-        if (!is_pointer_readable(sub_slot) || !*sub_slot) return false;
-        void* sub = *sub_slot;
-        if (!is_pointer_readable(sub)) return false;
-        void** vtable_slot = reinterpret_cast<void**>(sub);
-        if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return false;
+        if (vehicle && !vehicle_ai_subobject_chain_safe(vehicle)) {
+            return false;
+        }
     }
     return SHADOWHOOK_CALL_PREV(proxy_is_police_vehicle_in_pursuit, vehicle_index);
 }

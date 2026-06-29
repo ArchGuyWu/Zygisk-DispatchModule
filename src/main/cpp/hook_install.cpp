@@ -634,7 +634,7 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskSimpleIKManager::ProcessPed: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CCarCtrl::IsPoliceVehicleInPursuit (vehicle+0x10 空 → vtable 解引用闪退)
+    // Hook CCarCtrl::IsPoliceVehicleInPursuit (outer + inner vehicle-ai thunk at +0x2b8)
     g_stub_is_police_vehicle_in_pursuit = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN8CCarCtrl24IsPoliceVehicleInPursuitEi",
@@ -643,6 +643,22 @@ void hook_thread_func() {
     if (g_stub_is_police_vehicle_in_pursuit) LOGI("✅ Hooked CCarCtrl::IsPoliceVehicleInPursuit");
     else LOGE("❌ Failed to hook CCarCtrl::IsPoliceVehicleInPursuit: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    void* pursuit_sym = xdl_sym(lib, "_ZN8CCarCtrl24IsPoliceVehicleInPursuitEi", nullptr);
+    if (pursuit_sym) {
+        void* thunk_addr = reinterpret_cast<void*>(
+            reinterpret_cast<uintptr_t>(pursuit_sym) + 0x2b8);
+        g_stub_vehicle_pursuit_ai_thunk = shadowhook_hook_func_addr(
+            thunk_addr,
+            reinterpret_cast<void*>(proxy_vehicle_pursuit_ai_thunk),
+            reinterpret_cast<void**>(&g_orig_vehicle_pursuit_ai_thunk));
+        if (g_stub_vehicle_pursuit_ai_thunk) {
+            LOGI("✅ Hooked CCarCtrl::IsPoliceVehicleInPursuit vehicle-ai thunk @ %p", thunk_addr);
+        } else {
+            LOGE("❌ Failed to hook IsPoliceVehicleInPursuit thunk: %s",
+                 shadowhook_to_errmsg(shadowhook_get_errno()));
+        }
+    }
 
     // Hook CTaskComplexWanderStandard::LookForChatPartners (伙伴 intel 任务槽零填充 → fault 0x28)
     g_stub_wander_look_for_chat_partners = shadowhook_hook_sym_name(
