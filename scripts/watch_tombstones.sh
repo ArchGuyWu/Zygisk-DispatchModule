@@ -45,16 +45,19 @@ if ! su -c "test -d '$TOMB_SRC'" 2>/dev/null; then
 fi
 
 ingest_new() {
-    local id added=0
+    local id added=0 ts key
     while read -r id; do
         [[ -z "$id" ]] && continue
-        if grep -qx "$id" "$STATE_FILE" 2>/dev/null; then
+        ts="$(su -c "grep -m1 '^Timestamp:' '$TOMB_SRC/tombstone_$id' 2>/dev/null" | sed 's/^Timestamp:[[:space:]]*//')"
+        [[ -z "$ts" ]] && ts="unknown"
+        key="${id}|${ts}"
+        if grep -qxF "$key" "$STATE_FILE" 2>/dev/null; then
             continue
         fi
         if su -c "cp '$TOMB_SRC/tombstone_$id' '$STAGING/tombstone_$id' && chmod 644 '$STAGING/tombstone_$id'" 2>/dev/null; then
-            echo "$id" >> "$STATE_FILE"
+            echo "$key" >> "$STATE_FILE"
             echo "$id" >> "$QUEUE_FILE"
-            echo "📥 tombstone_$id"
+            echo "📥 tombstone_$id ($ts)"
             added=$((added + 1))
         fi
     done < <(su -c "ls -1 '$TOMB_SRC'" | grep -E '^tombstone_[0-9]+$' | sed 's/tombstone_//' | sort -n)
