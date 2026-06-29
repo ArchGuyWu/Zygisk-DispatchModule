@@ -59,22 +59,34 @@
 利用标准 POSIX 规范，通过向 `/dev/null` 虚拟设备执行极低开销的 `write(null_fd, ptr, 1)` 系统调用。若 `ptr` 对应的页表未映射、无读权限或为伪指针，内核会自动检测到非法指针并返回 `-1`，同时将 `errno` 设置为 `EFAULT`。这一机制使得我们可以**在零崩溃风险的前提下**，完美判定任意内存地址的有效性和可读性。
 
 ```cpp
+struct ThreadLocalPipe {
+    int fds[2] = {-1, -1};
+    ThreadLocalPipe() {
+        if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+            fds[0] = -1; fds[1] = -1;
+        }
+    }
+    ~ThreadLocalPipe() {
+        if (fds[0] >= 0) close(fds[0]);
+        if (fds[1] >= 0) close(fds[1]);
+    }
+};
+
 static inline bool is_pointer_readable(const void* ptr) {
     if (!ptr) return false;
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
+    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL) {
         return false;
     }
-    static int null_fd = -1;
-    if (null_fd < 0) {
-        null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    thread_local static ThreadLocalPipe tl_pipe;
+    if (tl_pipe.fds[1] < 0) return false;
+    long ret = write(tl_pipe.fds[1], ptr, 1);
+    if (ret >= 0) {
+        char dummy;
+        read(tl_pipe.fds[0], &dummy, 1);
+        return true;
     }
-    if (null_fd < 0) return true; // 降级回退
-    long ret = write(null_fd, ptr, 1);
-    if (ret < 0 && errno == EFAULT) {
-        return false;
-    }
-    return true;
+    return errno != EFAULT;
 }
 
 static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {

@@ -59,22 +59,34 @@ To achieve 100% crash-proof memory safety, we introduced a **POSIX-compliant poi
 This mechanism performs a safe probe by writing 1 byte of the address `ptr` to `/dev/null` using the standard `write(null_fd, ptr, 1)` system call. If `ptr` points to an unmapped, protected, or invalid memory page, the Linux kernel detects this and returns `-1` with `errno` set to `EFAULT` **without raising any signals or crashing the process**. This allows us to safely and reliably verify if any memory pointer is actually mapped and readable in user-space with near-zero overhead.
 
 ```cpp
+struct ThreadLocalPipe {
+    int fds[2] = {-1, -1};
+    ThreadLocalPipe() {
+        if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+            fds[0] = -1; fds[1] = -1;
+        }
+    }
+    ~ThreadLocalPipe() {
+        if (fds[0] >= 0) close(fds[0]);
+        if (fds[1] >= 0) close(fds[1]);
+    }
+};
+
 static inline bool is_pointer_readable(const void* ptr) {
     if (!ptr) return false;
     uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL || (addr & 7) != 0) {
+    if (addr < 0x10000ULL || addr > 0x00007fffffffffffULL) {
         return false;
     }
-    static int null_fd = -1;
-    if (null_fd < 0) {
-        null_fd = open("/dev/null", O_WRONLY | O_CLOEXEC);
+    thread_local static ThreadLocalPipe tl_pipe;
+    if (tl_pipe.fds[1] < 0) return false;
+    long ret = write(tl_pipe.fds[1], ptr, 1);
+    if (ret >= 0) {
+        char dummy;
+        read(tl_pipe.fds[0], &dummy, 1);
+        return true;
     }
-    if (null_fd < 0) return true; // Fallback if open failed
-    long ret = write(null_fd, ptr, 1);
-    if (ret < 0 && errno == EFAULT) {
-        return false;
-    }
-    return true;
+    return errno != EFAULT;
 }
 
 static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
