@@ -469,7 +469,7 @@ void proxy_play_loaded_sound(void* self) {
 // --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
 void* g_stub_check_if_within_range = nullptr;
 fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
-void*** g_p_ms_pPedPool = nullptr;
+void*** g_p_ms_pPedPool = nullptr;  // resolved in module.cpp hook_thread_func
 
 bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();

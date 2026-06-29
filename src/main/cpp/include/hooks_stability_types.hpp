@@ -62,3 +62,35 @@ extern fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa;
 extern fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable;
 extern fn_UpdateCarAI_t g_orig_update_car_ai;
 extern fn_FacialControlSubTask_t g_orig_facial_control_sub_task;
+
+extern void*** g_p_ms_pPedPool;
+
+// Stability hook proxies (defined in hooks_stability.cpp, installed from module.cpp)
+void proxy_set_ped_pos(void* self, void* ped);
+void proxy_manage_tasks(void* self);
+void proxy_scan_for_attractors_in_range(void* self, void* ped);
+void* proxy_ccgf_control(void* self, void* ped);
+void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped);
+void proxy_facial_dtor(void* self);
+void* proxy_find_active_task(void* self, int type);
+void proxy_task_manager_destructor(void* self);
+void* proxy_partner_greet_get_sequence(void* self);
+void proxy_play_loaded_sound(void* self);
+bool proxy_check_if_within_range(void* self);
+void* proxy_avoid_ped_control(void* self, void* ped);
+void proxy_CalcTargetOffset(void* self);
+void proxy_do_foot_landed(void* ped, bool left_foot, unsigned char surface_type);
+void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm);
+void proxy_play_footsteps(void* self);
+void proxy_process_buoyancy(void* self);
+void proxy_process_static_counter(void* self);
+bool proxy_cbuoyancy_process_buoyancy(void* physical, float f1, void* vec1, void* vec2);
+int32_t proxy_u_strlen(const void* s);
+void proxy_sequence_flush(void* self);
+void proxy_finish_anim_evasive_step_cb(void* anim, void* context);
+void* proxy_be_in_group_control_sub_task(void* self, void* ped);
+void proxy_ik_chain_update(void* self, float dt);
+void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1);
+bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* event);
+void proxy_update_car_ai(void* vehicle);
+void* proxy_facial_control_sub_task(void* self, void* ped);
