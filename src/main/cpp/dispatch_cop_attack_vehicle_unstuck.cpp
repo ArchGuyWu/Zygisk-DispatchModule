@@ -232,5 +232,6 @@ void cop_attack_vehicle_unstuck_intervene(
                                                                                          }
                                                                                          
                                                                                          command_vehicle_ai(veh, target_crime_pos, dist_v);
+                                        }
                                     }
 }
