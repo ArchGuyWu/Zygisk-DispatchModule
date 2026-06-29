@@ -60,6 +60,21 @@ struct CopVehicleBinding {
     bool as_driver;
 };
 
+struct CopExitRecord {
+    CPed* cop;
+    int64_t exit_time;
+};
+
+struct StuckTracker {
+    int64_t stuck_since = 0;
+    int64_t last_check_time = 0;
+    CVector last_pos = {0.0f, 0.0f, 0.0f};
+    int64_t last_intervention_time = 0;
+    float last_dir_x = 0.0f;
+    float last_dir_y = 0.0f;
+    int spin_count = 0;
+};
+
 struct CrimeActiveCompat {
     bool load() const;
     operator bool() const { return load(); }

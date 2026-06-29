@@ -6,7 +6,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "third_party/xdl/xdl.h"
@@ -191,8 +193,33 @@ extern std::shared_ptr<CrimeEvent> g_dummy_crime;
 extern std::atomic<CPed*> g_tracked_criminal;
 extern std::vector<CopVehicleBinding> g_cop_vehicle_bindings;
 extern std::mutex g_bindings_mutex;
+extern std::vector<void*> g_spawned_cop_vehicles;
+extern std::mutex g_spawned_cop_vehicles_mutex;
+extern std::vector<CopExitRecord> g_cop_exits;
+extern std::mutex g_exits_mutex;
+extern std::set<void*> g_vehicles_emptied;
+extern std::mutex g_vehicles_emptied_mutex;
+extern std::map<void*, int64_t> g_dispatched_vehicles_time;
+extern std::mutex g_dispatched_vehicles_time_mutex;
+extern std::map<std::pair<CPed*, CPed*>, int64_t> g_cop_attack_assign_time;
+extern std::mutex g_cop_attack_assign_mutex;
+extern std::map<CPed*, int64_t> g_armed_cops_time;
+extern std::mutex g_armed_cops_mutex;
 extern std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
 extern std::mutex g_cop_assigned_weapon_mutex;
+extern std::set<void*> g_vehicles_ordered_to_scene;
+extern std::mutex g_vehicles_mutex;
+extern std::set<void*> g_vehicles_siren_awakened;
+extern std::mutex g_vehicles_siren_awakened_mutex;
+extern std::map<void*, StuckTracker> g_stuck_vehicles;
+extern std::mutex g_stuck_vehicles_mutex;
+extern std::set<void*> g_spawned_swats;
+extern std::mutex g_spawned_swats_mutex;
+extern std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
+extern std::mutex g_emergency_stuck_vehicles_mutex;
+extern std::vector<void*> g_emergency_vehicles_emptied;
+extern std::mutex g_emergency_vehicles_emptied_mutex;
+extern std::unordered_map<void*, int64_t> g_civilian_panic_timers;
 
 std::shared_ptr<CrimeEvent> get_primary_active_crime();
 std::shared_ptr<CrimeEvent> find_crime_containing_criminal(CPed* criminal);
@@ -218,6 +245,14 @@ int64_t now_ms();
 CVector get_spawn_target(CVector crime_pos);
 void bind_vehicle_occupants(void* vehicle);
 void record_exit_start_for_occupants(void* vehicle);
+bool is_vehicle_emptied(void* vehicle);
+void add_vehicle_emptied(void* vehicle);
+bool is_vehicle_occupied_by_driver(void* veh);
+void command_cop_vehicle_to_scene(void* vehicle, const CVector& target_loc);
+bool is_cop_visible_to_player(void* veh, float current_x, float current_y, float current_z);
+bool is_swat_van_nearby(CVector pos, float radius);
+void register_spawned_swat(void* vehicle);
+void setup_dispatched_cops(void* vehicle, CPed* criminal);
 bool try_consolidate_crime(CPed* criminal, CVector location, bool is_firearm);
 bool should_activate_or_hijack_crime(CVector location, bool is_firearm);
 void update_primary_criminal_by_threat();
@@ -226,6 +261,9 @@ void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver);
 bool is_alive_bound_driver_exists(void* vehicle);
 void* get_ped_intelligence(CPed* ped);
 void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver);
+void make_cops_attack_criminal(CPed* criminal);
+void make_cops_attack_criminal_immediate(CPed* criminal);
+void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime);
 void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update);
 void update_cops_targeting_criminal_event_driven(CPed* criminal);
 bool is_specific_criminal_armed_with_firearm(CPed* criminal);

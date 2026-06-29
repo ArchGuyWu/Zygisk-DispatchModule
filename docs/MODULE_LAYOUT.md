@@ -14,8 +14,11 @@ mod-workspace/
 │   │   └── mod_shared.hpp       # 跨文件 extern 全局量与共享 API
 │   ├── zygisk/
 │   ├── ecs_engine.hpp
-│   ├── module.cpp               # 全局符号、辅助函数、Hook 安装、Zygisk (~1.4k 行)
-│   ├── dispatch_logic.cpp       # 犯罪追踪、派发、玩法 Hook (~4.7k 行)
+│   ├── module.cpp               # 全局符号、辅助函数、Hook 安装、Zygisk (~1.3k 行)
+│   ├── dispatch_logic.cpp       # 案件状态、决策引擎、并案 (~400 行)
+│   ├── dispatch_hooks.cpp       # 犯罪/伤害/通缉 Hook 代理 (~540 行)
+│   ├── dispatch_cop_response.cpp # 警力响应、make_cops_attack_criminal (~2.2k 行)
+│   ├── dispatch_tick.cpp        # 主线程 tick、刷车拦截、急救车 (~1.7k 行)
 │   ├── hooks_stability.cpp      # 稳定性防御 Hook (~810 行)
 │   ├── ecs_systems.cpp          # init_ecs_systems() (~530 行)
 │   └── CMakeLists.txt
@@ -44,7 +47,7 @@ mod-workspace/
 | ECS 系统 | `init_ecs_systems()` 内各 System lambda |
 | Zygisk 入口 | `PoliceModModule` + `REGISTER_ZYGISK_MODULE` |
 
-拆分结构：`module.cpp`（装配入口）、`dispatch_logic.cpp`（派发玩法）、`hooks_stability.cpp`（稳定性 Hook）、`ecs_systems.cpp`（ECS 注册）。
+拆分结构：`module.cpp`（装配入口）、`dispatch_*.cpp`（派发玩法四文件）、`hooks_stability.cpp`（稳定性 Hook）、`ecs_systems.cpp`（ECS 注册）。
 
 ## 构建产物
 
