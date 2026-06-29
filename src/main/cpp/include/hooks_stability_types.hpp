@@ -33,6 +33,8 @@ typedef void (*fn_FlushTasks_t)(void* self, void* pair, void* ped);
 typedef void (*fn_FinishAnimEvasiveStepCB_t)(void* anim, void* context);
 typedef void* (*fn_BeInGroupControlSubTask_t)(void* self, void* ped);
 typedef void (*fn_IKChainUpdate_t)(void* self, float dt);
+typedef bool (*fn_IKChainIsFacingTarget_t)(void* self, void* ped, int index);
+typedef void* (*fn_GetSimplestActiveTask_t)(void* self);
 typedef void (*fn_ProcessFollowPedSA_t)(void* self, const CVector& target, float f1, float f2, float f3, bool b1);
 typedef bool (*fn_LeaveCarMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void (*fn_UpdateCarAI_t)(void* vehicle);
@@ -74,6 +76,8 @@ extern fn_GetNearestCarDoor_t g_orig_get_nearest_car_door;
 extern fn_IKManagerProcessPed_t g_orig_ik_manager_process_ped;
 extern fn_IsPoliceVehicleInPursuit_t g_orig_is_police_vehicle_in_pursuit;
 extern fn_WanderLookForChatPartners_t g_orig_wander_look_for_chat_partners;
+extern fn_IKChainIsFacingTarget_t g_orig_ik_chain_is_facing_target;
+extern fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -110,3 +114,5 @@ bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* do
 void proxy_ik_manager_process_ped(void* self, void* ped);
 bool proxy_is_police_vehicle_in_pursuit(int vehicle_index);
 void proxy_wander_look_for_chat_partners(void* self, void* ped);
+bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index);
+void* proxy_get_simplest_active_task(void* self);

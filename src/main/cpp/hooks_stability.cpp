@@ -745,6 +745,68 @@ void proxy_ik_chain_update(void* self, float dt) {
     SHADOWHOOK_CALL_PREV(proxy_ik_chain_update, self, dt);
 }
 
+// --- IKChainManager_c::IsFacingTarget Hook ---
+// ped→intel→+0x58→indexed node→+0x18: engine skips null at +0x10 but not at +0x18 (tombstone_16–19, fault 0x20).
+void* g_stub_ik_chain_is_facing_target = nullptr;
+fn_IKChainIsFacingTarget_t g_orig_ik_chain_is_facing_target = nullptr;
+
+inline bool ik_facing_target_ped_chain_unsafe(void* ped, int index) {
+    if (!ped || !is_pointer_readable(ped)) return true;
+    if (index < 0 || index > 32) return true;
+
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(intel_slot) || !*intel_slot) return true;
+    void* intel = *intel_slot;
+    if (!is_pointer_readable(intel)) return true;
+
+    void** table_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x58);
+    if (!is_pointer_readable(table_slot) || !*table_slot) return true;
+    void* table = *table_slot;
+    if (!is_pointer_readable(table)) return true;
+
+    void** node_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(table) + index * 8 + 0x10);
+    if (!is_pointer_readable(node_slot) || !*node_slot) return true;
+    void* node = *node_slot;
+    if (!is_pointer_readable(node)) return true;
+
+    void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x18);
+    if (!is_pointer_readable(target_slot) || !*target_slot) return true;
+    void* target = *target_slot;
+    if (!is_pointer_readable(target)) return true;
+
+    void** matrix_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(target) + 0x20);
+    return !is_pointer_readable(matrix_slot) || !*matrix_slot;
+}
+
+bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (self && ik_chain_has_null_entity_slot(self)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    if (ped && ik_facing_target_ped_chain_unsafe(ped, index)) {
+        LOGW("⚠️ [IKChainManager::IsFacingTarget] broken ped intel chain (idx=%d) — return false", index);
+        return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_ik_chain_is_facing_target, self, ped, index);
+}
+
+// --- CTaskManager::GetSimplestActiveTask Hook ---
+// Primary slots may hold zero-filled tasks; vtable+0x18 call crashes (tombstone_20, fault 0x18).
+void* g_stub_get_simplest_active_task = nullptr;
+fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
+
+void* proxy_get_simplest_active_task(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return nullptr;
+    if (self) {
+        sanitize_task_manager_slots(self, "GetSimplestActiveTask");
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
+}
+
 // --- CEventScriptCommand::GetEventPriority Hook ---
 void* g_stub_event_script_command_get_priority = nullptr;
 fn_EventScriptCommandGetPriority_t g_orig_event_script_command_get_priority = nullptr;

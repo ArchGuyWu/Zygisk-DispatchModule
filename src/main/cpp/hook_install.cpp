@@ -552,6 +552,24 @@ void hook_thread_func() {
     if (g_stub_ik_chain_update) LOGI("✅ Hooked IKChainManager_c::Update");
     else LOGE("❌ Failed to hook IKChainManager_c::Update: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook IKChainManager_c::IsFacingTarget (ped intel chain +0x18 null → fault 0x20)
+    g_stub_ik_chain_is_facing_target = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN16IKChainManager_c14IsFacingTargetEP4CPedi",
+        reinterpret_cast<void*>(proxy_ik_chain_is_facing_target),
+        reinterpret_cast<void**>(&g_orig_ik_chain_is_facing_target));
+    if (g_stub_ik_chain_is_facing_target) LOGI("✅ Hooked IKChainManager_c::IsFacingTarget");
+    else LOGE("❌ Failed to hook IKChainManager_c::IsFacingTarget: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskManager::GetSimplestActiveTask (zero-filled primary task → vtable+0x18 crash)
+    g_stub_get_simplest_active_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK12CTaskManager21GetSimplestActiveTaskEv",
+        reinterpret_cast<void*>(proxy_get_simplest_active_task),
+        reinterpret_cast<void**>(&g_orig_get_simplest_active_task));
+    if (g_stub_get_simplest_active_task) LOGI("✅ Hooked CTaskManager::GetSimplestActiveTask");
+    else LOGE("❌ Failed to hook CTaskManager::GetSimplestActiveTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CEventScriptCommand::GetEventPriority (事件优先级查询时对零填充任务调 vtable+0x28 闪退)
     g_stub_event_script_command_get_priority = shadowhook_hook_sym_name(
         TARGET_LIB,
