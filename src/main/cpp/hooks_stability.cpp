@@ -32,7 +32,7 @@
 #include "ecs_engine.hpp"
 
 // =====================================================================
-// 🤝 [CTaskComplexPartner & derived Hooks]：防止各种伴随/打招呼序列空指针、野指针或零值状态导致的 Sequence Manager 空指针闪退
+// CTaskComplexPartner & derived Hooks
 // =====================================================================
 inline bool is_sequence_manager_safe() {
     if (!g_CSequenceManager_ms_instance || !*g_CSequenceManager_ms_instance) {
@@ -54,17 +54,9 @@ inline void sanitize_partner_task_pointers(void* task) {
 }
 
 inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
-    // 【彻底修复说明】
-    // 禁用盲目扫描内存的“净化器”。
-    // 盲目扫描（按8字节步长解引用）会把非指针数据（如 float 数组、CVector 坐标、计时器等）误判为“已被析构清空的 C++ 对象”并置为 nullptr。
-    // 例如：BoneNode_c::Limit(float) 在限制骨骼角度时会调用 BoneNode_c::GetLimits(int, float*, float*)。
-    // 如果任务对象中包含指向此类限制值 float 数组的指针，且数组前两个 float 恰好为 0.0f（前8字节为0），
-    // 盲扫就会将该指针强行置为 nullptr，导致 GetLimits 写入时发生空指针解引用闪退（fault addr 0x10）。
-    //
-    // 【后续彻底重构要求】
-    // 若未来需要重新启用此净化器以防止其他未挂钩子处的虚函数闪退，必须通过逆向分析（如使用 IDA/r2）
-    // 找出 CTask 各个子类（如 CTaskComplexPartner 等）中存放子任务或 Ped 指针的【精确偏移量】（Offsets），
-    // 并仅针对这些特定偏移量进行安全校验与置空，严禁进行盲目全内存扫描。
+    // Blind memory scan disabled: 8-byte stepping can mistake floats/CVector fields
+    // for stale pointers and null them out, causing fault-at-0x10 crashes.
+    // Re-enable only with per-task-class offsets from reverse engineering.
 }
 
 // --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---

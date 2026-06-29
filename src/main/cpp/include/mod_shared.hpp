@@ -119,6 +119,40 @@ extern FMalloc** g_p_GMalloc;
 extern std::atomic<bool> g_in_wanted_update;
 extern std::atomic<bool> g_is_generating_custom_dispatch;
 
+typedef void (*fn_WantedUpdate_t)(void*);
+typedef CPed* (*fn_AddPed_t)(int, unsigned int, const CVector&, bool);
+
+extern void* g_stub_wanted_update;
+extern fn_WantedUpdate_t g_orig_wanted_update;
+extern void* g_stub_add_ped;
+extern fn_AddPed_t g_orig_add_ped;
+extern void* g_stub_generate_one_emergency_car;
+extern fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car;
+extern void* g_stub_script_generate_one_emergency_car;
+extern fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car;
+extern void* g_stub_tell_occupants_leave_car;
+extern fn_TellOccupantsToLeaveCar_t g_orig_tell_occupants_leave_car;
+
+// Gameplay hook proxies (defined in dispatch_logic.cpp)
+void proxy_report_crime(eCrimeType crime_type, CEntity* victim, CPed* perpetrator);
+void proxy_register_kill(const CPed* dead_ped, const CEntity* killer, eWeaponType weapon, bool unk);
+void proxy_set_wanted_level(void* this_wanted, int level);
+bool proxy_generate_damage_event(CPed* victim, CEntity* perpetrator, eWeaponType weaponType,
+                                   int damage, int pedPiece, int direction);
+void proxy_event_damage_ctor_c1(void* event_this, CEntity* damageSource, unsigned int startTime,
+                                eWeaponType weaponType, int pieceType, unsigned char damageSeverity,
+                                bool b1, bool b2);
+void proxy_event_damage_ctor_c2(void* event_this, CEntity* damageSource, unsigned int startTime,
+                                eWeaponType weaponType, int pieceType, unsigned char damageSeverity,
+                                bool b1, bool b2);
+void proxy_SetCurrentWeapon(CPed* ped, eWeaponType weaponType);
+void proxy_the_scripts_process();
+void proxy_wanted_update(void* this_wanted);
+CPed* proxy_add_ped(int pedType, unsigned int modelIndex, const CVector& pos, bool bUnknown);
+void proxy_generate_one_emergency_car(unsigned int model, CVector pos);
+void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos);
+void proxy_tell_occupants_leave_car(void* vehicle);
+
 // Stability hook stubs (defined in hooks_stability.cpp)
 extern void* g_stub_set_ped_pos;
 extern void* g_stub_manage_tasks;
@@ -149,7 +183,7 @@ extern void* g_stub_leave_car_make_abortable;
 extern void* g_stub_update_car_ai;
 extern void* g_stub_facial_control_sub_task;
 
-// Dispatch state (defined in module.cpp)
+// Dispatch state (defined in dispatch_logic.cpp)
 extern std::recursive_mutex g_crime_mutex;
 extern std::vector<std::shared_ptr<CrimeEvent>> g_active_crimes;
 extern uint64_t g_next_case_id;

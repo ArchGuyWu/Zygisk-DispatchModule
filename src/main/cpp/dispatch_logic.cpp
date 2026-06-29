@@ -1,0 +1,4740 @@
+#include <jni.h>
+#include <string.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <thread>
+#include <chrono>
+#include <mutex>
+#include <atomic>
+#include <vector>
+#include <map>
+#include <unordered_map>
+#include <fstream>
+#include <string>
+#include <cinttypes>
+#include <set>
+#include <errno.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <random>
+#include <functional>
+#include <cmath>
+#include <algorithm>
+
+#include "shadowhook.h"
+#include "third_party/xdl/xdl.h"
+
+#include "log.hpp"
+#include "game_config.hpp"
+#include "game_types.hpp"
+#include "pointer_sanitizer.hpp"
+#include "mod_shared.hpp"
+#include "ecs_engine.hpp"
+
+// =====================================================================
+// 犯罪事件追踪系统
+// =====================================================================
+std::recursive_mutex g_crime_mutex;
+std::vector<std::shared_ptr<CrimeEvent>> g_active_crimes;
+uint64_t g_next_case_id = 1;
+
+static void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime);
+
+// 兼容层：原全局活跃标志兼容
+bool CrimeActiveCompat::load() const {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    for (const auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) return true;
+    }
+    return false;
+}
+
+void CrimeActiveCompat::store(bool /*active*/) {
+    // 留空以向下兼容原有的状态修改
+}
+
+CrimeActiveCompat g_crime_active;
+
+// 兼容层：dummy 案件
+std::shared_ptr<CrimeEvent> g_dummy_crime = []() {
+    auto d = std::make_shared<CrimeEvent>();
+    d->cancelled = true;
+    return d;
+}();
+
+std::shared_ptr<CrimeEvent> get_primary_active_crime() {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    if (g_active_crimes.empty()) {
+        return g_dummy_crime;
+    }
+    CVector player_pos{0, 0, 0};
+    if (g_FindPlayerCoors) {
+        player_pos = g_FindPlayerCoors(0);
+    }
+    std::shared_ptr<CrimeEvent> best_crime = nullptr;
+    float min_dist = 999999.0f;
+    for (const auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) {
+            float dx = crime->location.x - player_pos.x;
+            float dy = crime->location.y - player_pos.y;
+            float dz = crime->location.z - player_pos.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dist < min_dist) {
+                min_dist = dist;
+                best_crime = crime;
+            }
+        }
+    }
+    if (best_crime) return best_crime;
+    for (const auto& crime : g_active_crimes) {
+        if (crime) return crime;
+    }
+    return g_dummy_crime;
+}
+
+// 玩家协助追踪
+std::atomic<CPed*> g_tracked_criminal{nullptr};
+std::atomic<int64_t> g_last_assist_time_ms{0};
+std::atomic<bool>    g_is_generating_custom_dispatch{false};    // 是否正在生成自定义调度车辆
+
+// 玩家在协助警察时造成的流弹/误伤优化追踪
+std::atomic<bool>    g_player_stray_bullet_flag{false};         // 是否误伤了市民
+std::atomic<int64_t> g_player_stray_bullet_time{0};             // 市民误伤时间戳
+std::atomic<int>     g_friendly_fire_cop_hits{0};               // 误伤警察次数计数
+std::atomic<int64_t> g_last_friendly_fire_cop_time{0};          // 最后一次误伤警察时间戳
+std::atomic<bool>    g_player_friendly_fire_blocked{false};     // 是否拦截本次误伤通缉
+
+// 用于判定 NPC 是否为自卫
+struct AttackedNPC {
+    CPed* npc;
+    int64_t attack_time;
+};
+std::vector<AttackedNPC> g_player_attacked_npcs;
+std::mutex g_attacked_npcs_mutex;
+
+// 暴动限流：限频命令同一犯罪 NPC
+struct CommandedCriminal {
+    CPed* criminal;
+    int64_t command_time;
+};
+std::vector<CommandedCriminal> g_commanded_criminals;
+std::mutex g_commanded_criminals_mutex;
+
+// Temporary road closure records
+struct TemporaryRoadClosure {
+    CVector center;
+    float radius;
+    int64_t reopen_time_ms;
+};
+std::vector<TemporaryRoadClosure> g_temp_road_closures;
+std::mutex                         g_temp_closures_mutex;
+
+void make_cops_attack_criminal_immediate(CPed* criminal);
+bool is_specific_criminal_armed_with_firearm(CPed* target_criminal);
+void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update);
+void update_cops_targeting_criminal_event_driven(CPed* criminal);
+void update_primary_criminal_by_threat();
+
+
+// =====================================================================
+// 时间工具
+// =====================================================================
+int64_t now_ms() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static int get_random_range(int min_val, int max_val) {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    std::uniform_int_distribution<> distr(min_val, max_val);
+    return distr(gen);
+}
+
+// Decision Engine Optimization
+// 1. 多犯罪 NPC 响应只应该发生在原版中非枪械攻击（<= 35m）/枪械攻击（<= 75m）的视听范围内。
+// 2. 仅当视听范围内不存在枪械攻击时，才允许激活（或劫持）一处远端范围的枪械攻击响应。
+// 3. 远端范围的非枪械攻击响应，仅当视听范围内无任何活跃犯罪，且警力不足（周边 60m 无警员或有警员牺牲）时才激活一处。
+bool should_activate_or_hijack_crime(CVector crime_pos, bool firearm) {
+    if (!g_FindPlayerCoors) return true; // 降级默认允许
+    
+    CVector player_pos = g_FindPlayerCoors(0);
+    float p_dx = crime_pos.x - player_pos.x;
+    float p_dy = crime_pos.y - player_pos.y;
+    float p_dz = crime_pos.z - player_pos.z;
+    float dist_to_player = sqrtf(p_dx * p_dx + p_dy * p_dy + p_dz * p_dz);
+    
+    const float AV_RANGE_FIREARM = 75.0f;
+    const float AV_RANGE_MELEE = 35.0f;
+    
+    // 1. 判定新发生的犯罪是否在其原本的视听范围内 (Local AV)
+    bool in_local_av = false;
+    if (firearm) {
+        in_local_av = (dist_to_player <= AV_RANGE_FIREARM);
+    } else {
+        in_local_av = (dist_to_player <= AV_RANGE_MELEE);
+    }
+    
+    // 规则 1：如果犯罪发生在其原本的视听范围内，始终允许激活
+    if (in_local_av) {
+        std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+        int active_count = 0;
+        for (const auto& crime : g_active_crimes) {
+            if (crime && !crime->cancelled) {
+                active_count++;
+            }
+        }
+        if (active_count >= 4) {
+            // 尝试找一个最远的或者威胁更低的非枪械远端案件取消，给这个本地案件腾位
+            std::shared_ptr<CrimeEvent> worst_crime = nullptr;
+            float max_dist = -1.0f;
+            for (auto& crime : g_active_crimes) {
+                if (crime && !crime->cancelled) {
+                    float dx = crime->location.x - player_pos.x;
+                    float dy = crime->location.y - player_pos.y;
+                    float dz = crime->location.z - player_pos.z;
+                    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+                    float limit = crime->is_firearm ? AV_RANGE_FIREARM : AV_RANGE_MELEE;
+                    if (dist > limit && dist > max_dist) {
+                        max_dist = dist;
+                        worst_crime = crime;
+                    }
+                }
+            }
+            if (worst_crime) {
+                worst_crime->cancelled = true;
+                LOGI("Cancelled distant case %llu (dist=%.1f) to make room for local crime scene", (unsigned long long)worst_crime->case_id, max_dist);
+                return true;
+            }
+            LOGW("Blocked local crime scene because all 4 concurrent case slots are occupied by local active cases");
+            return false;
+        }
+        LOGI("Crime within original AV range (Firearm=%d, Dist=%.1f) -> Normal trigger", firearm, dist_to_player);
+        return true;
+    }
+    
+    // 2. 远端犯罪过滤
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    int remote_firearm_count = 0;
+    int remote_melee_count = 0;
+    int local_count = 0;
+    int total_active = 0;
+    
+    for (const auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) {
+            total_active++;
+            float dx = crime->location.x - player_pos.x;
+            float dy = crime->location.y - player_pos.y;
+            float dz = crime->location.z - player_pos.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            float limit = crime->is_firearm ? AV_RANGE_FIREARM : AV_RANGE_MELEE;
+            if (dist <= limit) {
+                local_count++;
+            } else {
+                if (crime->is_firearm) {
+                    remote_firearm_count++;
+                } else {
+                    remote_melee_count++;
+                }
+            }
+        }
+    }
+    
+    if (total_active >= 4) {
+        LOGI("Blocked remote crime (Dist=%.1f) because 4 concurrent case slots are already occupied", dist_to_player);
+        return false; // 已满，不接受远端犯罪
+    }
+    
+    if (firearm) {
+        // 规则 2：远端枪械犯罪（dist > 75.0m）
+        // “仅当不存在远端枪械攻击时，才允许激活一处远端范围的枪械攻击响应”
+        if (remote_firearm_count > 0) {
+            LOGI("Blocked remote firearm crime (Dist=%.1f) because another remote firearm crime is already active", dist_to_player);
+            return false;
+        }
+        
+        // 如果远端有非枪械犯罪，我们可以给新枪械犯罪让路
+        if (remote_melee_count > 0) {
+            for (auto& crime : g_active_crimes) {
+                if (crime && !crime->cancelled) {
+                    float dx = crime->location.x - player_pos.x;
+                    float dy = crime->location.y - player_pos.y;
+                    float dz = crime->location.z - player_pos.z;
+                    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+                    if (dist > AV_RANGE_MELEE && !crime->is_firearm) {
+                        crime->cancelled = true;
+                        LOGI("Remote firearm crime (Dist=%.1f) hijacks remote melee crime %llu (Dist=%.1f)", dist_to_player, (unsigned long long)crime->case_id, dist);
+                        return true;
+                    }
+                }
+            }
+        }
+        
+        LOGI("Activated remote firearm crime response (Dist=%.1f)", dist_to_player);
+        return true;
+    } else {
+        // 规则 3：远端非枪械犯罪（dist > 35.0m）
+        // “远端非枪械犯罪仅当无任何活跃犯罪（或总活跃很少且警力不足）才激活”
+        if (total_active > 0) {
+            LOGI("Blocked remote melee crime (Dist=%.1f) because there are already active cases", dist_to_player);
+            return false;
+        }
+        
+        // 警力不足急需支援
+        bool police_insufficient = false;
+        if (g_FindDistToNearestCop) {
+            float dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, player_pos);
+            if (dist_to_cop > 60.0f) {
+                police_insufficient = true;
+            }
+        }
+        
+        if (police_insufficient) {
+            LOGI("Activated remote melee crime response (Dist=%.1f) under low police situation", dist_to_player);
+            return true;
+        }
+        
+        LOGI("Blocked remote melee crime (Dist=%.1f) because local area is safe/police are abundant", dist_to_player);
+        return false;
+    }
+}
+
+// =====================================================================
+// Case consolidation: merge crimes in the same area
+// =====================================================================
+static void make_cops_attack_criminal(CPed* criminal);
+
+bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
+    if (!perpetrator || !is_ped_pointer_valid_safe(perpetrator)) return false;
+    if (!g_FindPlayerCoors) return false;
+    
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    
+    // 寻找 40 米半径内最近的活跃案件
+    std::shared_ptr<CrimeEvent> best_crime = nullptr;
+    float min_dist = 999999.0f;
+    for (auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) {
+            float dx = crime_pos.x - crime->location.x;
+            float dy = crime_pos.y - crime->location.y;
+            float dz = crime_pos.z - crime->location.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dist <= 40.0f && dist < min_dist) {
+                min_dist = dist;
+                best_crime = crime;
+            }
+        }
+    }
+    
+    if (best_crime) {
+        bool found = false;
+        for (size_t i = 0; i < best_crime->consolidated_criminals.size(); ++i) {
+            if (best_crime->consolidated_criminals[i] == perpetrator) {
+                found = true;
+                if (firearm && !best_crime->criminal_is_firearm[i]) {
+                    best_crime->criminal_is_firearm[i] = true;
+                    LOGI("Consolidated criminal %p escalated to firearm weapon in same area!", perpetrator);
+                    
+                    auto it = best_crime->criminal_states.find(perpetrator);
+                    if (it != best_crime->criminal_states.end()) {
+                        it->second.current_threat_category = 2;
+                        if (it->second.first_threat_category < 2) {
+                            it->second.first_threat_category = 2; // 升级首次攻击类别，因为升级了
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        
+        if (!found) {
+            best_crime->consolidated_criminals.push_back(perpetrator);
+            best_crime->criminal_is_firearm.push_back(firearm);
+            
+            // 初始化嫌疑人详细状态
+            CrimeEvent::CriminalState c_state;
+            c_state.first_threat_category = firearm ? 2 : 1;
+            c_state.current_threat_category = c_state.first_threat_category;
+            c_state.is_active = true;
+            c_state.shooting_air = false;
+            c_state.fleeing = false;
+            best_crime->criminal_states[perpetrator] = c_state;
+            
+            LOGI("📡 [dispatchCenter - CaseMerge] NPC criminal %p merged into active case %llu in same area. Total criminals: %zu", 
+                 perpetrator, (unsigned long long)best_crime->case_id, best_crime->consolidated_criminals.size());
+        }
+        
+        // 若新罪犯使用了枪械，自动升级整个案件的枪械属性
+        if (firearm && !best_crime->is_firearm) {
+            best_crime->is_firearm = true;
+            LOGI("📡 [dispatchCenter - CaseMerge] Case %llu escalated to FIREARM due to consolidated criminal %p", (unsigned long long)best_crime->case_id, perpetrator);
+        }
+        
+        // 立即让周边警员也攻击这个新罪犯
+        make_cops_attack_criminal(perpetrator);
+        return true; // 成功并案
+    }
+    return false; // 未能并案
+}
+
+// =====================================================================
+// Hook 1: CCrime::ReportCrime (检测犯罪事件)
+//
+// 符号: _ZN6CCrime11ReportCrimeE10eCrimeTypeP7CEntityP4CPed
+// 签名: static void CCrime::ReportCrime(eCrimeType, CEntity* victim, CPed* perpetrator)
+// =====================================================================
+void proxy_report_crime(eCrimeType crime_type, CEntity* victim, CPed* perpetrator) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (perpetrator && g_GetPedType && g_FindPlayerPed && is_ped_pointer_valid_safe(perpetrator)) {
+        int perp_type = g_GetPedType(perpetrator);
+        CPlayerPed* player = g_FindPlayerPed(0);
+
+        // --- 玩家免责逻辑 ---
+        if (player && reinterpret_cast<CPed*>(player) == perpetrator) {
+            CPed* tracked = g_tracked_criminal.load();
+            if (tracked != nullptr && victim == reinterpret_cast<CEntity*>(tracked)) {
+                LOGI("Player assisting police against tracked criminal -> CCrime::ReportCrime BLOCKED");
+                return;  // 不报告犯罪，玩家免遭通缉
+            }
+        }
+
+        // --- NPC 犯罪检测逻辑 (事件驱动) ---
+        bool is_fire = (crime_type == CRIME_FIRE_WEAPON);
+        if ((victim || is_fire) && perp_type != PED_TYPE_PLAYER && perp_type != PED_TYPE_COP) {
+            bool firearm = is_firearm(crime_type);
+            int weap_cat = 0;
+            if (firearm) {
+                weap_cat = 2; // FIREARM
+            } else {
+                if (crime_type == CRIME_KILL_PED_NO_GUN || crime_type == CRIME_DAMAGED_PED || crime_type == CRIME_DAMAGED_COP) {
+                    weap_cat = 1; // MELEE
+                } else {
+                    weap_cat = 0; // UNARMED
+                }
+            }
+            CVector crime_pos = get_entity_pos(perpetrator);
+
+            ecs::EventDispatcher::get().dispatch(ecs::CrimeReportEvent(perpetrator, victim, crime_pos, firearm, weap_cat, now_ms()));
+        }
+    }
+
+    SHADOWHOOK_CALL_PREV(proxy_report_crime, crime_type, victim, perpetrator);
+}
+
+// =====================================================================
+// Hook 2: CEventHandler::RegisterKill (检测警察阵亡)
+//
+// 符号: _ZN13CEventHandler12RegisterKillEPK4CPedPK7CEntity11eWeaponTypeb
+// 签名: void CEventHandler::RegisterKill(CPed const*, CEntity const*, eWeaponType, bool)
+// =====================================================================
+void proxy_register_kill(const CPed* dead_ped,
+                                 const CEntity* killer,
+                                 eWeaponType weapon,
+                                 bool unk) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (dead_ped && g_GetPedType && is_ped_pointer_valid_safe(const_cast<CPed*>(dead_ped))) {
+        int dead_type = g_GetPedType(dead_ped);
+
+        // 如果玩家杀死了警察，取消玩家协助警方的免责状态
+        if (dead_type == PED_TYPE_COP && g_FindPlayerPed) {
+            CPlayerPed* player = g_FindPlayerPed(0);
+            if (player && killer == reinterpret_cast<const CEntity*>(player)) {
+                g_player_friendly_fire_blocked.store(false);
+                g_friendly_fire_cop_hits.store(999); // 设为极高，让免责失效
+                LOGW("Player directly killed cop %p -> Exemption immediately revoked!", dead_ped);
+            }
+        }
+
+        // 犯罪 NPC 被杀 → 并案逻辑处理与事件解决判定
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+            for (auto& crime : g_active_crimes) {
+                if (crime && !crime->cancelled) {
+                    auto& list = crime->consolidated_criminals;
+                    auto& is_fire_list = crime->criminal_is_firearm;
+                    auto it = std::find(list.begin(), list.end(), const_cast<CPed*>(dead_ped));
+                    if (it != list.end()) {
+                        size_t idx = std::distance(list.begin(), it);
+                        LOGI("📡 [dispatchCenter - CaseMerge] Consolidated criminal NPC %p killed in case %llu (Index: %zu)", dead_ped, (unsigned long long)crime->case_id, idx);
+                        
+                        // 从并案列表和详细状态中擦除
+                        list.erase(it);
+                        if (idx < is_fire_list.size()) {
+                            is_fire_list.erase(is_fire_list.begin() + idx);
+                        }
+                        crime->criminal_states.erase(const_cast<CPed*>(dead_ped));
+
+                        // 如果被杀的是当前 primary criminal
+                        if (crime->criminal == dead_ped) {
+                            if (!list.empty()) {
+                                // 还有其他同伙，将 primary criminal 转移到下一个存活的罪犯上
+                                crime->criminal = list.front();
+                                if (g_tracked_criminal.load() == dead_ped) {
+                                    g_tracked_criminal.store(list.front());
+                                }
+                                LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: Primary criminal %p killed. Shifted primary tracking to %p.", 
+                                     (unsigned long long)crime->case_id, dead_ped, crime->criminal);
+                            } else {
+                                // 所有同伙都死光了 -> 事件解决并结案
+                                LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: All consolidated criminal NPCs killed -> crime event resolved", (unsigned long long)crime->case_id);
+                                crime->cancelled = true;
+                                if (g_tracked_criminal.load() == dead_ped) {
+                                    g_tracked_criminal.store(nullptr);
+                                }
+                                cleanup_single_case_vehicles(crime);
+                            }
+                        } else {
+                            if (list.empty()) {
+                                LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: All consolidated criminal NPCs killed -> crime event resolved", (unsigned long long)crime->case_id);
+                                crime->cancelled = true;
+                                if (g_tracked_criminal.load() == dead_ped) {
+                                    g_tracked_criminal.store(nullptr);
+                                }
+                                cleanup_single_case_vehicles(crime);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 警察被杀 → 针对 80 米内最近的活跃案件触发增援
+        if (dead_type == PED_TYPE_COP) {
+            std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+            CVector cop_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
+            
+            std::shared_ptr<CrimeEvent> nearest_crime = nullptr;
+            float min_dist_sq = 80.0f * 80.0f; // 仅计算 80 米内的案件
+            
+            for (auto& crime : g_active_crimes) {
+                if (crime && !crime->cancelled) {
+                    float dx = cop_pos.x - crime->location.x;
+                    float dy = cop_pos.y - crime->location.y;
+                    float dz = cop_pos.z - crime->location.z;
+                    float dist_sq = dx * dx + dy * dy + dz * dz;
+                    if (dist_sq < min_dist_sq) {
+                        min_dist_sq = dist_sq;
+                        nearest_crime = crime;
+                    }
+                }
+            }
+            
+            if (nearest_crime) {
+                nearest_crime->cops_killed++;
+                int killed = nearest_crime->cops_killed;
+                LOGI("📡 [dispatchCenter] Cop killed at scene of case %llu (total: %d, dist: %.1f) -> triggering reinforcement!", 
+                     (unsigned long long)nearest_crime->case_id, killed, sqrtf(min_dist_sq));
+            } else {
+                LOGI("📡 [dispatchCenter] Cop killed far from any active case -> ignored");
+            }
+        }
+    }
+
+    if (dead_ped && is_ped_pointer_valid_safe(const_cast<CPed*>(dead_ped))) {
+        ecs::EventDispatcher::get().dispatch(ecs::EntityCleanupEvent(const_cast<CPed*>(dead_ped), true));
+    }
+
+    SHADOWHOOK_CALL_PREV(proxy_register_kill, dead_ped, killer, weapon, unk);
+}
+
+// =====================================================================
+// Hook 3: CWanted::SetWantedLevel (玩家通缉拦截)
+//
+// 符号: _ZN7CWanted14SetWantedLevelEi
+// 签名: void CWanted::SetWantedLevel(int level)
+// =====================================================================
+void proxy_set_wanted_level(void* this_wanted, int level) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    bool block_wanted = false;
+    bool assisting = g_crime_active.load() || (now_ms() - g_last_assist_time_ms.load() < 4000);
+
+    if (assisting) {
+        if (g_friendly_fire_cop_hits.load() > 3) {
+            block_wanted = false;
+        } else {
+            // 1. 原生协助判定：如果玩家正锁死目标犯人，或最近对犯人造成了伤害
+            bool assist = false;
+            if (g_FindPlayerPed && g_GetWeaponLockOnTarget) {
+                CPlayerPed* player = g_FindPlayerPed(0);
+                if (player) {
+                    CEntity* target = g_GetWeaponLockOnTarget(player);
+                    CPed* criminal = g_tracked_criminal.load();
+                    if (target && target == reinterpret_cast<CEntity*>(criminal)) {
+                        assist = true;
+                    }
+                }
+            }
+            if (!assist && (now_ms() - g_last_assist_time_ms.load() < 4000)) {
+                assist = true;
+            }
+
+            if (assist) {
+                block_wanted = true;
+            } else {
+                // 2. 检查市民流弹保护：最近 3 秒内发生过市民误伤
+                if (g_player_stray_bullet_flag.load() && (now_ms() - g_player_stray_bullet_time.load() < 3000)) {
+                    block_wanted = true;
+                    LOGI("SetWantedLevel: Civilian stray bullet protection triggered -> Block wanted level %d", level);
+                }
+                // 3. 检查警员轻微误伤保护：误伤处于拦截状态且最后误伤在 3 秒内
+                else if (g_player_friendly_fire_blocked.load() && (now_ms() - g_last_friendly_fire_cop_time.load() < 3000)) {
+                    block_wanted = true;
+                    LOGI("SetWantedLevel: Cop friendly fire protection active -> Block wanted level %d", level);
+                }
+            }
+        }
+    }
+
+    if (level >= 1 && block_wanted) {
+        LOGI("Player wanted level %d BLOCKED (Assisting=%d, CivilianStray=%d, CopFriendlyFire=%d)",
+             level, assisting ? 1 : 0, g_player_stray_bullet_flag.load() ? 1 : 0, g_player_friendly_fire_blocked.load() ? 1 : 0);
+        return;
+    }
+
+    g_player_wanted_level.store(level);
+    SHADOWHOOK_CALL_PREV(proxy_set_wanted_level, this_wanted, level);
+}
+
+// =====================================================================
+// Hook 4: CWeapon::GenerateDamageEvent (核心：检测 NPC 犯罪与伤害输出)
+// =====================================================================
+bool proxy_generate_damage_event(CPed* victim,
+                                         CEntity* perpetrator,
+                                         eWeaponType weaponType,
+                                         int damage,
+                                         int pedPiece,
+                                         int direction) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (perpetrator && victim && g_GetPedType && g_FindPlayerPed) {
+        if (is_ped_pointer_valid_safe(perpetrator) && is_ped_pointer_valid_safe(victim)) {
+            int perp_type = g_GetPedType(perpetrator);
+            int victim_type = g_GetPedType(victim);
+            CPlayerPed* player = g_FindPlayerPed(0);
+
+            // 1. 如果是玩家攻击 NPC -> 记录协助状态，更新自卫判定，并处理流弹市民与友好火力警员的免责检测
+            if (player && perpetrator == reinterpret_cast<CEntity*>(player) && victim != reinterpret_cast<CPed*>(player)) {
+                CPed* tracked = g_tracked_criminal.load();
+                if (tracked && victim == tracked) {
+                    g_last_assist_time_ms.store(now_ms());
+                } else {
+                    // 玩家伤害了非追踪犯人 -> 检查当前是否在警方协助状态下，以此优化误伤体验
+                    bool assisting = g_crime_active.load() || (now_ms() - g_last_assist_time_ms.load() < 4000);
+                    if (assisting) {
+                        if (victim_type == PED_TYPE_COP) {
+                            // 误伤警员判定
+                            int64_t cur_time = now_ms();
+                            if (cur_time - g_last_friendly_fire_cop_time.load() > 5000) {
+                                g_friendly_fire_cop_hits.store(1); // 超过5s未误击，重置计数
+                            } else {
+                                g_friendly_fire_cop_hits.fetch_add(1);
+                            }
+                            g_last_friendly_fire_cop_time.store(cur_time);
+
+                            int hits = g_friendly_fire_cop_hits.load();
+                            if (hits <= 3) {
+                                g_player_friendly_fire_blocked.store(true);
+                                LOGI("Player accidentally hit cop (hits=%d/3 within 5s) during assistance -> Flagged friendly fire exemption", hits);
+                            } else {
+                                g_player_friendly_fire_blocked.store(false);
+                                LOGW("Player attacked cop repeatedly (hits=%d) -> friendly fire exemption REVOKED", hits);
+                            }
+                        } else {
+                            // 误击普通市民 -> 标记流弹免责，有效期 3 秒
+                            g_player_stray_bullet_flag.store(true);
+                            g_player_stray_bullet_time.store(now_ms());
+                            LOGI("Player stray bullet hit civilian %p (type=%d) during assistance -> Civilian protection active", victim, victim_type);
+                        }
+                    }
+                }
+
+                // 记录玩家对当前 NPC 的攻击，时效为 30 秒 (用于 NPC 自卫判定)
+                std::lock_guard<std::mutex> lock(g_attacked_npcs_mutex);
+                int64_t cur_time = now_ms();
+                // 手动清理过期记录，并顺便清理掉已经无效的 NPC
+                for (auto it = g_player_attacked_npcs.begin(); it != g_player_attacked_npcs.end();) {
+                    if (cur_time - it->attack_time > 30000 || !is_ped_pointer_valid_safe(it->npc)) {
+                        it = g_player_attacked_npcs.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                bool found = false;
+                for (auto& item : g_player_attacked_npcs) {
+                    if (item.npc == victim) {
+                        item.attack_time = cur_time;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    g_player_attacked_npcs.push_back({victim, cur_time});
+                    LOGI("Recorded player attack on NPC %p for self-defense check", victim);
+                }
+            }
+
+            // 1b. 警员受击自卫事件驱动：如果受害者是执勤警员，且攻击者是普通市民/黑帮NPC（非警察/非玩家），且伤害大于0
+            if (victim_type == PED_TYPE_COP && perpetrator && perp_type != PED_TYPE_COP && perp_type != PED_TYPE_PLAYER && damage > 0) {
+                ecs::EventDispatcher::get().dispatch(ecs::DamageEvent(victim, perpetrator, (int)weaponType, false, now_ms()));
+            }
+
+            // 2. 检测 NPC 犯罪行为 (非玩家且非警察攻击他人)
+            if (player && perpetrator != reinterpret_cast<CEntity*>(player) && perp_type != PED_TYPE_COP && perpetrator != reinterpret_cast<CEntity*>(victim)) {
+                // 自卫判定：如果受害人是玩家，且该 NPC 在最近 30 秒内被玩家先动手打过，判定为 NPC 正当防卫，不视作犯罪
+                bool is_self_defense = false;
+                if (victim == reinterpret_cast<CPed*>(player)) {
+                    bool already_criminal = false;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock_crime(g_crime_mutex);
+                        if (g_crime_active.load() && g_active_crime.criminal == reinterpret_cast<CPed*>(perpetrator)) {
+                            already_criminal = true;
+                        }
+                    }
+                    if (!already_criminal) {
+                        std::lock_guard<std::mutex> lock(g_attacked_npcs_mutex);
+                        int64_t cur_time = now_ms();
+                        for (const auto& item : g_player_attacked_npcs) {
+                            if (item.npc == reinterpret_cast<CPed*>(perpetrator) && (cur_time - item.attack_time <= 30000)) {
+                                is_self_defense = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (is_self_defense) {
+                    LOGI("NPC %p attacks player in self-defense (player initiated attack first) -> BLOCKED from wanted/dispatch", perpetrator);
+                } else {
+                    int weap_cat = 0;
+                    if (weaponType >= WEAPON_PISTOL && weaponType <= WEAPON_MINIGUN) {
+                        weap_cat = 2; // FIREARM
+                    } else if (weaponType == WEAPON_UNARMED) {
+                        weap_cat = 0; // UNARMED
+                    } else {
+                        weap_cat = 1; // MELEE
+                    }
+                    bool firearm = (weap_cat == 2);
+                    CVector crime_pos = get_entity_pos(perpetrator);
+
+                    ecs::EventDispatcher::get().dispatch(ecs::CrimeReportEvent(reinterpret_cast<CPed*>(perpetrator), victim, crime_pos, firearm, weap_cat, now_ms()));
+                }
+            }
+        }
+    }
+
+    return SHADOWHOOK_CALL_PREV(proxy_generate_damage_event, victim, perpetrator, weaponType, damage, pedPiece, direction);
+}
+
+static void handle_damage_event(CEntity* damageSource, eWeaponType weaponType) {
+    if (!damageSource || !g_GetPedType || !g_FindPlayerPed) return;
+
+    if (is_ped_pointer_valid_safe(damageSource)) {
+        CPed* perpetrator = reinterpret_cast<CPed*>(damageSource);
+        int perp_type = g_GetPedType(perpetrator);
+        CPlayerPed* player = g_FindPlayerPed(0);
+
+        if (player && perpetrator != reinterpret_cast<CPed*>(player) && perp_type != PED_TYPE_COP) {
+            // 自卫判定：如果该 NPC 在最近 30 秒内被玩家打过，判定为自卫，不视作犯罪
+            bool is_self_defense = false;
+            {
+                std::lock_guard<std::mutex> lock(g_attacked_npcs_mutex);
+                int64_t cur_time = now_ms();
+                for (const auto& item : g_player_attacked_npcs) {
+                    if (item.npc == perpetrator && (cur_time - item.attack_time <= 30000)) {
+                        is_self_defense = true;
+                        break;
+                    }
+                }
+            }
+
+            if (is_self_defense) {
+                LOGI("NPC %p attacks in self-defense -> BLOCKED from wanted/dispatch", perpetrator);
+            } else {
+                int weap_cat = 0;
+                if (weaponType >= WEAPON_PISTOL && weaponType <= WEAPON_MINIGUN) {
+                    weap_cat = 2; // FIREARM
+                } else if (weaponType == WEAPON_UNARMED) {
+                    weap_cat = 0; // UNARMED
+                } else {
+                    weap_cat = 1; // MELEE
+                }
+                bool firearm = (weap_cat == 2);
+                CVector crime_pos = get_entity_pos(perpetrator);
+
+                ecs::EventDispatcher::get().dispatch(ecs::CrimeReportEvent(perpetrator, nullptr, crime_pos, firearm, weap_cat, now_ms()));
+            }
+        }
+    }
+}
+
+void proxy_event_damage_ctor_c1(void* event_this,
+                                        CEntity* damageSource,
+                                        unsigned int startTime,
+                                        eWeaponType weaponType,
+                                        int pieceType,
+                                        unsigned char damageSeverity,
+                                        bool b1,
+                                        bool b2) {
+    SHADOWHOOK_STACK_SCOPE();
+    handle_damage_event(damageSource, weaponType);
+    SHADOWHOOK_CALL_PREV(proxy_event_damage_ctor_c1, event_this, damageSource, startTime, weaponType, pieceType, damageSeverity, b1, b2);
+}
+
+void proxy_event_damage_ctor_c2(void* event_this,
+                                        CEntity* damageSource,
+                                        unsigned int startTime,
+                                        eWeaponType weaponType,
+                                        int pieceType,
+                                        unsigned char damageSeverity,
+                                        bool b1,
+                                        bool b2) {
+    SHADOWHOOK_STACK_SCOPE();
+    handle_damage_event(damageSource, weaponType);
+    SHADOWHOOK_CALL_PREV(proxy_event_damage_ctor_c2, event_this, damageSource, startTime, weaponType, pieceType, damageSeverity, b1, b2);
+}
+
+// =====================================================================
+// Hook 2b: CPed::SetCurrentWeapon (事件驱动：监控犯罪嫌疑人切枪)
+// =====================================================================
+void proxy_SetCurrentWeapon(CPed* ped, eWeaponType weaponType) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        int prev_weap = 0;
+        auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
+        if (combat) {
+            prev_weap = combat->current_weapon_type;
+        }
+        ecs::EventDispatcher::get().dispatch(ecs::WeaponSwitchEvent(ped, prev_weap, (int)weaponType, now_ms()));
+        std::shared_ptr<CrimeEvent> belonging_crime = nullptr;
+        size_t criminal_idx = 0;
+        bool is_our_criminal = false;
+        
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+            for (auto& crime : g_active_crimes) {
+                if (crime && !crime->cancelled) {
+                    for (size_t idx = 0; idx < crime->consolidated_criminals.size(); ++idx) {
+                        if (crime->consolidated_criminals[idx] == ped) {
+                            belonging_crime = crime;
+                            criminal_idx = idx;
+                            is_our_criminal = true;
+                            break;
+                        }
+                    }
+                    if (is_our_criminal) break;
+                }
+            }
+            
+            if (is_our_criminal && belonging_crime) {
+                int current_threat = 0;
+                if (weaponType >= WEAPON_PISTOL && weaponType <= WEAPON_MINIGUN) {
+                    current_threat = 2; // FIREARM
+                } else if (weaponType == WEAPON_UNARMED) {
+                    current_threat = 0; // UNARMED
+                } else {
+                    current_threat = 1; // MELEE
+                }
+                
+                auto it = belonging_crime->criminal_states.find(ped);
+                if (it != belonging_crime->criminal_states.end()) {
+                    int prev_first = it->second.first_threat_category;
+                    it->second.current_threat_category = current_threat;
+                    
+                    if (current_threat > prev_first) {
+                        // 武器升级：提高其优先级，并升级首要威胁
+                        it->second.first_threat_category = current_threat;
+                        it->second.is_active = true; // 升级后立即设为活跃
+                        LOGI("⚡️ [Event-Driven] Criminal %p upgraded weapon. Threat level raised to %d (first_threat escalated).", ped, current_threat);
+                        
+                        if (current_threat == 2) {
+                            belonging_crime->is_firearm = true;
+                            if (criminal_idx < belonging_crime->criminal_is_firearm.size()) {
+                                belonging_crime->criminal_is_firearm[criminal_idx] = true;
+                            }
+                        }
+                    } else if (current_threat < prev_first) {
+                        // 武器降级：保留首次攻击时的武器类别（武器降级保护），但归类为不活跃级别
+                        it->second.is_active = false;
+                        LOGI("⚡️ [Event-Driven] Criminal %p degraded weapon to %d (first_threat was %d). Classified as Inactive for tactical balance.", ped, current_threat, prev_first);
+                    } else {
+                        // 武器分类相同
+                        if (current_threat == 2) {
+                            it->second.is_active = true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (is_our_criminal && belonging_crime) {
+            // 在锁外调用以规避死锁，对响应的地面巡警触发高优先级的攻击与即时武器更新
+            update_cops_targeting_criminal_event_driven(ped);
+            
+            bool firearm = (weaponType >= WEAPON_PISTOL && weaponType <= WEAPON_MINIGUN);
+            if (firearm) {
+                make_cops_attack_criminal_immediate(ped);
+            }
+        }
+    }
+
+    SHADOWHOOK_CALL_PREV(proxy_SetCurrentWeapon, ped, weaponType);
+}
+
+// =====================================================================
+// 获取 Ped 的 CTaskManager
+void* get_ped_intelligence(CPed* ped) {
+    if (!ped) return nullptr;
+    return *reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5E8);
+}
+
+// 判定警车对于玩家是否可见或处于近场 (避免可见瞬移/强制掉头)
+static bool is_cop_visible_to_player(void* veh, float current_x, float current_y, float current_z) {
+    if (!veh) return false;
+    
+    CVector pos = {current_x, current_y, current_z};
+    if (is_pos_visible_to_player_camera(pos)) {
+        return true;
+    }
+
+    if (g_FindPlayerPed) {
+        void* player = g_FindPlayerPed(0);
+        if (player && is_ped_pointer_valid_safe(player)) {
+            CVector player_pos = get_entity_pos(reinterpret_cast<CPed*>(player));
+            float dx = player_pos.x - current_x;
+            float dy = player_pos.y - current_y;
+            float dz = player_pos.z - current_z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dist < 80.0f) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// 前向声明，解决编译循环依赖问题
+static bool is_vehicle_occupied_by_driver(void* veh);
+
+// 指派 CTaskComplexEnterCar 任务，让其上车
+void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
+    if (!cop || !is_ped_pointer_valid_safe(cop) || !vehicle || !is_vehicle_pointer_valid(vehicle) || !g_TaskNew || !g_TaskEnterCar_ctor || !g_SetTask) return;
+    if (g_IsAlive && !g_IsAlive(cop)) return;
+
+    void* intelligence = get_ped_intelligence(cop);
+    if (!intelligence) return;
+
+    void* task_manager = reinterpret_cast<void*>(reinterpret_cast<char*>(intelligence) + 8);
+    
+    // 司乘关系/抢驾驶位冲突保护 (Seat Conflict Guard)
+    // 如果我们想让警员作为司机上车，但该警车上已经有了现役司机（另一个警员），
+    // 为了防止警员强行将同僚拽下车开走，我们强制将其改为作为乘客上车！
+    if (as_driver && is_vehicle_occupied_by_driver(vehicle)) {
+        as_driver = false;
+        LOGW("👮 [make_cop_enter_vehicle - SeatConflictGuard] Vehicle %p already has a driver. Forcing cop %p to enter as passenger to maintain good driver-passenger relationship!", vehicle, cop);
+    }
+
+    void* task = g_TaskNew(512);
+    if (task) {
+        g_TaskEnterCar_ctor(task, reinterpret_cast<CVehicle*>(vehicle), as_driver, false, false, false);
+        g_SetTask(task_manager, reinterpret_cast<CTask*>(task), 1, false);
+        LOGI("👮 [make_cop_enter_vehicle] Commanded cop %p to enter vehicle %p as_driver: %d", cop, vehicle, as_driver);
+    }
+}
+
+// Event Group Fix
+// 偏移量确定为 0xC8 (200 字节)。之前使用的 0x30~0xC0 范围扫描在 0x60 处有假阳性指针，
+// 传入 Add 会导致严重的 SIGSEGV 崩溃。此处改为直接安全偏移，避免该路径上的崩溃。
+void* get_ped_event_group(CPed* ped) {
+    void* intelligence = get_ped_intelligence(ped);
+    if (!intelligence) return nullptr;
+    return reinterpret_cast<void*>(reinterpret_cast<char*>(intelligence) + 0xC8);
+}
+
+// 在载具池中查找最靠近指定坐标的载具（支持排除指定载具）
+void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nullptr) {
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle) return nullptr;
+    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!pool) return nullptr;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return nullptr;
+
+    void* closest = nullptr;
+    float closest_dist = max_dist;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) { // 占用的插槽 (最高位 0x80 为 0)
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && veh != ignore_veh) {
+                CVector veh_pos = get_entity_pos(veh);
+                float dx = veh_pos.x - pos.x;
+                float dy = veh_pos.y - pos.y;
+                float dz = veh_pos.z - pos.z;
+                float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+                if (dist < closest_dist) {
+                    closest_dist = dist;
+                    closest = veh;
+                }
+            }
+        }
+    }
+    return closest;
+}
+
+// 查找并返回该警员所在的载具指针
+void* find_vehicle_of_cop(CPed* cop) {
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_IsDriver || !g_IsPassenger) return nullptr;
+    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!pool) return nullptr;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return nullptr;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh) {
+                if (g_IsDriver(veh, cop) || g_IsPassenger(veh, cop)) {
+                    return veh;
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
+// 检查该载具中是否已经有了司机（防止无人巡警车行驶）
+static bool is_vehicle_occupied_by_driver(void* veh) {
+    if (!veh || !g_ms_pPedPool || !g_GetPoolPed || !g_IsDriver) return false;
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return false;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return false;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            if (ped) {
+                if (g_IsDriver(veh, ped)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// 智能驾驶 AI 控制逻辑：
+// 1. 尽量限制在正常路网上，防止开上人行道
+// 2. 距离目标较近时温柔减速，防止直接蛮力撞击犯罪 NPC / 玩家
+static void command_vehicle_ai(void* vehicle, const CVector& target_loc, float dist_to_target) {
+    if (!g_GetCarToGoToCoors || !vehicle) return;
+
+    // 当距离目标非常近（例如 < 32 米）时：
+    // 我们将驾驶目的地重置为车辆当前的 3D 坐标（原地诱骗急刹），防止其开到人行道或越野冲撞，
+    // 调用 TellOccupantsToLeaveCar 让警员提前下车
+    if (dist_to_target < 16.0f) {
+        CVector veh_pos = get_entity_pos(vehicle);
+        g_GetCarToGoToCoors(vehicle, &veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
+        if (g_TellOccupantsToLeaveCar) {
+            g_TellOccupantsToLeaveCar(vehicle);
+        }
+        return;
+    }
+
+    // 默认使用温柔且合规的紧急响应模式：
+    // 模式 2 (DF_FAST/Emergency) 会开启警笛并超速/闯红灯，但被路网硬约束在车行道上，绝对不会越界开上人行道 (Avoid Sidewalks)
+    int mode = 2;
+    bool bAvoidPeds = true;
+
+    g_GetCarToGoToCoors(vehicle, const_cast<CVector*>(&target_loc), mode, bAvoidPeds);
+}
+
+// 调度行驶的统一入口：有司机才让车开过去，没司机尝试再加人，若依旧没司机则拦截，防止幽灵车行驶
+static void command_cop_vehicle_to_scene(void* vehicle, const CVector& target_loc) {
+    if (!vehicle) return;
+
+    if (!is_vehicle_occupied_by_driver(vehicle)) {
+        LOGW("⚠️ Dispatched vehicle %p has no driver yet. Re-running AddPoliceCarOccupants", vehicle);
+        if (g_AddPoliceOccupants) {
+            g_AddPoliceOccupants(reinterpret_cast<CVehicle*>(vehicle), true);
+        }
+    }
+
+    if (is_vehicle_occupied_by_driver(vehicle)) {
+        CVector veh_pos = get_entity_pos(vehicle);
+        float dx = veh_pos.x - target_loc.x;
+        float dy = veh_pos.y - target_loc.y;
+        float dz = veh_pos.z - target_loc.z;
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+        
+        command_vehicle_ai(vehicle, target_loc, dist);
+        LOGI("✅ Commanded vehicle %p to scene with active driver (dist=%.1f)", vehicle, dist);
+    } else {
+        LOGE("❌ Dispatched vehicle %p STILL has no driver! Blocked GetCarToGoToCoors to prevent ghost vehicle", vehicle);
+    }
+}
+
+// Commanded cop vector removed to use FindTaskByType(1105) dynamically
+
+std::vector<CopVehicleBinding> g_cop_vehicle_bindings;
+std::mutex g_bindings_mutex;
+
+// 查找警员先前绑定的警车
+void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
+    std::lock_guard<std::mutex> lock(g_bindings_mutex);
+    for (const auto& binding : g_cop_vehicle_bindings) {
+        if (binding.cop == cop) {
+            out_is_driver = binding.as_driver;
+            return binding.vehicle;
+        }
+    }
+    return nullptr;
+}
+
+// 验证该警车原先绑定的驾驶员是否依然存活
+bool is_alive_bound_driver_exists(void* vehicle) {
+    for (const auto& binding : g_cop_vehicle_bindings) {
+        if (binding.vehicle == vehicle && binding.as_driver) {
+            if (binding.cop && is_ped_pointer_valid_safe(binding.cop)) {
+                if (g_IsAlive && g_IsAlive(binding.cop)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+std::vector<void*> g_spawned_cop_vehicles;
+std::mutex g_spawned_cop_vehicles_mutex;
+
+struct CopExitRecord {
+    CPed* cop;
+    int64_t exit_time;
+};
+std::vector<CopExitRecord> g_cop_exits;
+std::mutex g_exits_mutex;
+
+// Missing global variables and mutexes for dispatched vehicle & cop state tracking
+std::set<void*> g_vehicles_emptied;
+std::mutex g_vehicles_emptied_mutex;
+
+std::map<void*, int64_t> g_dispatched_vehicles_time;
+std::mutex g_dispatched_vehicles_time_mutex;
+
+std::map<std::pair<CPed*, CPed*>, int64_t> g_cop_attack_assign_time;
+std::mutex g_cop_attack_assign_mutex;
+
+std::map<CPed*, int64_t> g_armed_cops_time;
+std::mutex g_armed_cops_mutex;
+
+std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
+std::mutex g_cop_assigned_weapon_mutex;
+
+std::set<void*> g_vehicles_ordered_to_scene;
+std::mutex g_vehicles_mutex; // as used in line 2981 and 2447
+
+std::set<void*> g_vehicles_siren_awakened;
+std::mutex g_vehicles_siren_awakened_mutex;
+
+// Helper functions for vehicle status queries and modifications
+static bool is_vehicle_emptied(void* vehicle) {
+    if (!vehicle) return false;
+    std::lock_guard<std::mutex> lock(g_vehicles_emptied_mutex);
+    return g_vehicles_emptied.count(vehicle) > 0;
+}
+
+static void add_vehicle_emptied(void* vehicle) {
+    if (!vehicle) return;
+    std::lock_guard<std::mutex> lock(g_vehicles_emptied_mutex);
+    g_vehicles_emptied.insert(vehicle);
+}
+
+static bool is_vehicle_ordered_to_scene(void* vehicle) {
+    if (!vehicle) return false;
+    std::lock_guard<std::mutex> lock(g_vehicles_mutex);
+    return g_vehicles_ordered_to_scene.count(vehicle) > 0;
+}
+
+static void add_vehicle_ordered_to_scene(void* vehicle) {
+    if (!vehicle) return;
+    std::lock_guard<std::mutex> lock(g_vehicles_mutex);
+    g_vehicles_ordered_to_scene.insert(vehicle);
+}
+
+static bool is_vehicle_siren_awakened(void* vehicle) {
+    if (!vehicle) return false;
+    std::lock_guard<std::mutex> lock(g_vehicles_siren_awakened_mutex);
+    return g_vehicles_siren_awakened.count(vehicle) > 0;
+}
+
+static void add_vehicle_siren_awakened(void* vehicle) {
+    if (!vehicle) return;
+    std::lock_guard<std::mutex> lock(g_vehicles_siren_awakened_mutex);
+    g_vehicles_siren_awakened.insert(vehicle);
+}
+
+struct StuckTracker {
+    int64_t stuck_since = 0;
+    int64_t last_check_time = 0;
+    CVector last_pos = {0.0f, 0.0f, 0.0f};
+    int64_t last_intervention_time = 0;
+    float last_dir_x = 0.0f;
+    float last_dir_y = 0.0f;
+    int spin_count = 0;
+};
+std::map<void*, StuckTracker> g_stuck_vehicles;
+std::mutex g_stuck_vehicles_mutex;
+
+std::set<void*> g_spawned_swats;
+std::mutex g_spawned_swats_mutex;
+
+static void register_spawned_swat(void* vehicle) {
+    if (!vehicle) return;
+    std::lock_guard<std::mutex> lock(g_spawned_swats_mutex);
+    g_spawned_swats.insert(vehicle);
+    LOGI("Registered spawned SWAT vehicle %p", vehicle);
+}
+
+static bool is_swat_van_nearby(CVector pos, float radius) {
+    std::lock_guard<std::mutex> lock(g_spawned_swats_mutex);
+    for (auto it = g_spawned_swats.begin(); it != g_spawned_swats.end(); ) {
+        void* veh = *it;
+        if (!is_vehicle_pointer_valid(veh)) {
+            it = g_spawned_swats.erase(it);
+        } else {
+            CVector veh_pos = get_entity_pos(veh);
+            float dx = veh_pos.x - pos.x;
+            float dy = veh_pos.y - pos.y;
+            float dz = veh_pos.z - pos.z;
+            float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+            if (dist < radius) {
+                return true;
+            }
+            ++it;
+        }
+    }
+    return false;
+}
+
+void bind_vehicle_occupants(void* vehicle) {
+    if (!vehicle || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType || !g_IsDriver || !g_IsPassenger) return;
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return;
+
+    std::lock_guard<std::mutex> lock(g_bindings_mutex);
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            if (ped) {
+                int ped_type = g_GetPedType(ped);
+                if (ped_type == PED_TYPE_COP) {
+                    bool is_driver = g_IsDriver(vehicle, ped);
+                    bool is_passenger = g_IsPassenger(vehicle, ped);
+                    if (is_driver || is_passenger) {
+                        auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
+                        if (!cop_comp) {
+                            cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
+                        }
+                        if (cop_comp) {
+                            cop_comp->is_in_vehicle = true;
+                            cop_comp->has_exited_vehicle = false;
+                        }
+
+                        bool found = false;
+                        for (auto& binding : g_cop_vehicle_bindings) {
+                            if (binding.cop == ped) {
+                                binding.vehicle = vehicle;
+                                binding.as_driver = is_driver;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            g_cop_vehicle_bindings.push_back({ped, vehicle, is_driver});
+                            LOGI("Bound cop %p to vehicle %p (driver: %d)", ped, vehicle, is_driver);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void record_exit_start_for_occupants(void* vehicle) {
+    if (!vehicle || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType || !g_IsDriver || !g_IsPassenger) return;
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return;
+
+    std::lock_guard<std::mutex> lock(g_exits_mutex);
+    int64_t cur_time = now_ms();
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            if (ped) {
+                int ped_type = g_GetPedType(ped);
+                if (ped_type == PED_TYPE_COP) {
+                    if (g_IsDriver(vehicle, ped) || g_IsPassenger(vehicle, ped)) {
+                        auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
+                        if (!cop_comp) {
+                            cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
+                        }
+                        if (cop_comp) {
+                            cop_comp->is_in_vehicle = false;
+                            cop_comp->has_exited_vehicle = true;
+                        }
+
+                        bool found = false;
+                        for (auto& rec : g_cop_exits) {
+                            if (rec.cop == ped) {
+                                rec.exit_time = cur_time;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            g_cop_exits.push_back({ped, cur_time});
+                            LOGI("Recorded exit start for cop %p", ped);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+static bool is_cop_currently_exiting(CPed* cop) {
+    std::lock_guard<std::mutex> lock(g_exits_mutex);
+    int64_t cur_time = now_ms();
+    for (auto it = g_cop_exits.begin(); it != g_cop_exits.end(); ) {
+        if (!is_ped_pointer_valid_safe(it->cop)) {
+            it = g_cop_exits.erase(it);
+        } else {
+            if (it->cop == cop) {
+                if (cur_time - it->exit_time < 3500) {
+                    return true;
+                }
+            }
+            ++it;
+        }
+    }
+    return false;
+}
+
+static void setup_dispatched_cops(void* vehicle, CPed* criminal) {
+    if (!vehicle) return;
+    
+    {
+        std::lock_guard<std::mutex> lock(g_spawned_cop_vehicles_mutex);
+        if (std::find(g_spawned_cop_vehicles.begin(), g_spawned_cop_vehicles.end(), vehicle) == g_spawned_cop_vehicles.end()) {
+            g_spawned_cop_vehicles.push_back(vehicle);
+            LOGI("setup_dispatched_cops: Tracking our custom spawned vehicle %p", vehicle);
+        }
+    }
+    
+    // 1. 绑定车内人员
+    bind_vehicle_occupants(vehicle);
+    
+    // 2. 分配警员与司乘关系（检测到没司机时自动为其分配普通警员乘员，确保绝无空车幽灵车）
+    if (!is_vehicle_occupied_by_driver(vehicle)) {
+        if (g_AddPoliceOccupants) {
+            LOGI("setup_dispatched_cops: Adding occupants to vehicle %p natively", vehicle);
+            g_AddPoliceOccupants(reinterpret_cast<CVehicle*>(vehicle), true);
+            // 重新刷新乘员绑定
+            bind_vehicle_occupants(vehicle);
+        }
+    }
+    
+    // 3. 对载具施加 0.0f 拳头伤害瞬间唤醒！指定来源为 criminal。
+    // 此时载具内自然持枪的警员会受到受击冲击，自动开启警灯与警笛，司机将自动一脚油门驶向该伤害来源处（即 criminal 的位置）！
+    if (criminal && is_ped_pointer_valid_safe(criminal)) {
+        if (g_VehicleInflictDamage) {
+            CVector veh_pos = get_entity_pos(vehicle);
+            g_VehicleInflictDamage(vehicle, reinterpret_cast<CEntity*>(criminal), WEAPON_UNARMED, 0.0f, veh_pos);
+            LOGI("setup_dispatched_cops: Inflicted 0.0f punch damage to vehicle %p to wake it up towards criminal %p", vehicle, criminal);
+        }
+    }
+}
+
+eWeaponType determine_weapon_for_cop(CPed* cop, CPed* criminal, bool is_firearm_crime) {
+    if (!cop || !criminal) return WEAPON_PISTOL;
+    if (is_firearm_crime) return WEAPON_PISTOL;
+    return WEAPON_NIGHTSTICK; // 非枪击案，全程手持警棍规范执法
+}
+
+static void make_cops_attack_criminal(CPed* criminal) {
+    if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
+    if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return;
+
+    // 优先解决枪击大案：若当前附近已经存在活跃的枪击大案，且当前准备调度的嫌犯并非该枪击犯（是个低优先级的普通嫌犯），
+    // 则直接暂缓该低优先级嫌犯的警力调度，全力优先消灭持枪悍匪。这也免除了不必要的 0 伤害产生和 pool 轮询开销。
+    if (g_crime_active.load() && !g_active_crime.cancelled) {
+        if (g_active_crime.is_firearm && g_active_crime.criminal && g_active_crime.criminal != criminal) {
+            return;
+        }
+    }
+
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return;
+
+    CVector crime_pos = get_entity_pos(criminal);
+
+    // =====================================================================
+    // thread_local 快照向量，减少每帧堆分配
+    // =====================================================================
+    thread_local static std::vector<std::pair<std::pair<CPed*, CPed*>, int64_t>> cop_attack_assign_time_snapshot;
+    thread_local static std::vector<std::pair<CPed*, int64_t>> armed_cops_time_snapshot;
+    thread_local static std::vector<std::pair<CPed*, eWeaponType>> cop_assigned_weapon_snapshot;
+    thread_local static std::vector<std::pair<void*, int64_t>> dispatched_vehicles_time_snapshot;
+    thread_local static std::vector<std::pair<void*, StuckTracker>> stuck_vehicles_snapshot;
+    
+    thread_local static std::vector<void*> vehicles_emptied_snapshot;
+    thread_local static std::vector<void*> vehicles_ordered_to_scene_snapshot;
+    thread_local static std::vector<void*> vehicles_siren_awakened_snapshot;
+
+    // 延迟批量提交数据容器
+    thread_local static std::vector<std::pair<CPed*, int64_t>> pending_armed_cops_time;
+    thread_local static std::vector<std::pair<CPed*, eWeaponType>> pending_cop_assigned_weapon;
+    thread_local static std::vector<std::pair<void*, int64_t>> pending_dispatched_vehicles_time;
+    thread_local static std::vector<void*> pending_vehicles_emptied;
+    thread_local static std::vector<void*> pending_vehicles_ordered_to_scene;
+    thread_local static std::vector<void*> pending_vehicles_siren_awakened;
+    thread_local static std::vector<std::pair<void*, StuckTracker>> pending_stuck_vehicles;
+    thread_local static std::vector<std::pair<std::pair<CPed*, CPed*>, int64_t>> pending_cop_attack_assign_time;
+    thread_local static std::vector<TemporaryRoadClosure> pending_temp_closures;
+
+    thread_local static std::vector<void*> counted_vehicles;
+
+    thread_local static bool initialized = false;
+    if (!initialized) {
+        cop_attack_assign_time_snapshot.reserve(128);
+        armed_cops_time_snapshot.reserve(128);
+        cop_assigned_weapon_snapshot.reserve(128);
+        dispatched_vehicles_time_snapshot.reserve(128);
+        stuck_vehicles_snapshot.reserve(128);
+        vehicles_emptied_snapshot.reserve(128);
+        vehicles_ordered_to_scene_snapshot.reserve(128);
+        vehicles_siren_awakened_snapshot.reserve(128);
+
+        pending_armed_cops_time.reserve(128);
+        pending_cop_assigned_weapon.reserve(128);
+        pending_dispatched_vehicles_time.reserve(128);
+        pending_vehicles_emptied.reserve(128);
+        pending_vehicles_ordered_to_scene.reserve(128);
+        pending_vehicles_siren_awakened.reserve(128);
+        pending_stuck_vehicles.reserve(128);
+        pending_cop_attack_assign_time.reserve(128);
+        pending_temp_closures.reserve(128);
+
+        counted_vehicles.reserve(128);
+        initialized = true;
+    }
+
+    cop_attack_assign_time_snapshot.clear();
+    armed_cops_time_snapshot.clear();
+    cop_assigned_weapon_snapshot.clear();
+    dispatched_vehicles_time_snapshot.clear();
+    stuck_vehicles_snapshot.clear();
+    vehicles_emptied_snapshot.clear();
+    vehicles_ordered_to_scene_snapshot.clear();
+    vehicles_siren_awakened_snapshot.clear();
+
+    pending_armed_cops_time.clear();
+    pending_cop_assigned_weapon.clear();
+    pending_dispatched_vehicles_time.clear();
+    pending_vehicles_emptied.clear();
+    pending_vehicles_ordered_to_scene.clear();
+    pending_vehicles_siren_awakened.clear();
+    pending_stuck_vehicles.clear();
+    pending_cop_attack_assign_time.clear();
+    pending_temp_closures.clear();
+
+    counted_vehicles.clear();
+
+    auto vector_contains = [](const std::vector<void*>& vec, void* val) {
+        for (void* item : vec) {
+            if (item == val) return true;
+        }
+        return false;
+    };
+
+    // 一站式极速拷贝多线程全局状态
+    {
+        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+        cop_attack_assign_time_snapshot.assign(g_cop_attack_assign_time.begin(), g_cop_attack_assign_time.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
+        armed_cops_time_snapshot.assign(g_armed_cops_time.begin(), g_armed_cops_time.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
+        cop_assigned_weapon_snapshot.assign(g_cop_assigned_weapon.begin(), g_cop_assigned_weapon.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
+        dispatched_vehicles_time_snapshot.assign(g_dispatched_vehicles_time.begin(), g_dispatched_vehicles_time.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_stuck_vehicles_mutex);
+        stuck_vehicles_snapshot.assign(g_stuck_vehicles.begin(), g_stuck_vehicles.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_vehicles_emptied_mutex);
+        vehicles_emptied_snapshot.assign(g_vehicles_emptied.begin(), g_vehicles_emptied.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_vehicles_mutex);
+        vehicles_ordered_to_scene_snapshot.assign(g_vehicles_ordered_to_scene.begin(), g_vehicles_ordered_to_scene.end());
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_vehicles_siren_awakened_mutex);
+        vehicles_siren_awakened_snapshot.assign(g_vehicles_siren_awakened.begin(), g_vehicles_siren_awakened.end());
+    }
+
+    // 动态提取枪械案件状态
+    bool is_active_firearm = false;
+    if (g_crime_active.load() && !g_active_crime.cancelled) {
+        if (g_active_crime.is_firearm) {
+            is_active_firearm = true;
+        } else {
+            auto& list = g_active_crime.consolidated_criminals;
+            auto& is_fire_list = g_active_crime.criminal_is_firearm;
+            for (size_t idx = 0; idx < list.size(); ++idx) {
+                if (list[idx] == criminal && idx < is_fire_list.size() && is_fire_list[idx]) {
+                    is_active_firearm = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // =====================================================================
+    // Pass 1: 扫描当前处于响应状态的已调度单位数量（免偏移量判定，不依赖结构体偏移）
+    // =====================================================================
+    int active_vehicles_count = 0;
+    int active_foot_cops_count = 0;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            
+            // 判定该 NPC 是否属于并案列表中的罪犯之一
+            bool is_cop_not_criminal = true;
+            if (g_crime_active.load() && !g_active_crime.cancelled) {
+                for (CPed* c : g_active_crime.consolidated_criminals) {
+                    if (ped == c) {
+                        is_cop_not_criminal = false;
+                        break;
+                    }
+                }
+            } else {
+                if (ped == criminal) is_cop_not_criminal = false;
+            }
+
+            if (ped && is_ped_pointer_valid_safe(ped) && is_cop_not_criminal) {
+                if (g_IsAlive && !g_IsAlive(ped)) {
+                    continue;
+                }
+                int ped_type = g_GetPedType(ped);
+                if (ped_type == PED_TYPE_COP) {
+                    void* veh = find_vehicle_of_cop(ped);
+                    if (veh && is_vehicle_pointer_valid(veh)) {
+                        // 警员在载具中，且该载具已被调度
+                        if (vector_contains(vehicles_ordered_to_scene_snapshot, veh) || 
+                            vector_contains(vehicles_siren_awakened_snapshot, veh) || 
+                            veh == g_active_crime.spawned_vehicle) {
+                            if (!vector_contains(counted_vehicles, veh)) {
+                                counted_vehicles.push_back(veh);
+                                active_vehicles_count++;
+                            }
+                        }
+                    } else {
+                        // 地面散步/巡逻警员
+                        int64_t last_assign = 0;
+                        if (g_crime_active.load() && !g_active_crime.cancelled) {
+                            for (CPed* c : g_active_crime.consolidated_criminals) {
+                                auto key = std::make_pair(ped, c);
+                                for (const auto& item : cop_attack_assign_time_snapshot) {
+                                    if (item.first == key) {
+                                        last_assign = std::max(last_assign, item.second);
+                                        break;
+                                    }
+                                }
+                            }
+                        } else {
+                            auto key = std::make_pair(ped, criminal);
+                            for (const auto& item : cop_attack_assign_time_snapshot) {
+                                if (item.first == key) {
+                                    last_assign = item.second;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        bool already_targeting = false;
+                        if (g_GetWeaponLockOnTarget) {
+                            CEntity* target = g_GetWeaponLockOnTarget(ped);
+                            if (target) {
+                                if (g_crime_active.load() && !g_active_crime.cancelled) {
+                                    for (CPed* c : g_active_crime.consolidated_criminals) {
+                                        if (target == reinterpret_cast<CEntity*>(c)) {
+                                            already_targeting = true;
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    if (target == reinterpret_cast<CEntity*>(criminal)) {
+                                        already_targeting = true;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 如果 15 秒内分派过任务，或者已经正在瞄准任何嫌疑人，则视为已被调度地面警员
+                        if (already_targeting || (now_ms() - last_assign < 15000)) {
+                            active_foot_cops_count++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // =====================================================================
+    // Case merge and dispatch quotas
+    // =====================================================================
+    int max_vehicles = 2;
+    int max_foot_cops = 2;
+
+    if (g_crime_active.load() && !g_active_crime.cancelled) {
+        auto& list = g_active_crime.consolidated_criminals;
+        auto& is_fire_list = g_active_crime.criminal_is_firearm;
+        
+        int total_criminals = list.size();
+        int armed_criminals = 0;
+        for (size_t idx = 0; idx < list.size(); ++idx) {
+            if (idx < is_fire_list.size() && is_fire_list[idx]) {
+                armed_criminals++;
+            }
+        }
+        
+        int cops_killed = g_active_crime.cops_killed;
+        
+        if (cops_killed > 0) {
+            max_vehicles = 3;
+            max_foot_cops = 4;
+            LOGI("📊 [dispatchCenter - Quota] Escalated to Max quota (Vehicles=%d, FootCops=%d) due to cop casualties (%d)", 
+                 max_vehicles, max_foot_cops, cops_killed);
+        } else if (armed_criminals == 0) {
+            if (total_criminals <= 1) {
+                max_vehicles = 1;
+                max_foot_cops = 1;
+            } else {
+                max_vehicles = 2;
+                max_foot_cops = 2;
+            }
+            LOGI("📊 [dispatchCenter - Quota] Melee-only crime. Quota set to (Vehicles=%d, FootCops=%d) for %d criminals", 
+                 max_vehicles, max_foot_cops, total_criminals);
+        } else {
+            float armed_ratio = (float)armed_criminals / (float)total_criminals;
+            if (armed_ratio < 0.5f) {
+                max_vehicles = 2;
+                max_foot_cops = 2;
+            } else {
+                if (total_criminals <= 2) {
+                    max_vehicles = 2;
+                    max_foot_cops = 3;
+                } else {
+                    max_vehicles = 3;
+                    max_foot_cops = 4;
+                }
+            }
+            LOGI("📊 [dispatchCenter - Quota] Firearm crime (Armed: %d/%d, Ratio: %.1f%%). Quota set to (Vehicles=%d, FootCops=%d)", 
+                 armed_criminals, total_criminals, armed_ratio * 100.0f, max_vehicles, max_foot_cops);
+        }
+    } else {
+        max_vehicles = 2;
+        max_foot_cops = 2;
+    }
+
+    // =====================================================================
+    // Pass 2: 遍历、过滤并对合格单位进行精准追加调度
+    // =====================================================================
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            
+            // 判定该 NPC 是否属于并案列表中的罪犯之一
+            bool is_cop_not_criminal = true;
+            if (g_crime_active.load() && !g_active_crime.cancelled) {
+                for (CPed* c : g_active_crime.consolidated_criminals) {
+                    if (ped == c) {
+                        is_cop_not_criminal = false;
+                        break;
+                    }
+                }
+            } else {
+                if (ped == criminal) is_cop_not_criminal = false;
+            }
+
+            if (ped && is_ped_pointer_valid_safe(ped) && is_cop_not_criminal) {
+                if (g_IsAlive && !g_IsAlive(ped)) {
+                    continue;
+                }
+                int ped_type = g_GetPedType(ped);
+                if (ped_type == PED_TYPE_COP) {
+                    CVector cop_pos = get_entity_pos(ped);
+                    CVector target_crime_pos = crime_pos;
+                    CPed* target_criminal = criminal;
+
+                    // 🚀 【黑科技 1】动态目标重定向：多犯罪NPC并案下，就近选择攻击对象，极速消灭威胁
+                    if (g_crime_active.load() && !g_active_crime.cancelled) {
+                        float best_d = 999999.0f;
+                        for (CPed* c : g_active_crime.consolidated_criminals) {
+                            if (c && is_ped_pointer_valid_safe(c)) {
+                                CVector c_pos = get_entity_pos(c);
+                                float dx_c = cop_pos.x - c_pos.x;
+                                float dy_c = cop_pos.y - c_pos.y;
+                                float dz_c = cop_pos.z - c_pos.z;
+                                float dist_c = dx_c * dx_c + dy_c * dy_c + dz_c * dz_c;
+                                if (dist_c < best_d) {
+                                    best_d = dist_c;
+                                    target_crime_pos = c_pos;
+                                    target_criminal = c;
+                                }
+                            }
+                        }
+                    }
+
+                    float dx = cop_pos.x - target_crime_pos.x;
+                    float dy = cop_pos.y - target_crime_pos.y;
+                    float dz = cop_pos.z - target_crime_pos.z;
+                    float dist_sq = dx * dx + dy * dy + dz * dz;
+
+                    // 1. 如果警车驾驶中的警员距离还很远，先给他发合适武器（防手无寸铁），并开启警车自主避障驾驶
+                    void* veh = find_vehicle_of_cop(ped);
+                    if (veh) {
+                        if (is_vehicle_pointer_valid(veh)) {
+                            CVector veh_pos = get_entity_pos(veh);
+                            float v_dx = veh_pos.x - target_crime_pos.x;
+                            float v_dy = veh_pos.y - target_crime_pos.y;
+                            float v_dz = veh_pos.z - target_crime_pos.z;
+                            float v_dist = sqrtf(v_dx * v_dx + v_dy * v_dy + v_dz * v_dz);
+
+                            int64_t last_armed = 0;
+                            for (const auto& item : armed_cops_time_snapshot) {
+                                if (item.first == ped) {
+                                    last_armed = item.second;
+                                    break;
+                                }
+                            }
+                            if (now_ms() - last_armed > 5000) { // 每 5 秒限制最多执行一次
+                                bool is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
+                                eWeaponType target_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
+                                if (g_GiveWeapon && g_SetCurrentWeapon) {
+                                    g_GiveWeapon(ped, target_weapon, 9999, true);
+                                    g_SetCurrentWeapon(ped, target_weapon);
+                                }
+                                bool found = false;
+                                for (auto& item : armed_cops_time_snapshot) {
+                                    if (item.first == ped) {
+                                        item.second = now_ms();
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) {
+                                    armed_cops_time_snapshot.push_back({ped, now_ms()});
+                                }
+                                pending_armed_cops_time.push_back({ped, now_ms()});
+
+                                bool found_w = false;
+                                for (auto& item : cop_assigned_weapon_snapshot) {
+                                    if (item.first == ped) {
+                                        item.second = target_weapon;
+                                        found_w = true;
+                                        break;
+                                    }
+                                }
+                                if (!found_w) {
+                                    cop_assigned_weapon_snapshot.push_back({ped, target_weapon});
+                                }
+                                pending_cop_assigned_weapon.push_back({ped, target_weapon});
+                            }
+
+                            int64_t first_seen = 0;
+                            bool found_disp = false;
+                            for (const auto& item : dispatched_vehicles_time_snapshot) {
+                                if (item.first == veh) {
+                                    first_seen = item.second;
+                                    found_disp = true;
+                                    break;
+                                }
+                            }
+                            if (!found_disp) {
+                                int64_t now_time = now_ms();
+                                dispatched_vehicles_time_snapshot.push_back({veh, now_time});
+                                pending_dispatched_vehicles_time.push_back({veh, now_time});
+                                first_seen = now_time;
+                            }
+                            int64_t elapsed = now_ms() - first_seen;
+
+                            bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                            float exit_dist = is_bike ? 12.0f : 16.0f;
+                            // 复合下车判定：距离接近 (摩托车12米/轿车16米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或超时过久 (行驶超12秒)
+                            bool should_exit = (v_dist < exit_dist) || 
+                                               (elapsed > 6000 && v_dist < 60.0f) || 
+                                               (elapsed > 12000);
+
+                            if (should_exit) {
+                                if (!vector_contains(vehicles_emptied_snapshot, veh)) {
+                                    // 1. 原地目标诱骗急刹：将 Autopilot 目标设为当前坐标，让其平稳减速刹停，绝不上人行道
+                                    if (g_GetCarToGoToCoors) {
+                                        g_GetCarToGoToCoors(veh, &veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
+                                    }
+                                    // 2. 战术提前离车：拉开交火线包抄
+                                    if (g_TellOccupantsToLeaveCar) {
+                                        g_TellOccupantsToLeaveCar(veh);
+                                    }
+                                    if (g_VehicleInflictDamage) {
+                                        g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, veh_pos);
+                                    }
+                                    vehicles_emptied_snapshot.push_back(veh); // 局部同步
+                                    pending_vehicles_emptied.push_back(veh);
+
+                                    if (veh == g_active_crime.spawned_vehicle) {
+                                        g_active_crime.occupants_ordered_out = true;
+                                    }
+                                    LOGI("Vehicle exit triggered (dist=%.1f, elapsed=%lld ms): Stopped Autopilot & Ordered cops to leave vehicle %p", 
+                                         v_dist, (long long)elapsed, veh);
+                                }
+                            } else {
+                                // 检查是否已被调度，若不是，则进入配额判定
+                                bool already_dispatched = vector_contains(vehicles_ordered_to_scene_snapshot, veh) || 
+                                                          vector_contains(vehicles_siren_awakened_snapshot, veh) || 
+                                                          veh == g_active_crime.spawned_vehicle;
+
+                                // =====================================================================
+                                // 检测卡死的警车并尝试重新调度
+                                // =====================================================================
+                                if (already_dispatched) {
+                                    CVector current_pos = get_entity_pos(veh);
+                                    int64_t now_time = now_ms();
+                                    bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                    if (is_bike && g_GetMatrix) {
+                                        CMatrix* mat = g_GetMatrix(veh);
+                                        if (mat && mat->at_z < 0.8f) { // Tilting > 36.8 degrees
+                                            stabilize_motorcycle(veh);
+                                        }
+                                    }
+
+                                    StuckTracker tracker;
+                                    bool found_stuck = false;
+                                    size_t stuck_idx = 0;
+                                    for (size_t idx = 0; idx < stuck_vehicles_snapshot.size(); ++idx) {
+                                        if (stuck_vehicles_snapshot[idx].first == veh) {
+                                            tracker = stuck_vehicles_snapshot[idx].second;
+                                            found_stuck = true;
+                                            stuck_idx = idx;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!found_stuck) {
+                                        tracker.last_pos = current_pos;
+                                        tracker.last_check_time = now_time;
+                                        tracker.stuck_since = 0;
+                                        tracker.last_intervention_time = 0;
+                                        
+                                        stuck_vehicles_snapshot.push_back({veh, tracker}); // 局部同步
+                                        pending_stuck_vehicles.push_back({veh, tracker});
+                                    } else {
+                                        float time_diff = (now_time - tracker.last_check_time) / 1000.0f;
+                                        if (time_diff >= 1.0f) { // 每秒检查一次
+                                            float dx_s = current_pos.x - tracker.last_pos.x;
+                                            float dy_s = current_pos.y - tracker.last_pos.y;
+                                            float dz_s = current_pos.z - tracker.last_pos.z;
+                                            float dist_moved = sqrtf(dx_s * dx_s + dy_s * dy_s + dz_s * dz_s);
+                                            float speed = dist_moved / time_diff;
+
+                                            // [Proactive Water Escape]: Hollywood cinematic shoreline rescue
+                                            if (speed >= 3.0f && dist_moved > 0.1f) {
+                                                float dir_x = dx_s / dist_moved;
+                                                float dir_y = dy_s / dist_moved;
+                                                float dir_z = dz_s / dist_moved;
+
+                                                float lookahead = speed * 1.5f; // Lookahead 1.5 seconds
+                                                CVector p_pos = {
+                                                    current_pos.x + dir_x * lookahead,
+                                                    current_pos.y + dir_y * lookahead,
+                                                    current_pos.z + dir_z * lookahead
+                                                };
+
+                                                // If predicted to hit low elevation (water level), but perp is on land and veh is currently safe
+                                                bool will_fall = (p_pos.z < 1.0f && current_pos.z >= 2.0f && target_crime_pos.z >= 2.5f);
+                                                if (will_fall && !vector_contains(vehicles_emptied_snapshot, veh)) {
+                                                    if (g_VehicleInflictDamage) {
+                                                        g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, current_pos);
+                                                    }
+                                                    vehicles_emptied_snapshot.push_back(veh);
+                                                    pending_vehicles_emptied.push_back(veh);
+                                                    if (veh == g_active_crime.spawned_vehicle) {
+                                                        g_active_crime.occupants_ordered_out = true;
+                                                    }
+                                                    LOGW("[dispatchCenter - ProactiveWaterRescue] CINEMATIC RESCUE! Vehicle %p predicted to plunge into deep water. Safe bulk exit triggered!", veh);
+                                                }
+                                            }
+
+                                            // [Anti-Spin Guard]: Detect circling behavior (crucial for motorcycles)
+                                            float cur_dir_x = 0.0f;
+                                            float cur_dir_y = 0.0f;
+                                            if (dist_moved > 0.05f) {
+                                                cur_dir_x = dx_s / dist_moved;
+                                                cur_dir_y = dy_s / dist_moved;
+                                            }
+
+                                            if (dist_moved > 0.5f) {
+                                                if (tracker.last_dir_x != 0.0f || tracker.last_dir_y != 0.0f) {
+                                                    float dir_dot = cur_dir_x * tracker.last_dir_x + cur_dir_y * tracker.last_dir_y;
+                                                    if (dir_dot < 0.85f) { // 宽限至 31.8度角，更容易灵敏捕获摩托画圈
+                                                        tracker.spin_count++;
+                                                    } else {
+                                                        tracker.spin_count = 0;
+                                                    }
+                                                }
+                                                tracker.last_dir_x = cur_dir_x;
+                                                tracker.last_dir_y = cur_dir_y;
+                                            } else {
+                                                tracker.spin_count = 0;
+                                            }
+
+                                            if (tracker.spin_count >= 3) {
+                                                float dx_vc = target_crime_pos.x - current_pos.x;
+                                                float dy_vc = target_crime_pos.y - current_pos.y;
+                                                float dz_vc = target_crime_pos.z - current_pos.z;
+                                                float dist_vc = sqrtf(dx_vc * dx_vc + dy_vc * dy_vc + dz_vc * dz_vc);
+
+                                                if (dist_vc < 60.0f) {
+                                                    // A. Close range: Force immediate emergency exit
+                                                    if (!vector_contains(vehicles_emptied_snapshot, veh)) {
+                                                        g_GetCarToGoToCoors(veh, &current_pos, 4, false); // Emergency handbrake stop
+                                                        if (g_TellOccupantsToLeaveCar) {
+                                                            g_TellOccupantsToLeaveCar(veh);
+                                                        }
+                                                        vehicles_emptied_snapshot.push_back(veh);
+                                                        pending_vehicles_emptied.push_back(veh);
+                                                        if (veh == g_active_crime.spawned_vehicle) {
+                                                            g_active_crime.occupants_ordered_out = true;
+                                                        }
+                                                        LOGW("🔄 [Anti-Spin Guard] Circle spinning detected in close range (%.1fm). Safe bulk exit triggered!", dist_vc);
+                                                    }
+                                                } else {
+                                                     // B. Far range: Force reverse nudge and physical 120-degree yaw rotation to break physical circling loop
+                                                     bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                     if (is_bike) {
+                                                         float dx_aim = target_crime_pos.x - current_pos.x;
+                                                         float dy_aim = target_crime_pos.y - current_pos.y;
+                                                         float dist_aim_2d = sqrtf(dx_aim * dx_aim + dy_aim * dy_aim);
+                                                         if (dist_aim_2d > 0.01f) {
+                                                             dx_aim /= dist_aim_2d;
+                                                             dy_aim /= dist_aim_2d;
+                                                         } else {
+                                                             dx_aim = 0.0f;
+                                                             dy_aim = 1.0f;
+                                                         }
+
+                                                         if (g_GetMatrix) {
+                                                             CMatrix* mat = g_GetMatrix(veh);
+                                                             if (mat) {
+                                                                 mat->up_x = dx_aim;
+                                                                 mat->up_y = dy_aim;
+                                                                 mat->up_z = 0.0f;
+
+                                                                 mat->at_x = 0.0f;
+                                                                 mat->at_y = 0.0f;
+                                                                 mat->at_z = 1.0f;
+
+                                                                 mat->right_x = dy_aim;
+                                                                 mat->right_y = -dx_aim;
+                                                                 mat->right_z = 0.0f;
+                                                             }
+                                                         }
+
+                                                         CVector realigned_pos = {
+                                                             current_pos.x + dx_aim * 5.0f,
+                                                             current_pos.y + dy_aim * 5.0f,
+                                                             current_pos.z + 0.15f
+                                                         };
+                                                         
+                                                         set_entity_pos(veh, realigned_pos);
+                                                         stabilize_motorcycle(veh);
+                                                         
+                                                         command_vehicle_ai(veh, target_crime_pos, dist_vc);
+                                                         LOGW("🔄🏍️ [Anti-Spin Guard - BIKE] Realignment Orbit Break. Pointed directly to crime scene (%.1fm) and teleported forward 5m.", dist_vc);
+                                                     } else {
+                                                         bool is_seen = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
+                                                         float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
+                                                         if (g_GetMatrix) {
+                                                             CMatrix* mat = g_GetMatrix(veh);
+                                                             if (mat) {
+                                                                 f_x = mat->up_x;
+                                                                 f_y = mat->up_y;
+                                                                 f_z = mat->up_z;
+
+                                                                 if (!is_seen) {
+                                                                     // 物理朝向旋转 120 度打破画圆惯性：cos = -0.5, sin = 0.866
+                                                                     float new_up_x = mat->up_x * (-0.5f) - mat->up_y * 0.866f;
+                                                                     float new_up_y = mat->up_x * 0.866f + mat->up_y * (-0.5f);
+                                                                     float new_right_x = mat->right_x * (-0.5f) - mat->right_y * 0.866f;
+                                                                     float new_right_y = mat->right_x * 0.866f + mat->right_y * (-0.5f);
+
+                                                                     mat->up_x = new_up_x;
+                                                                     mat->up_y = new_up_y;
+                                                                     mat->right_x = new_right_x;
+                                                                     mat->right_y = new_right_y;
+                                                                 }
+                                                             }
+                                                         }
+                                                         float f_len = sqrtf(f_x * f_x + f_y * f_y + f_z * f_z);
+                                                         if (f_len > 0.01f) {
+                                                             f_x /= f_len; f_y /= f_len; f_z /= f_len;
+                                                         } else {
+                                                             f_x = 0.0f; f_y = 1.0f; f_z = 0.0f;
+                                                         }
+                                                         CVector reverse_pos;
+                                                         if (is_seen) {
+                                                             reverse_pos = {
+                                                                 current_pos.x - f_x * 3.5f,
+                                                                 current_pos.y - f_y * 3.5f,
+                                                                 current_pos.z + 0.3f
+                                                             };
+                                                         } else {
+                                                             reverse_pos = {
+                                                                 current_pos.x - f_x * 4.5f,
+                                                                 current_pos.y - f_y * 4.5f,
+                                                                 current_pos.z + 0.5f
+                                                             };
+                                                         }
+                                                         
+                                                         set_entity_pos(veh, reverse_pos);
+                                                         
+                                                         command_vehicle_ai(veh, target_crime_pos, dist_vc);
+                                                         LOGW("🔄 [Anti-Spin Guard] Circle spinning detected in far range (%.1fm, seen=%d). Forced reverse nudge & yaw break.", dist_vc, is_seen);
+                                                     }}
+                                                tracker.spin_count = 0;
+                                                tracker.last_intervention_time = now_time;
+                                            }
+
+                                            // [ACC Unified Fleet Control - Upgraded to Full Fleet & Bypass Nudge]: Prevents front and side rear-ends of any vehicles (Unrestricted by movement)
+                                            float dir_x = 0.0f;
+                                            float dir_y = 0.0f;
+                                            float dir_z = 0.0f;
+                                            if (dist_moved > 0.05f) {
+                                                dir_x = dx_s / dist_moved;
+                                                dir_y = dy_s / dist_moved;
+                                                dir_z = dz_s / dist_moved;
+                                            } else {
+                                                if (g_GetMatrix) {
+                                                    CMatrix* mat = g_GetMatrix(veh);
+                                                    if (mat) {
+                                                        dir_x = mat->up_x;
+                                                        dir_y = mat->up_y;
+                                                        dir_z = mat->up_z;
+                                                    }
+                                                }
+                                                float d_len = sqrtf(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z);
+                                                if (d_len > 0.01f) {
+                                                    dir_x /= d_len;
+                                                    dir_y /= d_len;
+                                                    dir_z /= d_len;
+                                                } else {
+                                                    dir_x = 0.0f;
+                                                    dir_y = 1.0f;
+                                                    dir_z = 0.0f;
+                                                }
+                                            }
+
+                                            // =====================================================================
+                                            // 🚨 [dispatchCenter - ACC Criminal Avoidance] 罪犯高优先级物理避让，保障绝不撞击/怼罪犯
+                                            // =====================================================================
+                                            bool ped_blocked = false;
+                                            if (target_criminal && is_ped_pointer_valid_safe(target_criminal)) {
+                                                CVector other_pos = get_entity_pos(target_criminal);
+                                                float ox = other_pos.x - current_pos.x;
+                                                float oy = other_pos.y - current_pos.y;
+                                                float oz = other_pos.z - current_pos.z;
+                                                float cop_dist = sqrtf(ox * ox + oy * oy + oz * oz);
+
+                                                if (cop_dist < 10.0f) {
+                                                    float dot_p = ox * dir_x + oy * dir_y + oz * dir_z;
+                                                    if (dot_p > 0.0f && dot_p < 10.0f) {
+                                                        float lat_dist_sq = (cop_dist * cop_dist) - (dot_p * dot_p);
+                                                        if (lat_dist_sq < 4.84f) { // 2.2米内横向偏离（直接阻挡在行进轨迹上）
+                                                            ped_blocked = true;
+                                                            if ((speed < 1.2f || dist_moved < 1.2f) && cop_dist < 8.0f) {
+                                                                float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
+                                                                float lx = -dir_y * side_sign;
+                                                                float ly = dir_x * side_sign;
+                                                                bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                float side_nudge = is_bike ? 0.8f : 1.8f;
+                                                                float height_lift = is_bike ? 0.05f : 0.0f;
+                                                                CVector detour_pos = {
+                                                                    current_pos.x + lx * side_nudge + dir_x * 0.8f,
+                                                                    current_pos.y + ly * side_nudge + dir_y * 0.8f,
+                                                                    current_pos.z + height_lift
+                                                                };
+                                                                set_entity_pos(veh, detour_pos);
+                                                                if (is_bike) {
+                                                                    stabilize_motorcycle(veh);
+                                                                }LOGI("[dispatchCenter - ACC Bypass Ped] Vehicle %p blocked by TARGET CRIMINAL %p (dist=%.1f, speed=%.2f). Detoured (side=%.1f)", 
+                                                                     veh, target_criminal, cop_dist, speed, side_sign);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if (!ped_blocked && g_ms_pVehiclePool && g_GetPoolVehicle) {
+                                                void* v_pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+                                                if (v_pool) {
+                                                    char* v_byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(v_pool) + 8);
+                                                    int v_size = *reinterpret_cast<int*>(reinterpret_cast<char*>(v_pool) + 16);
+                                                    if (v_byte_map) {
+                                                        for (int j = 0; j < v_size; j++) {
+                                                            signed char v_flag = v_byte_map[j];
+                                                            if (v_flag >= 0) {
+                                                                int v_handle = (j << 8) | v_flag;
+                                                                void* other_veh = g_GetPoolVehicle(v_handle);
+                                                                if (other_veh && other_veh != veh && is_vehicle_pointer_valid(other_veh)) {
+                                                                    CVector other_pos = get_entity_pos(other_veh);
+                                                                    float ox = other_pos.x - current_pos.x;
+                                                                    float oy = other_pos.y - current_pos.y;
+                                                                    float oz = other_pos.z - current_pos.z;
+                                                                    float cop_dist = sqrtf(ox * ox + oy * oy + oz * oz);
+
+                                                                    if (cop_dist < 10.0f) {
+                                                                        float dot_p = ox * dir_x + oy * dir_y + oz * dir_z;
+                                                                        if (dot_p > 0.0f && dot_p < 10.0f) {
+                                                                            float lat_dist_sq = (cop_dist * cop_dist) - (dot_p * dot_p);
+                                                                            if (lat_dist_sq < 4.84f) { // Under 2.2m lateral deviation (directly in path)
+                                                                                // Dynamic smart bypass detour nudge if extremely slow or stationary (stuck behind civilians)
+                                                                                if ((speed < 1.2f || dist_moved < 1.2f) && cop_dist < 8.0f) {
+                                                                                    float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
+                                                                                    float lx = -dir_y * side_sign;
+                                                                                    float ly = dir_x * side_sign;
+                                                                                    bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                    float side_nudge = is_bike ? 0.8f : 1.8f;
+                                                                                    float height_lift = is_bike ? 0.05f : 0.0f;
+                                                                                    CVector detour_pos = {
+                                                                                        current_pos.x + lx * side_nudge + dir_x * 0.8f,
+                                                                                        current_pos.y + ly * side_nudge + dir_y * 0.8f,
+                                                                                        current_pos.z + height_lift
+                                                                                    };
+                                                                                    
+                                                                                    set_entity_pos(veh, detour_pos);
+                                                                                    if (is_bike) {
+                                                                                        stabilize_motorcycle(veh);
+                                                                                    }
+                                                                                    LOGI("[dispatchCenter - ACC Bypass] Vehicle %p blocked by %p (dist=%.1f, speed=%.2f). Smooth detour nudge (side=%.1f) by 1.8m side, 0.8m forward.", 
+                                                                                         veh, other_veh, cop_dist, speed, side_sign);
+                                                                                }
+                                                                                break; // Handle one roadblock vehicle per tick to avoid jitter
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // =====================================================================
+                                            // 🔥 [dispatchCenter - Fire Source Detection & Avoidance] 火源自动检测与避让系统
+                                            // =====================================================================
+                                            if (g_FireManager && g_FindNearestFire) {
+                                                void* nearest_fire = g_FindNearestFire(g_FireManager, current_pos, true, true);
+                                                if (nearest_fire) {
+                                                    CVector fire_pos;
+                                                    if (get_fire_position(nearest_fire, fire_pos)) {
+                                                        float fx = fire_pos.x - current_pos.x;
+                                                        float fy = fire_pos.y - current_pos.y;
+                                                        float fz = fire_pos.z - current_pos.z;
+                                                        float fire_dist = sqrtf(fx * fx + fy * fy + fz * fz);
+
+                                                        if (fire_dist < 15.0f) {
+                                                            // A. 被火源包围/受困紧急逃生 (距离过近且处于低速/停滞状态)
+                                                            if (fire_dist < 6.5f && speed < 2.0f) {
+                                                                if (!vector_contains(vehicles_emptied_snapshot, veh)) {
+                                                                    if (g_GetCarToGoToCoors) {
+                                                                        g_GetCarToGoToCoors(veh, &current_pos, 4, false); // 瞬间急刹
+                                                                    }
+                                                                    if (g_TellOccupantsToLeaveCar) {
+                                                                        g_TellOccupantsToLeaveCar(veh); // 强令离开，防烧死
+                                                                    }
+                                                                    if (g_VehicleInflictDamage) {
+                                                                        g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, current_pos);
+                                                                    }
+                                                                    vehicles_emptied_snapshot.push_back(veh);
+                                                                    pending_vehicles_emptied.push_back(veh);
+                                                                    if (veh == g_active_crime.spawned_vehicle) {
+                                                                        g_active_crime.occupants_ordered_out = true;
+                                                                    }
+                                                                    LOGW("🔥 [dispatchCenter - FireEmergencyExit] TRAPPED BY FIRE! Vehicle %p is too close to fire (dist=%.1f, speed=%.2f). Safe bulk exit triggered!", veh, fire_dist, speed);
+                                                                }
+                                                            } 
+                                                            // B. 正常行驶中火源主动避让 (火源处于行进路线上)
+                                                            else {
+                                                                float dot_p = fx * dir_x + fy * dir_y + fz * dir_z;
+                                                                if (dot_p > 0.0f && dot_p < 15.0f) { // 火源在车头15米内
+                                                                    float lat_dist_sq = (fire_dist * fire_dist) - (dot_p * dot_p);
+                                                                    if (lat_dist_sq < 25.0f) { // 横向偏离在5.0米内 (直接物理阻挡)
+                                                                        // 计算垂直向量决定往哪侧闪避
+                                                                        float lx = -dir_y;
+                                                                        float ly = dir_x;
+                                                                        float side_dot = fx * lx + fy * ly;
+                                                                        float side_sign = (side_dot > 0.0f) ? -1.0f : 1.0f; // 避开火源那一侧
+
+                                                                        // 计算安全的避让偏离点并微调位置重设 autopilot
+                                                                        bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                        float side_nudge = is_bike ? 2.5f : 5.5f;
+                                                                        float height_lift = is_bike ? 0.05f : 0.0f;
+                                                                        CVector detour_pos = {
+                                                                            current_pos.x + lx * side_sign * side_nudge - dir_x * 1.5f,
+                                                                            current_pos.y + ly * side_sign * side_nudge - dir_y * 1.5f,
+                                                                            current_pos.z + height_lift
+                                                                        };
+
+                                                                        set_entity_pos(veh, detour_pos);
+                                                                        if (is_bike) {
+                                                                            stabilize_motorcycle(veh);
+                                                                        }LOGW("🔥 [dispatchCenter - FireAvoidanceDetour] Vehicle %p blocked by fire (dist=%.1f) in front. Detouring to safe side (side_sign=%.1f).", veh, fire_dist, side_sign);
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // Double-insurance stuck detection: low speed OR very low physical physical movement distance in 1 sec (crucial for narrow U-Turns)
+                                            if (speed < 0.8f || dist_moved < 1.2f) {
+                                                if (tracker.stuck_since == 0) {
+                                                    tracker.stuck_since = now_time;
+                                                }
+                                            } else {
+                                                tracker.stuck_since = 0; // Moving normally, reset stuck timer
+                                            }
+
+                                            tracker.last_pos = current_pos;
+                                            tracker.last_check_time = now_time;
+                                            
+                                            stuck_vehicles_snapshot[stuck_idx].second = tracker; // Local sync
+                                            pending_stuck_vehicles.push_back({veh, tracker});
+                                        }
+                                    }
+
+                                    // 卡死 3.5 秒以上，且距离上一次干预过去 6 秒以上，触发干预
+                                    // =====================================================================
+                                    // [Multi-Stage Unstucking System]: Water escape, stage 1 nudge, stage 2 warp.
+                                    // =====================================================================
+                                    float dx_v = target_crime_pos.x - current_pos.x;
+                                    float dy_v = target_crime_pos.y - current_pos.y;
+                                    float dz_v = target_crime_pos.z - current_pos.z;
+                                    float dist_v = sqrtf(dx_v * dx_v + dy_v * dy_v + dz_v * dz_v);
+
+                                    int64_t stuck_duration = (tracker.stuck_since > 0) ? (now_time - tracker.stuck_since) : 0;
+
+                                    // A. Predictive/Active Water Rescue
+                                    bool is_water_stuck = (current_pos.z < 1.0f && dist_v > 15.0f); 
+                                    if (is_water_stuck && !vector_contains(vehicles_emptied_snapshot, veh)) {
+                                        if (g_VehicleInflictDamage) {
+                                            g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, current_pos);
+                                        }
+                                        vehicles_emptied_snapshot.push_back(veh);
+                                        pending_vehicles_emptied.push_back(veh);
+                                        if (veh == g_active_crime.spawned_vehicle) {
+                                            g_active_crime.occupants_ordered_out = true;
+                                        }
+                                        LOGW("[dispatchCenter - WaterAvoidance] Vehicle %p at extreme low sea level (Z=%.2f). Emergency bulk exit!", veh, current_pos.z);
+                                    }
+
+                                    // B. Multi-Stage Intervention Trigger Decision
+                                    bool trigger_stage1 = false;
+                                    bool trigger_stage2 = false;
+
+                                    bool cop_visible = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
+
+                                    if (stuck_duration >= 7000 && !cop_visible && dist_v > 40.0f) {
+                                        trigger_stage2 = true;
+                                    } else if (stuck_duration > 3500) {
+                                        if (now_time - tracker.last_intervention_time > 6000) {
+                                            trigger_stage1 = true;
+                                        }
+                                    }
+
+                                    if (trigger_stage2) {
+                                        tracker.last_intervention_time = now_time;
+                                        tracker.stuck_since = 0; // Reset stuck timer on successful teleport
+
+                                        if (found_stuck) {
+                                            stuck_vehicles_snapshot[stuck_idx].second = tracker;
+                                        } else {
+                                            for (auto& item : stuck_vehicles_snapshot) {
+                                                if (item.first == veh) {
+                                                    item.second = tracker;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        pending_stuck_vehicles.push_back({veh, tracker});
+
+                                        float warp_factor = 25.0f / dist_v;
+                                        if (warp_factor > 0.8f) warp_factor = 0.5f; 
+                                        bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                        float height_offset = is_bike ? 0.15f : 0.8f;
+                                        CVector warp_pos = {
+                                            current_pos.x + dx_v * warp_factor,
+                                            current_pos.y + dy_v * warp_factor,
+                                            current_pos.z + dz_v * warp_factor + height_offset
+                                        };
+                                        
+                                        set_entity_pos(veh, warp_pos);
+                                        if (is_bike) {
+                                            stabilize_motorcycle(veh);
+                                        }
+                                        command_vehicle_ai(veh, target_crime_pos, dist_v);
+                                        LOGI("[dispatchCenter - Stage 2 Warp] Teleported vehicle %p forward 25m to break deadlock. (visible=%d, stuck_duration=%lld ms)", 
+                                             veh, cop_visible, (long long)stuck_duration);
+                                    }
+                                    else if (trigger_stage1) {
+                                        tracker.last_intervention_time = now_time;
+
+                                        if (found_stuck) {
+                                            stuck_vehicles_snapshot[stuck_idx].second = tracker;
+                                        } else {
+                                            for (auto& item : stuck_vehicles_snapshot) {
+                                                if (item.first == veh) {
+                                                    item.second = tracker;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        pending_stuck_vehicles.push_back({veh, tracker});
+
+                                        LOGI("[dispatchCenter - Stage 1 Nudge] Stuck rescue (Stage 1) initiated for %p (stuck_duration=%lld ms)...", veh, (long long)stuck_duration);
+
+                                        // 1. Temporarily disable stuck route section within 20m
+                                        if (g_ThePaths && g_SwitchRoadsOffInArea) {
+                                            g_SwitchRoadsOffInArea(
+                                                g_ThePaths,
+                                                current_pos.x - 20.0f, current_pos.y - 20.0f, current_pos.z - 8.0f,
+                                                current_pos.x + 20.0f, current_pos.y + 20.0f, current_pos.z + 8.0f,
+                                                true, true, false
+                                            );
+                                            pending_temp_closures.push_back({current_pos, 20.0f, now_time + 15000});
+                                        }
+
+                                        // 2. Clear traffic obstacles within 15m
+                                        if (g_ms_pVehiclePool && g_GetPoolVehicle) {
+                                            void* v_pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+                                            if (v_pool) {
+                                                char* v_byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(v_pool) + 8);
+                                                int v_size = *reinterpret_cast<int*>(reinterpret_cast<char*>(v_pool) + 16);
+                                                if (v_byte_map) {
+                                                    for (int j = 0; j < v_size; j++) {
+                                                        signed char v_flag = v_byte_map[j];
+                                                        if (v_flag >= 0) {
+                                                            int v_handle = (j << 8) | v_flag;
+                                                            void* other_veh = g_GetPoolVehicle(v_handle);
+                                                            if (other_veh && other_veh != veh && is_vehicle_pointer_valid(other_veh)) {
+                                                                bool is_other_cop = vector_contains(vehicles_ordered_to_scene_snapshot, other_veh) || 
+                                                                                    vector_contains(vehicles_siren_awakened_snapshot, other_veh) || 
+                                                                                    other_veh == g_active_crime.spawned_vehicle;
+                                                                if (!is_other_cop) {
+                                                                    CVector other_pos = get_entity_pos(other_veh);
+                                                                    float ov_dx = other_pos.x - current_pos.x;
+                                                                    float ov_dy = other_pos.y - current_pos.y;
+                                                                    float ov_dz = other_pos.z - current_pos.z;
+                                                                    float ov_dist = sqrtf(ov_dx * ov_dx + ov_dy * ov_dy + ov_dz * ov_dz);
+
+                                                                    if (ov_dist < 15.0f) {
+                                                                        bool is_visible = is_pos_visible_to_player_camera(other_pos);
+                                                                        if (!is_visible) {
+                                                                            CVector far_away = {other_pos.x, other_pos.y, other_pos.z - 50.0f};
+                                                                            set_entity_pos(other_veh, far_away);
+                                                                            LOGI("   +- Traffic Blockage Cleared (Unseen): Teleported vehicle %p underground", other_veh);
+                                                                        } else {
+                                                                            LOGI("   +- Traffic Blockage Skipped (Seen): Avoid visible popping, waiting for player to look away");
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        // 3. Reverse backing nudge if visible to pull away from obstacles, or forward warp if unseen
+                                        if (dist_v > 5.0f) {
+                                            CVector nudged_pos;
+                                                                                         if (cop_visible) {
+                                                                                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                             // Pull away backwards! Calculate current forward vector from matrix
+                                                                                             float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;
+                                                                                             if (g_GetMatrix) {
+                                                                                                 CMatrix* mat = g_GetMatrix(veh);
+                                                                                                 if (mat) {
+                                                                                                     f_x = mat->up_x;
+                                                                                                     f_y = mat->up_y;
+                                                                                                     f_z = mat->up_z;
+                                                                                                 }
+                                                                                             }
+                                                                                             float f_len = sqrtf(f_x * f_x + f_y * f_y + f_z * f_z);
+                                                                                             if (f_len > 0.01f) {
+                                                                                                 f_x /= f_len; f_y /= f_len; f_z /= f_len;
+                                                                                             } else {
+                                                                                                 f_x = 0.0f; f_y = 1.0f; f_z = 0.0f;
+                                                                                             }
+                                                                                             // Nudge backwards by 3.5 meters, lift by 0.60m or 0.12m for bike
+                                                                                             float height_lift = is_bike ? 0.12f : 0.60f;
+                                                                                             nudged_pos.x = current_pos.x - f_x * 3.5f;
+                                                                                             nudged_pos.y = current_pos.y - f_y * 3.5f;
+                                                                                             nudged_pos.z = current_pos.z + height_lift;
+                                                                                             LOGI("   +- Nudged vehicle %p BACKWARDS 3.5m and elevated %.2fm to pull away from obstacles (visible).", veh, height_lift);
+                                                                                         } else {
+                                                                                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                             // Unseen: Nudge towards destination forward by 12.0m to cross walls quickly
+                                                                                             float nx = dx_v / dist_v;
+                                                                                             float ny = dy_v / dist_v;
+                                                                                             float nz = dz_v / dist_v;
+                                                                                             float height_lift = is_bike ? 0.15f : 0.75f;
+                                                                                             nudged_pos.x = current_pos.x + nx * 12.0f;
+                                                                                             nudged_pos.y = current_pos.y + ny * 12.0f;
+                                                                                             nudged_pos.z = current_pos.z + nz * 0.1f + height_lift;
+                                                                                             LOGI("   +- Nudged vehicle %p FORWARD 12.0m (unseen warp) and elevated %.2fm to bypass obstacles.", veh, height_lift);
+                                                                                         }
+
+                                                                                         bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                                                                         
+                                                                                         set_entity_pos(veh, nudged_pos);
+                                                                                         if (is_bike) {
+                                                                                             stabilize_motorcycle(veh);
+                                                                                         }
+                                                                                         
+                                                                                         command_vehicle_ai(veh, target_crime_pos, dist_v);}
+                                    }
+                                }
+
+                                if (!already_dispatched && active_vehicles_count >= max_vehicles) {
+                                    continue;
+                                }
+
+                                // 1. 命令车辆驶向现场（仅触发一次）
+                                if (!vector_contains(vehicles_emptied_snapshot, veh) && !vector_contains(vehicles_ordered_to_scene_snapshot, veh) && is_vehicle_occupied_by_driver(veh)) {
+                                    command_vehicle_ai(veh, target_crime_pos, v_dist);
+                                    vehicles_ordered_to_scene_snapshot.push_back(veh); // 局部同步
+                                    pending_vehicles_ordered_to_scene.push_back(veh);
+
+                                    if (!already_dispatched) {
+                                        counted_vehicles.push_back(veh);
+                                        active_vehicles_count++;
+                                        already_dispatched = true;
+                                    }
+                                    LOGI("Vehicle order sent (dist=%.1f): Commanded vehicle %p to drive to scene (active_vehicles=%d/%d)", 
+                                         v_dist, veh, active_vehicles_count, max_vehicles);
+                                }
+
+                                // 2. 动态警笛唤醒
+                                if (!vector_contains(vehicles_emptied_snapshot, veh) && v_dist < 90.0f && !vector_contains(vehicles_siren_awakened_snapshot, veh)) {
+                                    if (g_GetCarToGoToCoors) {
+                                        g_GetCarToGoToCoors(veh, &target_crime_pos, 0, false);
+                                    }
+                                    if (g_VehicleInflictDamage) {
+                                        g_VehicleInflictDamage(veh, reinterpret_cast<CEntity*>(target_criminal), WEAPON_UNARMED, 0.0f, veh_pos);
+                                    }
+                                    vehicles_siren_awakened_snapshot.push_back(veh); // 局部同步
+                                    pending_vehicles_siren_awakened.push_back(veh);
+
+                                    if (!already_dispatched) {
+                                        counted_vehicles.push_back(veh);
+                                        active_vehicles_count++;
+                                        already_dispatched = true;
+                                    }
+                                    LOGI("Vehicle siren awakened (dist=%.1f): Reset autopilot mission & Inflicted physical 0-damage (active_vehicles=%d/%d)", 
+                                         v_dist, active_vehicles_count, max_vehicles);
+                                }
+                            }
+                        }
+                        continue; // 车辆内的人跳过任务指派，等待其下车
+                    }
+
+                    // 地面警员只在 70m 内响应（保持最高效追杀半径）
+                    if (dist_sq > 70.0f * 70.0f) {
+                        continue;
+                    }
+
+                    // =====================================================================
+                    // 地面警员的事件驱动型分派调度与高频限流控制 (3 秒限频 & 15 秒存留状态查询)
+                    // =====================================================================
+                    int64_t last_assign = 0;
+                    auto key_assign = std::make_pair(ped, target_criminal);
+                    for (const auto& item : cop_attack_assign_time_snapshot) {
+                        if (item.first == key_assign) {
+                            last_assign = item.second;
+                            break;
+                        }
+                    }
+
+                    bool already_targeting = false;
+                    if (g_GetWeaponLockOnTarget && g_GetWeaponLockOnTarget(ped) == reinterpret_cast<CEntity*>(target_criminal)) {
+                        already_targeting = true;
+                    }
+
+                    // 提前确定分配的目标武器，判断是否是近战武器，用于高频打断防护
+                    bool is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
+                    eWeaponType target_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
+                    bool is_melee = (target_weapon == WEAPON_NIGHTSTICK || target_weapon == WEAPON_UNARMED || target_weapon < 22);
+
+                    // =====================================================================
+                    // 🚀 【核心修复】动态战术武器切换逻辑（针对已锁定目标/已处于响应的警员）
+                    // =====================================================================
+                    bool is_assigned_or_targeting = already_targeting || (now_ms() - last_assign < 15000);
+                    if (is_assigned_or_targeting) {
+                        int64_t last_armed = 0;
+                        for (const auto& item : armed_cops_time_snapshot) {
+                            if (item.first == ped) {
+                                last_armed = item.second;
+                                break;
+                            }
+                        }
+
+                        eWeaponType last_assigned_weapon = WEAPON_UNARMED;
+                        for (const auto& item : cop_assigned_weapon_snapshot) {
+                            if (item.first == ped) {
+                                last_assigned_weapon = item.second;
+                                break;
+                            }
+                        }
+
+                        // 如果是要切成手枪，而当前又是警棍/无武器，则说明是紧急枪械升级，必须强行无视 1.5 秒冷却，确保瞬间切枪
+                        bool is_upgrading_to_firearm = (target_weapon == WEAPON_PISTOL && last_assigned_weapon != WEAPON_PISTOL);
+                        if (now_ms() - last_armed > 1500 || is_upgrading_to_firearm) {
+                            if (target_weapon != last_assigned_weapon) {
+                                if (g_GiveWeapon && g_SetCurrentWeapon) {
+                                    g_GiveWeapon(ped, target_weapon, 9999, true);
+                                    g_SetCurrentWeapon(ped, target_weapon);
+                                }
+                                LOGI("🔄 [Weapon Dynamic Switch] Ground cop %p switched weapon from %d to %d (dist=%.1f, bypass_cooldown=%d)", 
+                                     ped, last_assigned_weapon, target_weapon, sqrtf(dist_sq), is_upgrading_to_firearm);
+
+                                // 局部同步更新
+                                bool found_w = false;
+                                for (auto& item : cop_assigned_weapon_snapshot) {
+                                    if (item.first == ped) {
+                                        item.second = target_weapon;
+                                        found_w = true;
+                                        break;
+                                    }
+                                }
+                                if (!found_w) {
+                                    cop_assigned_weapon_snapshot.push_back({ped, target_weapon});
+                                }
+                                pending_cop_assigned_weapon.push_back({ped, target_weapon});
+
+                                // 更新上次武装时间
+                                bool found_t = false;
+                                for (auto& item : armed_cops_time_snapshot) {
+                                    if (item.first == ped) {
+                                        item.second = now_ms();
+                                        found_t = true;
+                                        break;
+                                    }
+                                }
+                                if (!found_t) {
+                                    armed_cops_time_snapshot.push_back({ped, now_ms()});
+                                }
+                                pending_armed_cops_time.push_back({ped, now_ms()});
+                            }
+                        }
+                    }
+
+                    // 【核心近战防抖限流控制】：由于近战没有 LockOnTarget 瞄准状态，already_targeting 始终为 false。
+                    // 因而，对近战警员采用 15 秒（在场存留时限）长限流拦截；枪械警员继续保持 3 秒心跳唤醒。这可确保近战挥舞不被 0 伤物理受击打断！
+                    if (already_targeting || (now_ms() - last_assign < (is_melee ? 15000 : 3000))) {
+                        continue; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
+                    }
+
+                    // 40m 内的野生巡警纳入响应
+                    bool is_extremely_nearby = false;
+                    {
+                        float p_dist = 99999.0f;
+                        if (g_FindPlayerCoors) {
+                            CVector player_pos = g_FindPlayerCoors(0);
+                            float p_dx = cop_pos.x - player_pos.x;
+                            float p_dy = cop_pos.y - player_pos.y;
+                            float p_dz = cop_pos.z - player_pos.z;
+                            p_dist = sqrtf(p_dx * p_dx + p_dy * p_dy + p_dz * p_dz);
+                        }
+                        float c_dist = sqrtf(dist_sq);
+                        if (c_dist < 40.0f || p_dist < 40.0f) {
+                            is_extremely_nearby = true;
+                        }
+                    }
+
+                    // 判定是否是已经响应过的地面警员（使用 15 秒内分派或正在瞄准）
+                    bool already_assigned_foot_cop = already_targeting || (now_ms() - last_assign < 15000);
+                    if (!already_assigned_foot_cop && active_foot_cops_count >= max_foot_cops) {
+                        // 超过地面警员配额上限且在现场目击范围 (30m) 之外，直接跳过，使其优雅走过
+                        continue;
+                    }
+
+                    // 避免穿帮音效：如果当前活跃案件是枪击案 (is_firearm == true)，听觉自然唤醒。但极近距离强行唤醒。
+                    if (!is_extremely_nearby && g_crime_active.load() && g_active_crime.is_firearm && !g_active_crime.cancelled) {
+                        if (g_FindPlayerCoors) {
+                            CVector player_pos = g_FindPlayerCoors(0);
+                            float p_dx = cop_pos.x - player_pos.x;
+                            float p_dy = cop_pos.y - player_pos.y;
+                            float p_dz = cop_pos.z - player_pos.z;
+                            float p_dist = sqrtf(p_dx * p_dx + p_dy * p_dy + p_dz * p_dz);
+                            if (p_dist < 45.0f) {
+                                continue;
+                            }
+                        }
+                    }
+
+                    // =====================================================================
+                    // 智能双保险唤醒方案（假枪声为主，0 伤害物理注入为兜底备用）
+                    // =====================================================================
+                    bool dispatched_via_noise = false;
+                    is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
+                    eWeaponType chosen_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
+
+                    // 一律使用虚拟枪声事件进行静默、无穿帮唤醒（已集成 GMalloc，完全消除闪退风险）
+                    if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
+                        void* event_group = get_ped_event_group(ped);
+                        if (event_group) {
+                            alignas(16) char event_buf[256];
+                            memset(event_buf, 0, sizeof(event_buf));
+                            CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
+                            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+                            
+                            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(target_criminal), start_pos, target_pos, false);
+                            g_CEventGroup_Add(event_group, event_buf, false);
+                            g_CEventGunShot_dtor(event_buf);
+                            
+                            // 动态赋予最优战术武器
+                            if (g_GiveWeapon && g_SetCurrentWeapon) {
+                                g_GiveWeapon(ped, chosen_weapon, 9999, true);
+                                g_SetCurrentWeapon(ped, chosen_weapon);
+                            }
+
+                            // Register ground cop to ECS
+                            {
+                                auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
+                                if (!cop_comp) {
+                                    cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
+                                }
+                                auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
+                                if (!combat_comp) {
+                                    combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(ped);
+                                }
+                                if (combat_comp) {
+                                    combat_comp->target_entity = target_criminal;
+                                }
+                            }
+                            
+                            bool found_assign = false;
+                            for (auto& item : cop_attack_assign_time_snapshot) {
+                                if (item.first == key_assign) {
+                                    item.second = now_ms();
+                                    found_assign = true;
+                                    break;
+                                }
+                            }
+                            if (!found_assign) {
+                                cop_attack_assign_time_snapshot.push_back({key_assign, now_ms()});
+                            }
+                            pending_cop_attack_assign_time.push_back({key_assign, now_ms()});
+
+                            // 同时记录到分配武器
+                            bool found_w = false;
+                            for (auto& item : cop_assigned_weapon_snapshot) {
+                                if (item.first == ped) {
+                                    item.second = chosen_weapon;
+                                    found_w = true;
+                                    break;
+                                }
+                            }
+                            if (!found_w) {
+                                cop_assigned_weapon_snapshot.push_back({ped, chosen_weapon});
+                            }
+                            pending_cop_assigned_weapon.push_back({ped, chosen_weapon});
+
+                            // 更新上次武装时间
+                            bool found_t = false;
+                            for (auto& item : armed_cops_time_snapshot) {
+                                if (item.first == ped) {
+                                    item.second = now_ms();
+                                    found_t = true;
+                                    break;
+                                }
+                            }
+                            if (!found_t) {
+                                armed_cops_time_snapshot.push_back({ped, now_ms()});
+                            }
+                            pending_armed_cops_time.push_back({ped, now_ms()});
+
+                            if (!already_assigned_foot_cop) {
+                                active_foot_cops_count++;
+                                already_assigned_foot_cop = true;
+                            }
+                            LOGI("🎯 [Virtual Sound Event] Dispatched logic sound event (Weapon=%d) to cop %p towards criminal %p (active_foot_cops=%d/%d)", 
+                                 chosen_weapon, ped, target_criminal, active_foot_cops_count, max_foot_cops);
+                            dispatched_via_noise = true;
+                        }
+                    }
+
+                    // 平滑降级
+                    if (!dispatched_via_noise && g_orig_generate_damage_event) {
+                        if (g_GiveWeapon && g_SetCurrentWeapon) {
+                            g_GiveWeapon(ped, chosen_weapon, 9999, true);
+                            g_SetCurrentWeapon(ped, chosen_weapon);
+                        }
+                        g_orig_generate_damage_event(ped, reinterpret_cast<CEntity*>(target_criminal), chosen_weapon, 0, 3, 0);
+
+                        // Register ground cop to ECS
+                        {
+                            auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
+                            if (!cop_comp) {
+                                cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
+                            }
+                            auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
+                            if (!combat_comp) {
+                                combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(ped);
+                            }
+                            if (combat_comp) {
+                                combat_comp->target_entity = target_criminal;
+                            }
+                        }
+                        
+                        bool found_assign = false;
+                        for (auto& item : cop_attack_assign_time_snapshot) {
+                            if (item.first == key_assign) {
+                                item.second = now_ms();
+                                found_assign = true;
+                                break;
+                            }
+                        }
+                        if (!found_assign) {
+                            cop_attack_assign_time_snapshot.push_back({key_assign, now_ms()});
+                        }
+                        pending_cop_attack_assign_time.push_back({key_assign, now_ms()});
+
+                        // 同时记录到分配武器
+                        bool found_w = false;
+                        for (auto& item : cop_assigned_weapon_snapshot) {
+                            if (item.first == ped) {
+                                item.second = chosen_weapon;
+                                found_w = true;
+                                break;
+                            }
+                        }
+                        if (!found_w) {
+                            cop_assigned_weapon_snapshot.push_back({ped, chosen_weapon});
+                        }
+                        pending_cop_assigned_weapon.push_back({ped, chosen_weapon});
+
+                        // 更新上次武装时间
+                        bool found_t = false;
+                        for (auto& item : armed_cops_time_snapshot) {
+                            if (item.first == ped) {
+                                item.second = now_ms();
+                                found_t = true;
+                                break;
+                            }
+                        }
+                        if (!found_t) {
+                            armed_cops_time_snapshot.push_back({ped, now_ms()});
+                        }
+                        pending_armed_cops_time.push_back({ped, now_ms()});
+
+                        if (!already_assigned_foot_cop) {
+                            active_foot_cops_count++;
+                            already_assigned_foot_cop = true;
+                        }
+                        LOGI("⚠️ [Fallback 0-Damage] Inflicted 0 damage (Weapon=%d) to cop %p by criminal %p (active_foot_cops=%d/%d)", 
+                             chosen_weapon, ped, target_criminal, active_foot_cops_count, max_foot_cops);
+                    }
+                }
+            }
+        }
+    }
+
+    // =====================================================================
+    // 批量提交状态后释放锁
+    // =====================================================================
+    if (!pending_armed_cops_time.empty()) {
+        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
+        for (const auto& item : pending_armed_cops_time) {
+            g_armed_cops_time[item.first] = item.second;
+        }
+    }
+    if (!pending_cop_assigned_weapon.empty()) {
+        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
+        for (const auto& item : pending_cop_assigned_weapon) {
+            g_cop_assigned_weapon[item.first] = item.second;
+        }
+    }
+    if (!pending_dispatched_vehicles_time.empty()) {
+        std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
+        for (const auto& item : pending_dispatched_vehicles_time) {
+            g_dispatched_vehicles_time[item.first] = item.second;
+        }
+    }
+    if (!pending_vehicles_emptied.empty()) {
+        std::lock_guard<std::mutex> lock(g_vehicles_emptied_mutex);
+        for (void* veh : pending_vehicles_emptied) {
+            g_vehicles_emptied.insert(veh);
+        }
+    }
+    if (!pending_vehicles_ordered_to_scene.empty()) {
+        std::lock_guard<std::mutex> lock(g_vehicles_mutex);
+        for (void* veh : pending_vehicles_ordered_to_scene) {
+            g_vehicles_ordered_to_scene.insert(veh);
+        }
+    }
+    if (!pending_vehicles_siren_awakened.empty()) {
+        std::lock_guard<std::mutex> lock(g_vehicles_siren_awakened_mutex);
+        for (void* veh : pending_vehicles_siren_awakened) {
+            g_vehicles_siren_awakened.insert(veh);
+        }
+    }
+    if (!pending_stuck_vehicles.empty()) {
+        std::lock_guard<std::mutex> lock(g_stuck_vehicles_mutex);
+        for (const auto& item : pending_stuck_vehicles) {
+            g_stuck_vehicles[item.first] = item.second;
+        }
+    }
+    if (!pending_cop_attack_assign_time.empty()) {
+        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+        for (const auto& item : pending_cop_attack_assign_time) {
+            g_cop_attack_assign_time[item.first] = item.second;
+        }
+    }
+    if (!pending_temp_closures.empty()) {
+        std::lock_guard<std::mutex> lock(g_temp_closures_mutex);
+        for (const auto& item : pending_temp_closures) {
+            g_temp_road_closures.push_back(item);
+        }
+    }
+}
+void make_cops_attack_criminal_immediate(CPed* criminal) {
+    make_cops_attack_criminal(criminal);
+}
+
+bool is_specific_criminal_armed_with_firearm(CPed* target_criminal) {
+    if (!target_criminal) return false;
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    if (g_crime_active.load() && !g_active_crime.cancelled) {
+        auto& list = g_active_crime.consolidated_criminals;
+        auto& is_fire_list = g_active_crime.criminal_is_firearm;
+        for (size_t idx = 0; idx < list.size(); ++idx) {
+            if (list[idx] == target_criminal) {
+                if (idx < is_fire_list.size()) {
+                    return is_fire_list[idx];
+                }
+            }
+        }
+        if (g_active_crime.criminal == target_criminal) {
+            return g_active_crime.is_firearm;
+        }
+    }
+    return false;
+}
+
+void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update) {
+    if (!cop || !is_ped_pointer_valid_safe(cop) || !criminal || !is_ped_pointer_valid_safe(criminal)) return;
+    if (g_IsAlive && !g_IsAlive(cop)) return;
+    if (g_GetPedType && g_GetPedType(cop) != PED_TYPE_COP) return;
+
+    // Register cop to ECS and set target in CombatComponent
+    {
+        auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+        if (!cop_comp) {
+            cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(cop, cop);
+        }
+        auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
+        if (!combat_comp) {
+            combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(cop);
+        }
+        if (combat_comp) {
+            combat_comp->target_entity = criminal;
+        }
+    }
+
+    // Determine weapon based on specific threat
+    bool is_firearm = is_specific_criminal_armed_with_firearm(criminal);
+    eWeaponType target_weapon = determine_weapon_for_cop(cop, criminal, is_firearm);
+
+    // Get last assigned weapon
+    eWeaponType last_assigned_weapon = WEAPON_UNARMED;
+    {
+        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
+        auto it = g_cop_assigned_weapon.find(cop);
+        if (it != g_cop_assigned_weapon.end()) {
+            last_assigned_weapon = it->second;
+        }
+    }
+
+    int64_t last_armed = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
+        auto it = g_armed_cops_time.find(cop);
+        if (it != g_armed_cops_time.end()) {
+            last_armed = it->second;
+        }
+    }
+
+    bool is_upgrading = (target_weapon == WEAPON_PISTOL && last_assigned_weapon != WEAPON_PISTOL);
+    bool should_switch = force_weapon_update || is_upgrading || (target_weapon != last_assigned_weapon && (now_ms() - last_armed > 1500));
+
+    if (should_switch) {
+        if (g_GiveWeapon && g_SetCurrentWeapon) {
+            g_GiveWeapon(cop, target_weapon, 9999, true);
+            g_SetCurrentWeapon(cop, target_weapon);
+        }
+        LOGI("🎯 [Event-Driven Single Cop Weapon Switch] Cop %p switched weapon to %d (perp=%p, force=%d)", cop, (int)target_weapon, criminal, force_weapon_update);
+        
+        {
+            std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
+            g_cop_assigned_weapon[cop] = target_weapon;
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
+            g_armed_cops_time[cop] = now_ms();
+        }
+    }
+
+    bool sound_sent = false;
+    if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
+        void* event_group = get_ped_event_group(cop);
+        if (event_group) {
+            alignas(16) char event_buf[256];
+            memset(event_buf, 0, sizeof(event_buf));
+            CVector cop_pos = get_entity_pos(cop);
+            CVector start_pos = cop_pos;
+            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+            
+            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(criminal), start_pos, target_pos, false);
+            g_CEventGroup_Add(event_group, event_buf, false);
+            g_CEventGunShot_dtor(event_buf);
+            sound_sent = true;
+            LOGI("🎯 [Event-Driven Single Cop Sound Dispatch] Sent gunshot sound to cop %p towards criminal %p", cop, criminal);
+        }
+    }
+
+    if (!sound_sent && g_orig_generate_damage_event) {
+        g_orig_generate_damage_event(cop, reinterpret_cast<CEntity*>(criminal), target_weapon, 0, 3, 0);
+        LOGI("🎯 [Event-Driven Single Cop Fallback] Inflicted 0-damage to cop %p by criminal %p", cop, criminal);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+        g_cop_attack_assign_time[{cop, criminal}] = now_ms();
+    }
+}
+
+void update_cops_targeting_criminal_event_driven(CPed* criminal) {
+    if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
+
+    std::vector<CPed*> cops_to_update;
+    int64_t cur_time = now_ms();
+
+    {
+        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+        for (const auto& item : g_cop_attack_assign_time) {
+            if (item.first.second == criminal) {
+                if (cur_time - item.second < 20000) {
+                    cops_to_update.push_back(item.first.first);
+                }
+            }
+        }
+    }
+
+    for (CPed* cop : cops_to_update) {
+        make_single_cop_attack_criminal(cop, criminal, true);
+    }
+}
+
+void update_primary_criminal_by_threat() {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    if (!g_crime_active.load() || g_active_crime.cancelled) {
+        return;
+    }
+
+    CPed* best_criminal = nullptr;
+    ecs::CriminalThreatLevel highest_threat = ecs::CriminalThreatLevel::UNARMED_INACTIVE;
+
+    for (CPed* ped : g_active_crime.consolidated_criminals) {
+        if (!ped || !is_ped_pointer_valid_safe(ped)) {
+            continue;
+        }
+        if (g_IsAlive && !g_IsAlive(ped)) {
+            continue;
+        }
+
+        auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(ped);
+        ecs::CriminalThreatLevel threat = ecs::CriminalThreatLevel::UNARMED_INACTIVE;
+        if (crim_comp) {
+            threat = crim_comp->get_threat_level();
+        }
+
+        if (!best_criminal || (int)threat > (int)highest_threat) {
+            best_criminal = ped;
+            highest_threat = threat;
+        } else if ((int)threat == (int)highest_threat) {
+            if (g_active_crime.criminal == ped) {
+                best_criminal = ped;
+            }
+        }
+    }
+
+    if (best_criminal && best_criminal != g_active_crime.criminal) {
+        CPed* old_criminal = g_active_crime.criminal;
+        g_active_crime.criminal = best_criminal;
+        g_tracked_criminal.store(best_criminal);
+
+        LOGI("⚡️ [ECS ThreatPrioritizer] Primary target switched due to threat priority: %p -> %p (Threat: %d)",
+             old_criminal, best_criminal, (int)highest_threat);
+
+        std::vector<CPed*> cops_to_redirect;
+        {
+            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+            int64_t cur_time = now_ms();
+            for (const auto& item : g_cop_attack_assign_time) {
+                if (item.first.second == old_criminal) {
+                    if (cur_time - item.second < 20000) {
+                        cops_to_redirect.push_back(item.first.first);
+                    }
+                }
+            }
+        }
+
+        for (CPed* cop : cops_to_redirect) {
+            make_single_cop_attack_criminal(cop, best_criminal, true);
+        }
+    }
+}
+
+
+
+// =====================================================================
+// Dispatch tick (runs from CTheScripts::Process hook)
+//
+// State machine: IDLE -> TIMING -> ON_SCENE -> CLEANUP
+// =====================================================================
+// 调度状态变量
+static DispatchState g_dispatch_state = STATE_IDLE;
+static int64_t g_timer_start = 0;
+static int g_dispatch_delay_ms = 0;
+static int g_last_cops_killed = 0;
+static int64_t g_on_scene_start = 0;
+static int64_t g_last_tick_time_ms = 0;
+
+static void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime) {
+    if (!crime) return;
+    
+    // 1. 解除封路
+    if (crime->road_closure_active) {
+        if (g_ThePaths && g_SwitchRoadsOffInArea) {
+            CVector center = crime->road_closure_center;
+            g_SwitchRoadsOffInArea(
+                g_ThePaths,
+                center.x - 50.0f, center.y - 50.0f, center.z - 15.0f,
+                center.x + 50.0f, center.y + 50.0f, center.z + 15.0f,
+                false, true, false
+            );
+            crime->road_closure_active = false;
+            LOGI("🚧 [dispatchCenter - Cordon] Lifted road closure for case %llu", (unsigned long long)crime->case_id);
+        }
+    }
+    
+    // 2. 精准擦除当前案件的警车绑定
+    std::lock_guard<std::mutex> lock_emp(g_vehicles_emptied_mutex);
+    std::lock_guard<std::mutex> lock_veh(g_vehicles_mutex);
+    std::lock_guard<std::mutex> lock_dis(g_dispatched_vehicles_time_mutex);
+    std::lock_guard<std::mutex> lock_sc(g_vehicles_siren_awakened_mutex);
+    std::lock_guard<std::mutex> lock_spawn(g_spawned_cop_vehicles_mutex);
+    
+    for (void* veh : crime->case_vehicles) {
+        if (veh) {
+            g_vehicles_emptied.erase(veh);
+            g_vehicles_ordered_to_scene.erase(veh);
+            g_dispatched_vehicles_time.erase(veh);
+            g_vehicles_siren_awakened.erase(veh);
+            
+            auto it = std::find(g_spawned_cop_vehicles.begin(), g_spawned_cop_vehicles.end(), veh);
+            if (it != g_spawned_cop_vehicles.end()) {
+                g_spawned_cop_vehicles.erase(it);
+            }
+        }
+    }
+    crime->case_vehicles.clear();
+    LOGI("📡 [dispatchCenter - GC] Cleaned up vehicles and route closures for case %llu", (unsigned long long)crime->case_id);
+}
+
+// =====================================================================
+// Custom dispatch vehicle spawn wrapper
+// =====================================================================
+static void dispatch_spawn_emergency_car(unsigned int model, CVector pos) {
+    g_is_generating_custom_dispatch.store(true);
+    if (g_ScriptGenEmergencyCar) {
+        g_ScriptGenEmergencyCar(model, pos);
+    } else if (g_GenOneEmergencyCar) {
+        g_GenOneEmergencyCar(model, pos);
+    }
+    g_is_generating_custom_dispatch.store(false);
+}
+
+// =====================================================================
+// Emergency vehicle unstuck / navigation helpers
+// =====================================================================
+std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
+std::mutex g_emergency_stuck_vehicles_mutex;
+
+std::vector<void*> g_emergency_vehicles_emptied;
+std::mutex g_emergency_vehicles_emptied_mutex;
+
+constexpr int PED_TYPE_MEDIC     = 18;
+constexpr int PED_TYPE_FIREMAN   = 19;
+
+static void emergency_vehicles_tick() {
+    if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return;
+
+    void* ped_pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!ped_pool) return;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(ped_pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(ped_pool) + 16);
+    if (!byte_map) return;
+
+    int64_t now_time = now_ms();
+
+    // 1. 定期清理已失效的离车标记
+    {
+        std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+        for (auto it = g_emergency_vehicles_emptied.begin(); it != g_emergency_vehicles_emptied.end(); ) {
+            if (!*it || !is_vehicle_pointer_valid(*it)) {
+                it = g_emergency_vehicles_emptied.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // 2. 遍历 Ped 池，找出医护人员 (18) 与消防员 (19) 的载具
+    std::vector<void*> processed_vehicles; // 避免同一车辆有多个乘员时重复处理
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            if (ped && is_ped_pointer_valid_safe(ped)) {
+                if (g_IsAlive && !g_IsAlive(ped)) {
+                    continue;
+                }
+                int ped_type = g_GetPedType(ped);
+                if (ped_type == PED_TYPE_MEDIC || ped_type == PED_TYPE_FIREMAN) {
+                    void* veh = find_vehicle_of_cop(ped); // 此辅助函数能安全返回 ped 的当前载具
+                    if (veh && is_vehicle_pointer_valid(veh)) {
+                        unsigned int model = get_entity_model_index(veh);
+                        if (model == 416 || model == 407) { // Ambulance or Firetruck
+                            if (std::find(processed_vehicles.begin(), processed_vehicles.end(), veh) != processed_vehicles.end()) {
+                                continue;
+                            }
+                            processed_vehicles.push_back(veh);
+
+                            CVector current_pos = get_entity_pos(veh);
+                            
+                            // 提取车辆当前的朝向向量 (Up Vector)
+                            float dir_x = 0.0f;
+                            float dir_y = 0.0f;
+                            float dir_z = 0.0f;
+                            if (g_GetMatrix) {
+                                CMatrix* mat = g_GetMatrix(veh);
+                                if (mat) {
+                                    dir_x = mat->up_x;
+                                    dir_y = mat->up_y;
+                                    dir_z = mat->up_z;
+                                }
+                            }
+                            float d_len = sqrtf(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z);
+                            if (d_len > 0.01f) {
+                                dir_x /= d_len;
+                                dir_y /= d_len;
+                                dir_z /= d_len;
+                            } else {
+                                dir_x = 0.0f;
+                                dir_y = 1.0f;
+                                dir_z = 0.0f;
+                            }
+
+                            // A. 扶正由于物理倾倒引起的异常 (比如重型消防车侧翻)
+                            if (g_GetMatrix) {
+                                CMatrix* mat = g_GetMatrix(veh);
+                                if (mat && mat->at_z < 0.8f) { // Tilting > 36.8 degrees
+                                    mat->up_x = dir_x;
+                                    mat->up_y = dir_y;
+                                    mat->up_z = 0.0f;
+                                    mat->at_x = 0.0f;
+                                    mat->at_y = 0.0f;
+                                    mat->at_z = 1.0f;
+                                    mat->right_x = dir_y;
+                                    mat->right_y = -dir_x;
+                                    mat->right_z = 0.0f;
+                                    
+                                    CVector upright_pos = {current_pos.x, current_pos.y, current_pos.z + 0.3f};
+                                    set_entity_pos(veh, upright_pos);
+                                    LOGI("🚒🚑 [Emergency Escaper - Stabilize] Uprighted flipped vehicle %p", veh);
+                                }
+                            }
+
+                            // 获取或初始化 StuckTracker
+                            StuckTracker tracker;
+                            bool found_stuck = false;
+                            {
+                                std::lock_guard<std::mutex> stuck_lock(g_emergency_stuck_vehicles_mutex);
+                                auto it = g_emergency_stuck_vehicles.find(veh);
+                                if (it != g_emergency_stuck_vehicles.end()) {
+                                    tracker = it->second;
+                                    found_stuck = true;
+                                }
+                            }
+
+                            if (!found_stuck) {
+                                tracker.last_pos = current_pos;
+                                tracker.last_check_time = now_time;
+                                tracker.stuck_since = 0;
+                                tracker.last_intervention_time = 0;
+                                tracker.spin_count = 0;
+                                tracker.last_dir_x = 0.0f;
+                                tracker.last_dir_y = 0.0f;
+
+                                std::lock_guard<std::mutex> stuck_lock(g_emergency_stuck_vehicles_mutex);
+                                g_emergency_stuck_vehicles[veh] = tracker;
+                            } else {
+                                float time_diff = (now_time - tracker.last_check_time) / 1000.0f;
+                                if (time_diff >= 1.0f) { // 每秒心跳
+                                    float dx_s = current_pos.x - tracker.last_pos.x;
+                                    float dy_s = current_pos.y - tracker.last_pos.y;
+                                    float dz_s = current_pos.z - tracker.last_pos.z;
+                                    float dist_moved = sqrtf(dx_s * dx_s + dy_s * dy_s + dz_s * dz_s);
+                                    float speed = dist_moved / time_diff;
+
+                                    // B. [Proactive Water Escape]：主动防落水溺亡救援
+                                    if (speed >= 3.0f && dist_moved > 0.1f) {
+                                        float lookahead = speed * 1.5f;
+                                        CVector p_pos = {
+                                            current_pos.x + (dx_s / dist_moved) * lookahead,
+                                            current_pos.y + (dy_s / dist_moved) * lookahead,
+                                            current_pos.z + (dz_s / dist_moved) * lookahead
+                                        };
+                                        bool will_fall = (p_pos.z < 1.0f && current_pos.z >= 2.0f);
+                                        if (will_fall) {
+                                            bool already_emptied = false;
+                                            {
+                                                std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+                                                already_emptied = std::find(g_emergency_vehicles_emptied.begin(), g_emergency_vehicles_emptied.end(), veh) != g_emergency_vehicles_emptied.end();
+                                            }
+                                            if (!already_emptied) {
+                                                if (g_TellOccupantsToLeaveCar) {
+                                                    g_TellOccupantsToLeaveCar(veh);
+                                                }
+                                                std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+                                                g_emergency_vehicles_emptied.push_back(veh);
+                                                LOGW("🌊 [Emergency Escaper - Water rescue] Cinematic emergency exit triggered for %p to avoid drowning!", veh);
+                                            }
+                                        }
+                                    }
+
+                                    // C. [Anti-Spin Guard]：反画圆死锁机制
+                                    float cur_dir_x = 0.0f;
+                                    float cur_dir_y = 0.0f;
+                                    if (dist_moved > 0.05f) {
+                                        cur_dir_x = dx_s / dist_moved;
+                                        cur_dir_y = dy_s / dist_moved;
+                                    }
+                                    if (dist_moved > 0.5f) {
+                                        if (tracker.last_dir_x != 0.0f || tracker.last_dir_y != 0.0f) {
+                                            float dir_dot = cur_dir_x * tracker.last_dir_x + cur_dir_y * tracker.last_dir_y;
+                                            if (dir_dot < 0.85f) { // 画圆判断
+                                                tracker.spin_count++;
+                                            } else {
+                                                tracker.spin_count = 0;
+                                            }
+                                        }
+                                        tracker.last_dir_x = cur_dir_x;
+                                        tracker.last_dir_y = cur_dir_y;
+                                    } else {
+                                        tracker.spin_count = 0;
+                                    }
+
+                                    if (tracker.spin_count >= 3) {
+                                        bool is_seen = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
+                                        if (g_GetMatrix) {
+                                            CMatrix* mat = g_GetMatrix(veh);
+                                            if (mat && !is_seen) {
+                                                // 物理旋转 120 度打破惯性
+                                                float new_up_x = mat->up_x * (-0.5f) - mat->up_y * 0.866f;
+                                                float new_up_y = mat->up_x * 0.866f + mat->up_y * (-0.5f);
+                                                float new_right_x = mat->right_x * (-0.5f) - mat->right_y * 0.866f;
+                                                float new_right_y = mat->right_x * 0.866f + mat->right_y * (-0.5f);
+                                                mat->up_x = new_up_x;
+                                                mat->up_y = new_up_y;
+                                                mat->right_x = new_right_x;
+                                                mat->right_y = new_right_y;
+                                            }
+                                        }
+                                        CVector reverse_pos;
+                                        if (is_seen) {
+                                            reverse_pos = {
+                                                current_pos.x - dir_x * 3.5f,
+                                                current_pos.y - dir_y * 3.5f,
+                                                current_pos.z + 0.3f
+                                            };
+                                        } else {
+                                            reverse_pos = {
+                                                current_pos.x - dir_x * 4.5f,
+                                                current_pos.y - dir_y * 4.5f,
+                                                current_pos.z + 0.5f
+                                            };
+                                        }
+                                        set_entity_pos(veh, reverse_pos);
+                                        LOGW("🔄 [Emergency Escaper - Anti-Spin] Circle spinning detected. Applied yaw rotation and nudged reverse (seen=%d)", is_seen);
+                                        tracker.spin_count = 0;
+                                        tracker.last_intervention_time = now_time;
+                                    }
+
+                                    // D. [ACC Unified Fleet Control]：急救车辆智能距离避让，绝对不追尾
+                                    bool car_blocked = false;
+                                    if (g_ms_pVehiclePool && g_GetPoolVehicle) {
+                                        void* v_pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+                                        if (v_pool) {
+                                            char* v_byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(v_pool) + 8);
+                                            int v_size = *reinterpret_cast<int*>(reinterpret_cast<char*>(v_pool) + 16);
+                                            if (v_byte_map) {
+                                                for (int j = 0; j < v_size; j++) {
+                                                    signed char v_flag = v_byte_map[j];
+                                                    if (v_flag >= 0) {
+                                                        int v_handle = (j << 8) | v_flag;
+                                                        void* other_veh = g_GetPoolVehicle(v_handle);
+                                                        if (other_veh && other_veh != veh && is_vehicle_pointer_valid(other_veh)) {
+                                                            CVector other_pos = get_entity_pos(other_veh);
+                                                            float ox = other_pos.x - current_pos.x;
+                                                            float oy = other_pos.y - current_pos.y;
+                                                            float oz = other_pos.z - current_pos.z;
+                                                            float dist_v = sqrtf(ox * ox + oy * oy + oz * oz);
+
+                                                            if (dist_v < 10.0f) {
+                                                                float dot_p = ox * dir_x + oy * dir_y + oz * dir_z;
+                                                                if (dot_p > 0.0f && dot_p < 10.0f) {
+                                                                    float lat_dist_sq = (dist_v * dist_v) - (dot_p * dot_p);
+                                                                    if (lat_dist_sq < 4.84f) { // 横向偏离小于 2.2米
+                                                                        car_blocked = true;
+                                                                        if ((speed < 1.2f || dist_moved < 1.2f) && dist_v < 8.0f) {
+                                                                            // 开启智能偏斜避让
+                                                                            float side_sign = (((uintptr_t)veh) & 1) ? 1.0f : -1.0f;
+                                                                            float lx = -dir_y * side_sign;
+                                                                            float ly = dir_x * side_sign;
+                                                                            CVector detour_pos = {
+                                                                                current_pos.x + lx * 1.8f + dir_x * 0.8f,
+                                                                                current_pos.y + ly * 1.8f + dir_y * 0.8f,
+                                                                                current_pos.z
+                                                                            };
+                                                                            
+                                                                            set_entity_pos(veh, detour_pos);
+                                                                            
+                                                                            LOGI("[Emergency Escaper - ACC Bypass] Detoured blocked vehicle %p", veh);
+                                                                        }
+                                                                        break; // 每秒处理一个避让源
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // E. [Fire Avoidance]：仅对救护车 (Ambulance) 开启火源智能避让。消防车需要逆火而行不避让！
+                                    if (!car_blocked && model == 416 && g_FireManager && g_FindNearestFire) {
+                                        void* nearest_fire = g_FindNearestFire(g_FireManager, current_pos, true, true);
+                                        if (nearest_fire) {
+                                            CVector fire_pos;
+                                            if (get_fire_position(nearest_fire, fire_pos)) {
+                                                float fx = fire_pos.x - current_pos.x;
+                                                float fy = fire_pos.y - current_pos.y;
+                                                float fz = fire_pos.z - current_pos.z;
+                                                float fire_dist = sqrtf(fx * fx + fy * fy + fz * fz);
+
+                                                if (fire_dist < 15.0f) {
+                                                    if (fire_dist < 6.5f && speed < 2.0f) {
+                                                        // 距离过近，强制退出保护
+                                                        bool already_emptied = false;
+                                                        {
+                                                            std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+                                                            already_emptied = std::find(g_emergency_vehicles_emptied.begin(), g_emergency_vehicles_emptied.end(), veh) != g_emergency_vehicles_emptied.end();
+                                                        }
+                                                        if (!already_emptied) {
+                                                            if (g_TellOccupantsToLeaveCar) {
+                                                                g_TellOccupantsToLeaveCar(veh);
+                                                            }
+                                                            std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+                                                            g_emergency_vehicles_emptied.push_back(veh);
+                                                            LOGW("🔥 [Emergency Escaper - Ambulance Fire Exit] Trapped near fire, emergency exit triggered.");
+                                                        }
+                                                    } else {
+                                                        // 正常避火
+                                                        float dot_p = fx * dir_x + fy * dir_y + fz * dir_z;
+                                                        if (dot_p > 0.0f && dot_p < 15.0f) {
+                                                            float lat_dist_sq = (fire_dist * fire_dist) - (dot_p * dot_p);
+                                                            if (lat_dist_sq < 25.0f) {
+                                                                float lx = -dir_y;
+                                                                float ly = dir_x;
+                                                                float side_dot = fx * lx + fy * ly;
+                                                                float side_sign = (side_dot > 0.0f) ? -1.0f : 1.0f;
+
+                                                                CVector detour_pos = {
+                                                                    current_pos.x + lx * side_sign * 5.5f - dir_x * 1.5f,
+                                                                    current_pos.y + ly * side_sign * 5.5f - dir_y * 1.5f,
+                                                                    current_pos.z
+                                                                };
+                                                                
+                                                                set_entity_pos(veh, detour_pos);
+                                                                
+                                                                LOGI("[Emergency Escaper - Ambulance Fire Detour] Detoured around fire source.");
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // F. 双保险卡死检测计时
+                                    if (speed < 0.8f || dist_moved < 1.2f) {
+                                        if (tracker.stuck_since == 0) {
+                                            tracker.stuck_since = now_time;
+                                        }
+                                    } else {
+                                        tracker.stuck_since = 0;
+                                    }
+
+                                    tracker.last_pos = current_pos;
+                                    tracker.last_check_time = now_time;
+
+                                    {
+                                        std::lock_guard<std::mutex> stuck_lock(g_emergency_stuck_vehicles_mutex);
+                                        g_emergency_stuck_vehicles[veh] = tracker;
+                                    }
+                                }
+                            }
+
+                            // G. [Multi-Stage Unstucking System]：多阶段高级脱困
+                            int64_t stuck_duration = (tracker.stuck_since > 0) ? (now_time - tracker.stuck_since) : 0;
+                            
+                            // B1. 落水检测二次熔断
+                            if (current_pos.z < 1.0f) {
+                                bool already_emptied = false;
+                                {
+                                    std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+                                    already_emptied = std::find(g_emergency_vehicles_emptied.begin(), g_emergency_vehicles_emptied.end(), veh) != g_emergency_vehicles_emptied.end();
+                                }
+                                if (!already_emptied) {
+                                    if (g_TellOccupantsToLeaveCar) {
+                                        g_TellOccupantsToLeaveCar(veh);
+                                    }
+                                    std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
+                                    g_emergency_vehicles_emptied.push_back(veh);
+                                    LOGW("[Emergency Escaper - Water escape] Low elevation Z < 1.0m. Evacuated emergency personnel.");
+                                }
+                            }
+
+                            bool trigger_stage1 = false;
+                            bool trigger_stage2 = false;
+
+                            bool is_seen = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
+
+                            if (stuck_duration >= 7000 && !is_seen) {
+                                trigger_stage2 = true;
+                            } else if (stuck_duration > 3500) {
+                                if (now_time - tracker.last_intervention_time > 6000) {
+                                    trigger_stage1 = true;
+                                }
+                            }
+
+                            // STAGE 2: 7秒以上且玩家看不见：高通过率跃迁 20m 尝试传送到更近位置以解除卡住
+                            if (trigger_stage2) {
+                                tracker.last_intervention_time = now_time;
+                                tracker.stuck_since = 0; // 重置
+
+                                {
+                                    std::lock_guard<std::mutex> stuck_lock(g_emergency_stuck_vehicles_mutex);
+                                    g_emergency_stuck_vehicles[veh] = tracker;
+                                }
+
+                                CVector warp_pos = {
+                                    current_pos.x + dir_x * 20.0f,
+                                    current_pos.y + dir_y * 20.0f,
+                                    current_pos.z + dir_z * 20.0f + 0.80f // 加上安全防陷落高度
+                                };
+                                set_entity_pos(veh, warp_pos);
+                                LOGI("🚒🚑 [Emergency Escaper - Stage 2 Warp] Unseen warped vehicle %p forward 20m", veh);
+                            }
+                            // STAGE 1: 3.5秒以上卡死：温柔物理推开 / 看不见时中等跃迁 12m
+                            else if (trigger_stage1) {
+                                tracker.last_intervention_time = now_time;
+                                {
+                                    std::lock_guard<std::mutex> stuck_lock(g_emergency_stuck_vehicles_mutex);
+                                    g_emergency_stuck_vehicles[veh] = tracker;
+                                }
+
+                                LOGI("🚒🚑 [Emergency Escaper - Stage 1 Nudge] Initiated rescue for %p...", veh);
+
+                                // 1. 临时关闭路段 20m，强迫 AI 避开当前卡住的死路规划新路线
+                                if (g_ThePaths && g_SwitchRoadsOffInArea) {
+                                    g_SwitchRoadsOffInArea(
+                                        g_ThePaths,
+                                        current_pos.x - 20.0f, current_pos.y - 20.0f, current_pos.z - 8.0f,
+                                        current_pos.x + 20.0f, current_pos.y + 20.0f, current_pos.z + 8.0f,
+                                        true, true, false
+                                    );
+                                    std::lock_guard<std::mutex> temp_lock(g_temp_closures_mutex);
+                                    g_temp_road_closures.push_back({current_pos, 20.0f, now_time + 15000});
+                                }
+
+                                // 2. 地下掩埋清除 15m 内阻碍的非紧急平民车辆
+                                if (g_ms_pVehiclePool && g_GetPoolVehicle) {
+                                    void* v_pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+                                    if (v_pool) {
+                                        char* v_byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(v_pool) + 8);
+                                        int v_size = *reinterpret_cast<int*>(reinterpret_cast<char*>(v_pool) + 16);
+                                        if (v_byte_map) {
+                                            for (int j = 0; j < v_size; j++) {
+                                                signed char v_flag = v_byte_map[j];
+                                                if (v_flag >= 0) {
+                                                    int v_handle = (j << 8) | v_flag;
+                                                    void* other_veh = g_GetPoolVehicle(v_handle);
+                                                    if (other_veh && other_veh != veh && is_vehicle_pointer_valid(other_veh)) {
+                                                        unsigned int o_model = get_entity_model_index(other_veh);
+                                                        if (o_model != 416 && o_model != 407 && o_model != MODEL_POLICE_CAR && o_model != MODEL_SWAT_VAN && o_model != MODEL_POLICE_BIKE) {
+                                                            CVector other_pos = get_entity_pos(other_veh);
+                                                            float ov_dx = other_pos.x - current_pos.x;
+                                                            float ov_dy = other_pos.y - current_pos.y;
+                                                            float ov_dz = other_pos.z - current_pos.z;
+                                                            float ov_dist = sqrtf(ov_dx * ov_dx + ov_dy * ov_dy + ov_dz * ov_dz);
+
+                                                            if (ov_dist < 15.0f) {
+                                                                if (!is_pos_visible_to_player_camera(other_pos)) {
+                                                                    CVector underground = {other_pos.x, other_pos.y, other_pos.z - 50.0f};
+                                                                    set_entity_pos(other_veh, underground);
+                                                                    LOGI("   +- Trapped road blockage %p buried underground", other_veh);
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 3. 物理微调：看得见时反向倒车，看不见时正向向前穿墙中跃迁 12m
+                                CVector nudged_pos;
+                                if (is_seen) {
+                                    nudged_pos.x = current_pos.x - dir_x * 3.5f;
+                                    nudged_pos.y = current_pos.y - dir_y * 3.5f;
+                                    nudged_pos.z = current_pos.z + 0.60f; // 抬升高度推开阻挡
+                                } else {
+                                    nudged_pos.x = current_pos.x + dir_x * 12.0f;
+                                    nudged_pos.y = current_pos.y + dir_y * 12.0f;
+                                    nudged_pos.z = current_pos.z + dir_z * 12.0f + 0.75f;
+                                }
+
+                                set_entity_pos(veh, nudged_pos);
+                                LOGI("   +- Applied Stage 1 Nudge (seen=%d)", is_seen);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// =====================================================================
+// Civilian vehicle avoidance near emergency units
+// =====================================================================
+static bool is_emergency_vehicle_model(unsigned int model) {
+    return (model == 416 || model == 407 || 
+            model == 596 || model == 597 || model == 598 || model == 599 || 
+            model == 601 || model == 528 || model == 490 || model == 523);
+}
+
+// 🚗💨 平民车辆避让时的惊慌按喇叭与急刹车冷却定时器
+std::unordered_map<void*, int64_t> g_civilian_panic_timers;
+static int64_t g_last_cleanup_panic_timers = 0;
+
+static bool is_vehicle_driven_by_player(void* veh) {
+    if (!veh || !g_FindPlayerPed || !g_IsDriver) return false;
+    void* player = g_FindPlayerPed(0);
+    if (!player) return false;
+    return g_IsDriver(veh, reinterpret_cast<const CPed*>(player));
+}
+
+static void apply_civilian_avoidance_field() {
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_GetMatrix) return;
+
+    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!pool) return;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return;
+
+    int64_t now = now_ms();
+
+    // 垃圾回收：每 10 秒清理一次已经失效的车辆指针，防止 Map 无限膨胀
+    if (now - g_last_cleanup_panic_timers > 10000) {
+        g_last_cleanup_panic_timers = now;
+        for (auto it = g_civilian_panic_timers.begin(); it != g_civilian_panic_timers.end(); ) {
+            if (!is_vehicle_pointer_valid(it->first)) {
+                it = g_civilian_panic_timers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    // 1. 搜集所有处于活跃行驶状态（有司机）的调度/应急车辆
+    struct ActiveEmergencyVeh {
+        void* veh;
+        CVector pos;
+        CVector dir; // 前向向量 (Up Vector)
+        CVector right; // 右向向量 (Right Vector)
+    };
+    std::vector<ActiveEmergencyVeh> active_evs;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_vehicle_pointer_valid(veh)) {
+                unsigned int model = get_entity_model_index(veh);
+                if (is_emergency_vehicle_model(model)) {
+                    if (is_vehicle_occupied_by_driver(veh)) {
+                        CVector ev_pos = get_entity_pos(veh);
+                        CVector ev_dir = {0.0f, 1.0f, 0.0f};
+                        CVector ev_right = {1.0f, 0.0f, 0.0f};
+                        CMatrix* mat = g_GetMatrix(veh);
+                        if (mat) {
+                            ev_dir = {mat->up_x, mat->up_y, mat->up_z};
+                            ev_right = {mat->right_x, mat->right_y, mat->right_z};
+                        }
+                        float len_d = sqrtf(ev_dir.x * ev_dir.x + ev_dir.y * ev_dir.y + ev_dir.z * ev_dir.z);
+                        if (len_d > 0.01f) {
+                            ev_dir.x /= len_d; ev_dir.y /= len_d; ev_dir.z /= len_d;
+                        } else {
+                            ev_dir = {0.0f, 1.0f, 0.0f};
+                        }
+                        float len_r = sqrtf(ev_right.x * ev_right.x + ev_right.y * ev_right.y + ev_right.z * ev_right.z);
+                        if (len_r > 0.01f) {
+                            ev_right.x /= len_r; ev_right.y /= len_r; ev_right.z /= len_r;
+                        } else {
+                            ev_right = {1.0f, 0.0f, 0.0f};
+                        }
+                        active_evs.push_back({veh, ev_pos, ev_dir, ev_right});
+                    }
+                }
+            }
+        }
+    }
+
+    if (active_evs.empty()) return;
+
+    // 2. 遍历所有非应急、且有司机的平民车辆，施加“恐惧/避让”电磁场
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_vehicle_pointer_valid(veh)) {
+                
+                // 玩家驾驶的载具本身绝不参与避让
+                if (is_vehicle_driven_by_player(veh)) continue;
+
+                unsigned int model = get_entity_model_index(veh);
+                if (!is_emergency_vehicle_model(model) && is_vehicle_occupied_by_driver(veh)) {
+                    CVector civ_pos = get_entity_pos(veh);
+                    
+                    // 寻找最近且可能产生阻碍的应急车辆
+                    for (const auto& ev : active_evs) {
+                        if (ev.veh == veh) continue;
+
+                        float dx = civ_pos.x - ev.pos.x;
+                        float dy = civ_pos.y - ev.pos.y;
+                        float dz = civ_pos.z - ev.pos.z;
+                        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+                        // 恐惧场作用范围：前方 22 米，横向 4.5 米
+                        if (dist < 22.0f && dist > 0.1f) {
+                            // 投影到应急车的前向向量 and 右向向量
+                            float dot_forward = dx * ev.dir.x + dy * ev.dir.y + dz * ev.dir.z;
+                            float dot_right = dx * ev.right.x + dy * ev.right.y + dz * ev.right.z;
+
+                            // 如果平民车处于应急车的前方，且横向距离较近
+                            if (dot_forward > 0.0f && dot_forward < 22.0f && fabsf(dot_right) < 4.5f) {
+                                float avoid_sign = (dot_right >= 0.0f) ? 1.0f : -1.0f;
+                                
+                                // 平民车越近，避让力度越强。使用渐进的平滑系数
+                                float intensity = (22.0f - dot_forward) / 22.0f; // 0.0 -> 1.0
+                                
+                                // 每帧微小的平滑偏移（高频更新，杜绝瞬移感与悬空）
+                                float side_shove = intensity * 0.035f; 
+                                float brake_shove = intensity * 0.025f;
+
+                                CMatrix* mat = g_GetMatrix(veh);
+                                float civ_up_x = 0.0f;
+                                float civ_up_y = 0.0f;
+                                if (mat) {
+                                    civ_up_x = mat->up_x;
+                                    civ_up_y = mat->up_y;
+                                }
+
+                                CVector new_civ_pos = civ_pos;
+                                // 1. 施加横向避让位移
+                                new_civ_pos.x += ev.right.x * avoid_sign * side_shove;
+                                new_civ_pos.y += ev.right.y * avoid_sign * side_shove;
+                                // 2. 施加物理急刹车拖拽（退后位置分量，降低实际前进速度）
+                                new_civ_pos.x -= civ_up_x * brake_shove;
+                                new_civ_pos.y -= civ_up_y * brake_shove;
+                                // 移除 Z 轴硬性提升，防止车辆在避让时产生悬空感，让物理引擎自身贴地
+
+                                // 施加微弱的 Yaw 角度旋转，让其车头指向避让方向
+                                if (mat) {
+                                    float rot_angle = avoid_sign * intensity * 0.006f; 
+                                    float cos_a = cosf(rot_angle);
+                                    float sin_a = sinf(rot_angle);
+
+                                    float new_up_x = mat->up_x * cos_a - mat->right_x * sin_a;
+                                    float new_up_y = mat->up_y * cos_a - mat->right_y * sin_a;
+                                    float new_right_x = mat->up_x * sin_a + mat->right_x * cos_a;
+                                    float new_right_y = mat->up_y * sin_a + mat->right_y * cos_a;
+
+                                    mat->up_x = new_up_x;
+                                    mat->up_y = new_up_y;
+                                    mat->right_x = new_right_x;
+                                    mat->right_y = new_right_y;
+                                }
+
+                                set_entity_pos(veh, new_civ_pos);
+                                break; // 响应最近的一个避让源即可
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void on_main_thread_tick() {
+    // 1. 每帧高频平滑避让更新（无感避让）
+    apply_civilian_avoidance_field();
+
+    int64_t cur_time = now_ms();
+    if (cur_time - g_last_tick_time_ms < 250) {
+        return;
+    }
+    g_last_tick_time_ms = cur_time;
+
+    static bool ecs_inited = false;
+    if (!ecs_inited) {
+        init_ecs_systems();
+        ecs_inited = true;
+    }
+    ecs::EventDispatcher::get().dispatch(ecs::TickEvent(cur_time));
+
+    if (!g_FindPlayerPed || !g_FindPlayerPed(0)) {
+        return; // 不在游戏内
+    }
+
+    // 运行急救与消防车辆的自主脱困、避障与高级物理救援心跳
+    emergency_vehicles_tick();
+
+    // 周期性释放已到期的临时道路关闭
+    {
+        std::lock_guard<std::mutex> temp_lock(g_temp_closures_mutex);
+        for (auto it = g_temp_road_closures.begin(); it != g_temp_road_closures.end(); ) {
+            if (cur_time >= it->reopen_time_ms) {
+                if (g_ThePaths && g_SwitchRoadsOffInArea) {
+                    g_SwitchRoadsOffInArea(
+                        g_ThePaths,
+                        it->center.x - it->radius, it->center.y - it->radius, it->center.z - 8.0f,
+                        it->center.x + it->radius, it->center.y + it->radius, it->center.z + 8.0f,
+                        false, true, false
+                    );
+                    LOGI("🚧 [dispatchCenter - TempClosure] Reopened route section around (%.1f, %.1f, %.1f) after delay", 
+                         it->center.x, it->center.y, it->center.z);
+                }
+                it = g_temp_road_closures.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+
+    // 判断是否有任意活动案件
+    bool any_active_case = false;
+    for (const auto& crime : g_active_crimes) {
+        if (crime && !crime->cancelled) {
+            any_active_case = true;
+            break;
+        }
+    }
+
+    // Periodically bind occupants of active vehicles (only for our custom spawned initial response & reinforcement vehicles)
+    if (any_active_case) {
+        std::lock_guard<std::mutex> lock_sp(g_spawned_cop_vehicles_mutex);
+        for (void* veh : g_spawned_cop_vehicles) {
+            if (is_vehicle_pointer_valid(veh)) {
+                bind_vehicle_occupants(veh);
+            }
+        }
+    }
+
+    static int64_t last_siren_refresh = 0;
+    bool do_siren_refresh = (cur_time - last_siren_refresh > 1500);
+    if (do_siren_refresh) {
+        last_siren_refresh = cur_time;
+    }
+
+    // 复制一份 shared_ptr 数组快照，绝对规避在派发和回调过程中（同一线程上重入时）导致 `g_active_crimes` 扩容而引发的迭代器失效 crash
+    std::vector<std::shared_ptr<CrimeEvent>> crimes_snapshot = g_active_crimes;
+
+    // =====================================================================
+    // 👻 [dispatchCenter - GhostVehicleGuard] 幽灵车急停锁定保护（防止半路警员跌落摩托，空车狂奔）
+    // =====================================================================
+    if (any_active_case) {
+        for (const auto& crime : crimes_snapshot) {
+            if (!crime || crime->cancelled) continue;
+            for (void* veh : crime->case_vehicles) {
+                if (is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
+                    if (!is_vehicle_occupied_by_driver(veh)) {
+                        CVector veh_pos = get_entity_pos(veh);
+                        if (g_GetCarToGoToCoors) {
+                            g_GetCarToGoToCoors(veh, &veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
+                        }
+                        add_vehicle_emptied(veh);
+                        LOGW("⚠️ [dispatchCenter - GhostVehicleGuard] Handbrake-locked ghost vehicle %p (no driver). Marked as emptied.", veh);
+                    }
+                }
+            }
+        }
+    }
+
+    // =====================================================================
+    // 🚨 [dispatchCenter - EnRouteRerouting] 警车响应调度沿途发生的同级及以上活跃犯罪 (Reroute en-route cops to overlapping crimes)
+    // =====================================================================
+    struct RerouteRecord {
+        void* vehicle;
+        std::shared_ptr<CrimeEvent> from_case;
+        std::shared_ptr<CrimeEvent> to_case;
+        float distance;
+    };
+    std::vector<RerouteRecord> pending_reroutes;
+
+    {
+        std::lock_guard<std::mutex> lock_sc(g_vehicles_mutex);
+        for (auto& case_A : crimes_snapshot) {
+            if (!case_A || case_A->cancelled) continue;
+
+            for (void* veh : case_A->case_vehicles) {
+                if (!veh || !is_vehicle_pointer_valid(veh)) continue;
+
+                // 仅重定向正处于行驶赶往现场途中 (g_vehicles_ordered_to_scene) 且尚未下车的警车
+                if (g_vehicles_ordered_to_scene.count(veh) > 0 && !is_vehicle_emptied(veh)) {
+                    CVector veh_pos = get_entity_pos(veh);
+                    std::shared_ptr<CrimeEvent> best_case_B = nullptr;
+                    float best_dist = 999999.0f;
+
+                    for (auto& case_B : crimes_snapshot) {
+                        if (!case_B || case_B->cancelled || case_B == case_A) continue;
+                        if (!case_B->criminal || !is_ped_pointer_valid_safe(case_B->criminal)) continue;
+
+                        // 1. 同级及以上威胁度等级限制
+                        // 枪击大案(threat=2), 近战/非枪击(threat=1)
+                        int threat_A = case_A->is_firearm ? 2 : 1;
+                        int threat_B = case_B->is_firearm ? 2 : 1;
+
+                        if (threat_B >= threat_A) {
+                            float dx = veh_pos.x - case_B->location.x;
+                            float dy = veh_pos.y - case_B->location.y;
+                            float dz = veh_pos.z - case_B->location.z;
+                            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+                            // 2. 动态视听 AV 响应范围：枪械 75 米，近战/空手 35 米
+                            float av_range = case_B->is_firearm ? 75.0f : 35.0f;
+
+                            if (dist <= av_range && dist < best_dist) {
+                                best_dist = dist;
+                                best_case_B = case_B;
+                            }
+                        }
+                    }
+
+                    if (best_case_B) {
+                        pending_reroutes.push_back({veh, case_A, best_case_B, best_dist});
+                    }
+                }
+            }
+        }
+    }
+
+    // 执行重定向，将警车无缝过户给新案件
+    for (const auto& record : pending_reroutes) {
+        void* veh = record.vehicle;
+        auto case_A = record.from_case;
+        auto case_B = record.to_case;
+
+        if (!case_A || case_A->cancelled || !case_B || case_B->cancelled) continue;
+
+        // A. 从原案件中移除该车
+        auto it_A = std::find(case_A->case_vehicles.begin(), case_A->case_vehicles.end(), veh);
+        if (it_A != case_A->case_vehicles.end()) {
+            case_A->case_vehicles.erase(it_A);
+        }
+        if (case_A->spawned_vehicle == veh) {
+            case_A->spawned_vehicle = nullptr;
+        }
+
+        // B. 将该车追加至新案件
+        auto it_B = std::find(case_B->case_vehicles.begin(), case_B->case_vehicles.end(), veh);
+        if (it_B == case_B->case_vehicles.end()) {
+            case_B->case_vehicles.push_back(veh);
+        }
+        if (!case_B->spawned_vehicle) {
+            case_B->spawned_vehicle = veh;
+        }
+
+        LOGI("🚨 [dispatchCenter - EnRouteReroute] Dispatched vehicle %p (originally for Case %llu, threat: %d) encountered Case %llu (threat: %d) en route! Rerouting to Case %llu (dist: %.1fm).",
+             veh, (unsigned long long)case_A->case_id, case_A->is_firearm ? 2 : 1,
+             (unsigned long long)case_B->case_id, case_B->is_firearm ? 2 : 1,
+             (unsigned long long)case_B->case_id, record.distance);
+
+        // C. 给新案件重置车辆的导航目的地
+        command_cop_vehicle_to_scene(veh, case_B->location);
+
+        // D. 重置乘员的唤醒与绑定，使司机一脚油门驶向新案件嫌犯
+        setup_dispatched_cops(veh, case_B->criminal);
+    }
+
+    for (auto& crime : crimes_snapshot) {
+        if (!crime || crime->cancelled) {
+            continue;
+        }
+
+        // 刷新各个案件独立拥有的警车驾驶路径与警笛
+        if (do_siren_refresh) {
+            std::lock_guard<std::mutex> lock_sc(g_vehicles_mutex);
+            for (void* veh : crime->case_vehicles) {
+                if (is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
+                    command_cop_vehicle_to_scene(veh, crime->location);
+                }
+            }
+        }
+
+        // 检查活动犯罪分子是否依然有效 (并案机制：遍历并清理已失效或已死亡的犯罪NPC)
+        {
+            auto& list = crime->consolidated_criminals;
+            auto& is_fire_list = crime->criminal_is_firearm;
+            
+            // 1. 清理列表中所有已失效 (despawned) 的 NPC
+            for (auto it = list.begin(); it != list.end(); ) {
+                if (!*it || !is_ped_pointer_valid_safe(*it)) {
+                    size_t idx = std::distance(list.begin(), it);
+                    LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: Consolidated criminal NPC %p is no longer valid (despawned) -> removing from case", 
+                         (unsigned long long)crime->case_id, *it);
+                    it = list.erase(it);
+                    if (idx < is_fire_list.size()) {
+                        is_fire_list.erase(is_fire_list.begin() + idx);
+                    }
+                } else {
+                    ++it;
+                }
+            }
+            
+            // 2. 如果当前 primary criminal 已经不合法，从并案列表中转移主犯
+            if (crime->criminal && !is_ped_pointer_valid_safe(crime->criminal)) {
+                if (!list.empty()) {
+                    crime->criminal = list.front();
+                    if (crime == get_primary_active_crime()) {
+                        g_tracked_criminal.store(list.front());
+                    }
+                    LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: Primary criminal was despawned. Shifted primary tracking to %p.", 
+                         (unsigned long long)crime->case_id, crime->criminal);
+                } else {
+                    LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: Active criminal NPC is no longer valid (despawned) and no other consolidated criminals -> cancelling crime event", 
+                         (unsigned long long)crime->case_id);
+                    crime->cancelled = true;
+                }
+            } else if (list.empty()) {
+                LOGI("📡 [dispatchCenter - CaseMerge] Case %llu: All consolidated criminals are invalid/despawned -> cancelling crime event", 
+                     (unsigned long long)crime->case_id);
+                crime->cancelled = true;
+            }
+        }
+
+        // 轮询并执行过期的异步挂起任务 (串行，线程安全，并在回调中避免迭代器失效)
+        if (!crime->cancelled) {
+            int64_t now = now_ms();
+            std::vector<CrimeEvent::DelayedTask> tasks_to_execute;
+
+            for (auto it = crime->pending_tasks.begin(); it != crime->pending_tasks.end(); ) {
+                if (now >= it->execute_time_ms) {
+                    tasks_to_execute.push_back(*it);
+                    it = crime->pending_tasks.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            for (const auto& task : tasks_to_execute) {
+                if (!crime->cancelled) {
+                    task.callback();
+                }
+            }
+        }
+
+        // 对每一个案件独立运行其调度状态机
+        if (!crime->cancelled) {
+            switch (crime->dispatch_state) {
+                case STATE_IDLE: {
+                    // 🚧 [动态警戒禁行区]：自动为活跃犯罪现场设置 50 米的路障/封路禁行，阻挡平民 NPC 车辆冲入现场
+                    if (!crime->road_closure_active) {
+                        if (g_ThePaths && g_SwitchRoadsOffInArea) {
+                            CVector center = crime->location;
+                            g_SwitchRoadsOffInArea(
+                                g_ThePaths,
+                                center.x - 50.0f, center.y - 50.0f, center.z - 15.0f,
+                                center.x + 50.0f, center.y + 50.0f, center.z + 15.0f,
+                                true, true, false
+                            );
+                            crime->road_closure_active = true;
+                            crime->road_closure_center = center;
+                            LOGI("🚧 [dispatchCenter - Cordon] Established dynamic police road closure within 50m around (%.1f, %.1f, %.1f) for case %llu", 
+                                 center.x, center.y, center.z, (unsigned long long)crime->case_id);
+                        }
+                    }
+
+                    if (!crime->dispatch_sent) {
+                        float dist_to_cop = 9999.0f;
+                        if (g_FindDistToNearestCop) {
+                            dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
+                        }
+
+                        if (dist_to_cop < 50.0f) {
+                            LOGI("Cops nearby (dist=%.1f) for case %llu, transition to STATE_ON_SCENE directly", dist_to_cop, (unsigned long long)crime->case_id);
+                            crime->dispatch_sent = true;
+                            crime->on_scene_start = now_ms();
+                            crime->dispatch_state = STATE_ON_SCENE;
+                            crime->last_cops_killed = 0;
+                        } else {
+                            // 缩短调度计时器以让警车快速抵达：枪械犯罪 4~7 秒，近战/非枪械犯罪 8~12 秒，防止战斗提前完结导致警察“不响应”
+                            crime->dispatch_delay_ms = crime->is_firearm ? 
+                                get_random_range(4000, 7000) : get_random_range(8000, 12000);
+                            crime->timer_start = now_ms();
+                            crime->dispatch_state = STATE_TIMING;
+                            crime->last_cops_killed = 0;
+                            LOGI("No cops nearby for case %llu, starting dispatch timer: %d ms", (unsigned long long)crime->case_id, crime->dispatch_delay_ms);
+                        }
+                    }
+                    break;
+                }
+
+                case STATE_TIMING: {
+                    float dist_to_player = 9999.0f;
+                    if (g_FindPlayerCoors) {
+                        CVector player_pos = g_FindPlayerCoors(0);
+                        float dx = player_pos.x - crime->location.x;
+                        float dy = player_pos.y - crime->location.y;
+                        float dz = player_pos.z - crime->location.z;
+                        dist_to_player = sqrtf(dx * dx + dy * dy + dz * dz);
+                    }
+                    if (dist_to_player > 150.0f) {
+                        LOGI("Player too far from crime scene %llu (dist=%.1f) during timing, cancelling", (unsigned long long)crime->case_id, dist_to_player);
+                        crime->dispatch_state = STATE_CLEANUP;
+                        break;
+                    }
+
+                    float dist_to_cop = 9999.0f;
+                    if (g_FindDistToNearestCop) {
+                        dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
+                    }
+                    if (dist_to_cop < 80.0f) {
+                        LOGI("Natural police spawn detected for case %llu, cancelling dispatch", (unsigned long long)crime->case_id);
+                        crime->dispatch_sent = true;
+                        crime->dispatch_state = STATE_IDLE;
+                        break;
+                    }
+
+                    int64_t elapsed = now_ms() - crime->timer_start;
+                    if (elapsed >= crime->dispatch_delay_ms) {
+                        int density = count_criminals_near(crime->location, 40.0f);
+                        LOGI("Dispatch timer expired. Target scene %llu (%.1f, %.1f, %.1f) has criminal density = %d",
+                             (unsigned long long)crime->case_id, crime->location.x, crime->location.y, crime->location.z, density);
+
+                        CVector target_pos = get_spawn_target(crime->location);
+                        crime->dispatch_sent = true;
+                        crime->spawn_time_ms = now_ms();
+                        crime->on_scene_start = now_ms();
+                        crime->dispatch_state = STATE_ON_SCENE;
+
+                        bool swat_already = false;
+                        if (density >= 6) {
+                            swat_already = is_swat_van_nearby(crime->location, 150.0f);
+                            if (swat_already) {
+                                LOGI("SWAT density check for case %llu: SWAT vehicle already active nearby. Downgrading to 2 Police Cars.", (unsigned long long)crime->case_id);
+                            }
+                        }
+
+                        crime->pending_tasks.push_back({
+                            now_ms(),
+                            [density, swat_already, target_pos, crime]() {
+                                if (crime->cancelled) return;
+
+                                CPed* criminal = crime->criminal;
+                                CVector loc = crime->location;
+
+                                if (density >= 6 && !swat_already) {
+                                    LOGI("Heavy combat density (>=6) -> Dispatching 1 SWAT Enforcer + 1 Police Car for case %llu", (unsigned long long)crime->case_id);
+                                    dispatch_spawn_emergency_car(MODEL_SWAT_VAN, target_pos);
+
+                                    crime->pending_tasks.push_back({
+                                        now_ms() + 250,
+                                        [target_pos, loc, criminal, crime]() {
+                                            if (crime->cancelled) return;
+                                            void* veh1 = find_closest_vehicle_to(target_pos, 25.0f);
+                                            if (veh1) {
+                                                crime->spawned_vehicle = veh1;
+                                                crime->case_vehicles.push_back(veh1);
+                                                register_spawned_swat(veh1);
+                                                command_cop_vehicle_to_scene(veh1, loc);
+                                                setup_dispatched_cops(veh1, criminal);
+                                            }
+
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                            crime->pending_tasks.push_back({
+                                                now_ms() + 250,
+                                                [target_pos, veh1, loc, criminal, crime]() {
+                                                    if (crime->cancelled) return;
+                                                    void* veh2 = find_closest_vehicle_to(target_pos, 25.0f, veh1);
+                                                    if (veh2) {
+                                                        crime->case_vehicles.push_back(veh2);
+                                                        command_cop_vehicle_to_scene(veh2, loc);
+                                                        setup_dispatched_cops(veh2, criminal);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
+                                }
+                                else if (density >= 3 || (density >= 6 && swat_already)) {
+                                    LOGI("Medium combat density -> Dispatching 2 Police Cars for case %llu", (unsigned long long)crime->case_id);
+                                    dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                    crime->pending_tasks.push_back({
+                                        now_ms() + 250,
+                                        [target_pos, loc, criminal, crime]() {
+                                            if (crime->cancelled) return;
+                                            void* veh1 = find_closest_vehicle_to(target_pos, 25.0f);
+                                            if (veh1) {
+                                                crime->spawned_vehicle = veh1;
+                                                crime->case_vehicles.push_back(veh1);
+                                                command_cop_vehicle_to_scene(veh1, loc);
+                                                setup_dispatched_cops(veh1, criminal);
+                                            }
+
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                            crime->pending_tasks.push_back({
+                                                now_ms() + 250,
+                                                [target_pos, veh1, loc, criminal, crime]() {
+                                                    if (crime->cancelled) return;
+                                                    void* veh2 = find_closest_vehicle_to(target_pos, 25.0f, veh1);
+                                                    if (veh2) {
+                                                        crime->case_vehicles.push_back(veh2);
+                                                        command_cop_vehicle_to_scene(veh2, loc);
+                                                        setup_dispatched_cops(veh2, criminal);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    });
+                                }
+                                else {
+                                    LOGI("Light combat density -> Dispatching 1 Police Car for case %llu", (unsigned long long)crime->case_id);
+                                    dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                    crime->pending_tasks.push_back({
+                                        now_ms() + 250,
+                                        [target_pos, loc, criminal, crime]() {
+                                            if (crime->cancelled) return;
+                                            void* veh = find_closest_vehicle_to(target_pos, 25.0f);
+                                            if (veh) {
+                                                crime->spawned_vehicle = veh;
+                                                crime->case_vehicles.push_back(veh);
+                                                command_cop_vehicle_to_scene(veh, loc);
+                                                setup_dispatched_cops(veh, criminal);
+                                            } else {
+                                                LOGW("⚠️ Failed to identify spawned vehicle near (%.1f, %.1f, %.1f) for case %llu", target_pos.x, target_pos.y, target_pos.z, (unsigned long long)crime->case_id);
+                                                // Fallback 清理层：如果当前没有任何活跃案件存在，则统一恢复/释放全局所有的向下兼容级 and 未分组表映射
+                                                if (g_active_crimes.empty()) {
+                                                    g_crime_active.store(false);
+                                                    g_tracked_criminal.store(nullptr);
+                                                    ecs::EntityManager::get().clear();
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    break;
+                }
+
+                case STATE_ON_SCENE: {
+                    make_cops_attack_criminal(crime->criminal);
+
+                    if (g_TellOccupantsToLeaveCar) {
+                        for (void* veh : crime->case_vehicles) {
+                            if (veh && is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
+                                CVector veh_pos = get_entity_pos(veh);
+                                CVector crime_pos = crime->location;
+                                float dx = veh_pos.x - crime_pos.x;
+                                float dy = veh_pos.y - crime_pos.y;
+                                float dz = veh_pos.z - crime_pos.z;
+                                float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+                                int64_t elapsed = now_ms() - crime->spawn_time_ms;
+
+                                if (dist < 32.0f || elapsed > 15000) {
+                                    LOGI("Ordering occupants of vehicle %p to leave car (dist=%.1f, elapsed=%lld ms) for case %llu (Bulk Guard)",
+                                         veh, dist, (long long)elapsed, (unsigned long long)crime->case_id);
+                                    if (g_GetCarToGoToCoors) {
+                                        g_GetCarToGoToCoors(veh, &veh_pos, 0, false);
+                                    }
+                                    g_TellOccupantsToLeaveCar(veh);
+                                    add_vehicle_emptied(veh);
+                                }
+                            }
+                        }
+                        if (crime->spawned_vehicle) {
+                            if (!is_vehicle_pointer_valid(crime->spawned_vehicle)) {
+                                crime->spawned_vehicle = nullptr;
+                            } else if (is_vehicle_emptied(crime->spawned_vehicle)) {
+                                crime->occupants_ordered_out = true;
+                            }
+                        }
+                    }
+
+                    float dist_to_player = 9999.0f;
+                    if (g_FindPlayerCoors) {
+                        CVector player_pos = g_FindPlayerCoors(0);
+                        float dx = player_pos.x - crime->location.x;
+                        float dy = player_pos.y - crime->location.y;
+                        float dz = player_pos.z - crime->location.z;
+                        dist_to_player = sqrtf(dx * dx + dy * dy + dz * dz);
+                    }
+                    if (dist_to_player > 150.0f) {
+                        LOGI("Player too far from crime scene %llu (dist=%.1f) on scene, cancelling", (unsigned long long)crime->case_id, dist_to_player);
+                        crime->dispatch_state = STATE_CLEANUP;
+                        break;
+                    }
+
+                    if (crime->cops_killed > crime->last_cops_killed) {
+                        int new_deaths = crime->cops_killed - crime->last_cops_killed;
+                        crime->last_cops_killed = crime->cops_killed;
+
+                        for (int i = 0; i < new_deaths; i++) {
+                            if (crime->reinforcements_sent < 3) {
+                                crime->reinforcements_sent++;
+                                int r = crime->reinforcements_sent;
+
+                                int delay = 10000;
+                                if (new_deaths >= 2) {
+                                    delay = get_random_range(2500, 3500);
+                                    LOGI("⚠️ Heavy casualties detected (%d dead) for case %llu! Activating emergency reinforcement delay: %d ms", new_deaths, (unsigned long long)crime->case_id, delay);
+                                } else {
+                                    switch (r) {
+                                        case 1: delay = get_random_range(8500, 11500); break;
+                                        case 2: delay = get_random_range(7000, 9000); break;
+                                        case 3: delay = get_random_range(8500, 11500); break;
+                                        default: delay = get_random_range(8500, 11500); break;
+                                    }
+                                }
+
+                                LOGI("Cop casualty -> reinforcement #%d scheduled in %d ms for case %llu", r, delay, (unsigned long long)crime->case_id);
+
+                                crime->pending_tasks.push_back({
+                                    now_ms() + delay,
+                                    [r, crime]() {
+                                        if (crime->cancelled) {
+                                            LOGI("Reinforcement #%d cancelled because crime event is no longer active for case %llu", r, (unsigned long long)crime->case_id);
+                                            return;
+                                        }
+
+                                        CPed* criminal = crime->criminal;
+                                        CVector loc = crime->location;
+                                        CVector target_pos = get_spawn_target(loc);
+
+                                        int density = count_criminals_near(loc, 40.0f);
+                                        bool swat_already = is_swat_van_nearby(loc, 150.0f);
+
+                                        if (r == 3 && density >= 5 && !swat_already) {
+                                            LOGI("Reinforcement #%d (Heavy SWAT) for case %llu: Dispatching SWAT Enforcer. (density=%d)", r, (unsigned long long)crime->case_id, density);
+                                            dispatch_spawn_emergency_car(MODEL_SWAT_VAN, target_pos);
+
+                                            crime->pending_tasks.push_back({
+                                                now_ms() + 250,
+                                                [target_pos, loc, criminal, r, crime]() {
+                                                    if (crime->cancelled) return;
+                                                    void* veh = find_closest_vehicle_to(target_pos, 25.0f);
+                                                    if (veh) {
+                                                        crime->case_vehicles.push_back(veh);
+                                                        register_spawned_swat(veh);
+                                                        command_cop_vehicle_to_scene(veh, loc);
+                                                        setup_dispatched_cops(veh, criminal);
+                                                        LOGI("✅ Reinforcement #%d: SWAT configured and driving to scene for case %llu", r, (unsigned long long)crime->case_id);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        else if (density >= 3) {
+                                            LOGI("Reinforcement #%d (Medium) for case %llu: Deploying 2 Police Cars. (density=%d)", r, (unsigned long long)crime->case_id, density);
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                            crime->pending_tasks.push_back({
+                                                now_ms() + 250,
+                                                [target_pos, loc, criminal, r, crime]() {
+                                                    if (crime->cancelled) return;
+                                                    void* veh1 = find_closest_vehicle_to(target_pos, 25.0f);
+                                                    if (veh1) {
+                                                        crime->case_vehicles.push_back(veh1);
+                                                        command_cop_vehicle_to_scene(veh1, loc);
+                                                        setup_dispatched_cops(veh1, criminal);
+                                                    }
+
+                                                    dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                                    crime->pending_tasks.push_back({
+                                                        now_ms() + 250,
+                                                        [target_pos, veh1, loc, criminal, r, crime]() {
+                                                            if (crime->cancelled) return;
+                                                            void* veh2 = find_closest_vehicle_to(target_pos, 25.0f, veh1);
+                                                            if (veh2) {
+                                                                crime->case_vehicles.push_back(veh2);
+                                                                command_cop_vehicle_to_scene(veh2, loc);
+                                                                setup_dispatched_cops(veh2, criminal);
+                                                                LOGI("✅ Reinforcement #%d: 2 Police Cars configured and driving to scene for case %llu", r, (unsigned long long)crime->case_id);
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            });
+                                        }
+                                        else {
+                                            LOGI("Reinforcement #%d (Light) for case %llu: Deploying 1 Police Car. (density=%d)", r, (unsigned long long)crime->case_id, density);
+                                            dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
+
+                                            crime->pending_tasks.push_back({
+                                                now_ms() + 250,
+                                                [target_pos, loc, criminal, r, crime]() {
+                                                    if (crime->cancelled) return;
+                                                    void* veh = find_closest_vehicle_to(target_pos, 25.0f);
+                                                    if (veh) {
+                                                        crime->case_vehicles.push_back(veh);
+                                                        command_cop_vehicle_to_scene(veh, loc);
+                                                        setup_dispatched_cops(veh, criminal);
+                                                        LOGI("✅ Reinforcement #%d: 1 Police Car configured and driving to scene for case %llu", r, (unsigned long long)crime->case_id);
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    }
+
+                    int64_t scene_elapsed = now_ms() - crime->on_scene_start;
+                    if (scene_elapsed > 30000) {
+                        LOGI("Scene timeout reached for case %llu", (unsigned long long)crime->case_id);
+                        crime->dispatch_state = STATE_CLEANUP;
+                    }
+                    break;
+                }
+
+                case STATE_CLEANUP: {
+                    LOGI("Cleaning up crime event for case %llu", (unsigned long long)crime->case_id);
+                    cleanup_single_case_vehicles(crime);
+                    crime->cancelled = true;
+                    break;
+                }
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    // 垃圾回收阶段：清理所有标记为已取消 (cancelled) 或已经转为 STATE_CLEANUP 的案件
+    for (auto it = g_active_crimes.begin(); it != g_active_crimes.end(); ) {
+        if ((*it)->cancelled || (*it)->dispatch_state == STATE_CLEANUP) {
+            LOGI("📡 [dispatchCenter - CaseGC] Erasing case %llu from active crimes list", (unsigned long long)(*it)->case_id);
+            cleanup_single_case_vehicles(*it);
+            it = g_active_crimes.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // Fallback 清理层：如果当前没有任何活跃案件存在，则统一恢复/释放全局所有的向下兼容级和未分组表映射
+    if (g_active_crimes.empty()) {
+        g_crime_active.store(false);
+        g_tracked_criminal.store(nullptr);
+
+        g_player_stray_bullet_flag.store(false);
+        g_player_stray_bullet_time.store(0);
+        g_friendly_fire_cop_hits.store(0);
+        g_last_friendly_fire_cop_time.store(0);
+        g_player_friendly_fire_blocked.store(false);
+        {
+            std::lock_guard<std::mutex> lock_emp(g_vehicles_emptied_mutex);
+            g_vehicles_emptied.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
+            g_dispatched_vehicles_time.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+            g_cop_attack_assign_time.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
+            g_armed_cops_time.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
+            g_cop_assigned_weapon.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_stuck_vehicles_mutex);
+            g_stuck_vehicles.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock_sc(g_vehicles_mutex);
+            g_vehicles_ordered_to_scene.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock_sa(g_vehicles_siren_awakened_mutex);
+            g_vehicles_siren_awakened.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock_swat(g_spawned_swats_mutex);
+            g_spawned_swats.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock_bind(g_bindings_mutex);
+            g_cop_vehicle_bindings.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock_ex(g_exits_mutex);
+            g_cop_exits.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_spawned_cop_vehicles_mutex);
+            g_spawned_cop_vehicles.clear();
+        }
+        g_last_cops_killed = 0;
+    }
+}
+
+void proxy_the_scripts_process() {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (g_orig_the_scripts_process) {
+        g_orig_the_scripts_process();
+    }
+
+    on_main_thread_tick();
+}
+
+// =====================================================================
+// Wanted-system spawn interception
+// =====================================================================
+std::atomic<bool> g_in_wanted_update{false};
+
+void* g_stub_wanted_update = nullptr;
+fn_WantedUpdate_t g_orig_wanted_update = nullptr;
+
+void proxy_wanted_update(void* this_wanted) {
+    SHADOWHOOK_STACK_SCOPE();
+    g_in_wanted_update.store(true);
+    SHADOWHOOK_CALL_PREV(proxy_wanted_update, this_wanted);
+    g_in_wanted_update.store(false);
+}
+
+void* g_stub_add_ped = nullptr;
+fn_AddPed_t g_orig_add_ped = nullptr;
+
+CPed* proxy_add_ped(int pedType, unsigned int modelIndex, const CVector& pos, bool bUnknown) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (pedType == 6 && g_in_wanted_update.load()) { // PED_TYPE_COP = 6
+        LOGI("🚫 [trueDispatch] Intercepted and blocked wanted-system forced cop spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", modelIndex, pos.x, pos.y, pos.z);
+        return nullptr;
+    }
+
+    return SHADOWHOOK_CALL_PREV(proxy_add_ped, pedType, modelIndex, pos, bUnknown);
+}
+
+// =====================================================================
+// =====================================================================
+// Emergency vehicle spawn distance workaround (mobile draw distance)
+// =====================================================================
+static bool is_police_vehicle_model(unsigned int model) {
+    return (model == 596 || model == 597 || model == 598 || model == 599 ||  // Cop Cars (LSPD, SFPD, LVPD, Ranger)
+            model == 523 ||                                                 // Cop Bike
+            model == 427 || model == 601 ||                                 // SWAT Enforcer, SWAT Water Cannon
+            model == 490 || model == 528 ||                                 // FBI Rancher, FBI Truck
+            model == 433 || model == 432);                                  // Barracks (Army Truck), Rhino (Tank)
+}
+
+static int count_active_police_vehicles_near_player(float range) {
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_FindPlayerCoors) return 0;
+    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!pool || !is_pointer_readable(pool)) return 0;
+
+    char** p_byte_map = reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    if (!is_pointer_readable(p_byte_map)) return 0;
+    char* byte_map = *p_byte_map;
+    if (!byte_map || !is_pointer_readable(byte_map)) return 0;
+
+    int* p_size = reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!is_pointer_readable(p_size)) return 0;
+    int size = *p_size;
+
+    CVector player_pos = g_FindPlayerCoors(0);
+    int count = 0;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_pointer_readable(veh)) {
+                unsigned short model = get_entity_model_index(veh);
+                if (is_police_vehicle_model(model)) {
+                    CVector pos = get_entity_pos(veh);
+                    float dx = pos.x - player_pos.x;
+                    float dy = pos.y - player_pos.y;
+                    float dz = pos.z - player_pos.z;
+                    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+                    if (dist < range) {
+                        count++;
+                    }
+                }
+            }
+        }
+    }
+    return count;
+}
+
+static bool relocate_police_car_spawn(unsigned int model, CVector& pos) {
+    int wanted_level = g_player_wanted_level.load();
+    if (wanted_level <= 0) {
+        return true; // Allow ambient/parked police cars to spawn normally without relocation or blocking
+    }
+
+    int max_cars = 0;
+    if (wanted_level == 1 || wanted_level == 2) {
+        max_cars = 1;
+    } else if (wanted_level == 3 || wanted_level == 4) {
+        max_cars = 2;
+    } else if (wanted_level >= 5) {
+        max_cars = 3;
+    }
+
+    int active_cars = count_active_police_vehicles_near_player(150.0f);
+    if (active_cars >= max_cars) {
+        LOGI("🚫 [trueDispatch] Blocked native cop spawn (Cap reached: %d/%d). Model: %u", active_cars, max_cars, model);
+        return false;
+    }
+
+    static std::atomic<uint64_t> last_spawn_time_ms{0};
+    uint64_t now = now_ms();
+    if (now - last_spawn_time_ms.load() < 15000) { // 15s cooldown
+        LOGI("🚫 [trueDispatch] Blocked native cop spawn (Cooldown active). Model: %u", model);
+        return false;
+    }
+
+    CVector player_pos = g_FindPlayerCoors ? g_FindPlayerCoors(0) : pos;
+    CVector target_pos = get_spawn_target(player_pos);
+
+    float dx = target_pos.x - player_pos.x;
+    float dy = target_pos.y - player_pos.y;
+    float dz = target_pos.z - player_pos.z;
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+    if (dist > 65.0f) {
+        float scale = 60.0f / dist;
+        target_pos.x = player_pos.x + dx * scale;
+        target_pos.y = player_pos.y + dy * scale;
+        target_pos.z = player_pos.z + dz * scale;
+    }
+
+    LOGI("🚓 [trueDispatch] Relocating native cop spawn! Model: %u, original pos: (%.1f, %.1f, %.1f), relocated to (%.1f, %.1f, %.1f), dist: %.1f m",
+         model, pos.x, pos.y, pos.z, target_pos.x, target_pos.y, target_pos.z, dist);
+
+    last_spawn_time_ms.store(now);
+    pos = target_pos;
+    return true;
+}
+
+void* g_stub_generate_one_emergency_car = nullptr;
+fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
+
+void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (is_police_vehicle_model(model)) {
+        if (!g_is_generating_custom_dispatch.load()) {
+            if (!relocate_police_car_spawn(model, pos)) {
+                return; // Intercept and block
+            }
+        }
+    }
+
+    if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
+        CVector player_pos = g_FindPlayerCoors(0);
+        float dx = pos.x - player_pos.x;
+        float dy = pos.y - player_pos.y;
+        float dz = pos.z - player_pos.z;
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        // 如果生成距离太远（比如大于 75 米），在移动端极易因为超出 Streaming Clip Distance 被秒删（Despawn）
+        // 我们实施 Workaround：将生成距离缩减比例（Scale Down Ratio），控制在 55 到 65 米的安全加载视距内
+        if (dist > 75.0f) {
+            float target_dist = 60.0f; // 黄金视距：既在移动端加载范围内，又不至于让玩家眼睁睁看着刷出
+            float scale = target_dist / dist;
+            CVector scaled_pos = {
+                player_pos.x + dx * scale,
+                player_pos.y + dy * scale,
+                player_pos.z + dz * scale // 保持原有的高度关系
+            };
+            LOGI("🚑🚒 [Emergency Workaround] Mobile draw distance scale applied! Model=%u, Original spawn dist=%.1f m, scaled to %.1f m (pos: %.1f, %.1f, %.1f)", 
+                 model, dist, target_dist, scaled_pos.x, scaled_pos.y, scaled_pos.z);
+            pos = scaled_pos;
+        }
+    }
+
+    SHADOWHOOK_CALL_PREV(proxy_generate_one_emergency_car, model, pos);
+}
+
+void* g_stub_script_generate_one_emergency_car = nullptr;
+fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nullptr;
+
+void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    // We do NOT block or relocate scripted police cars to ensure 100% mission compatibility
+
+    if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
+        CVector player_pos = g_FindPlayerCoors(0);
+        float dx = pos.x - player_pos.x;
+        float dy = pos.y - player_pos.y;
+        float dz = pos.z - player_pos.z;
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        if (dist > 75.0f) {
+            float target_dist = 60.0f;
+            float scale = target_dist / dist;
+            CVector scaled_pos = {
+                player_pos.x + dx * scale,
+                player_pos.y + dy * scale,
+                player_pos.z + dz * scale
+            };
+            LOGI("🚑🚒 [Emergency Script Workaround] Mobile draw distance scale applied! Model=%u, Original spawn dist=%.1f m, scaled to %.1f m (pos: %.1f, %.1f, %.1f)", 
+                 model, dist, target_dist, scaled_pos.x, scaled_pos.y, scaled_pos.z);
+            pos = scaled_pos;
+        }
+    }
+
+    SHADOWHOOK_CALL_PREV(proxy_script_generate_one_emergency_car, model, pos);
+}
+
+void* g_stub_tell_occupants_leave_car = nullptr;
+fn_TellOccupantsToLeaveCar_t g_orig_tell_occupants_leave_car = nullptr;
+
+void proxy_tell_occupants_leave_car(void* vehicle) {
+    SHADOWHOOK_STACK_SCOPE();
+    bind_vehicle_occupants(vehicle); // Bind them here before they leave!
+    record_exit_start_for_occupants(vehicle);
+    SHADOWHOOK_CALL_PREV(proxy_tell_occupants_leave_car, vehicle);
+}
