@@ -8,8 +8,9 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 enable_language(ASM)
 
-# Zygisk 头文件
+# Zygisk 与项目头文件
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/zygisk)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ShadowHook 源码路径
 set(SHADOWHOOK_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/shadowhook-src")
