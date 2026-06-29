@@ -6482,7 +6482,6 @@ static fn_IKChainUpdate_t g_orig_ik_chain_update = nullptr;
 static void proxy_ik_chain_update(void* self, float dt) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
-    if (!self) return; // Protect against null manager during transitions
     SHADOWHOOK_CALL_PREV(proxy_ik_chain_update, self, dt);
 }
 
@@ -6494,7 +6493,6 @@ static fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa = nullptr;
 static void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
-    if (!self) return; // Protect against null camera during transitions
     SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
 }
 
@@ -6507,7 +6505,17 @@ static bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, 
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
-    if (!self) return false; // Protect against nullptr task
+
+    if (self) {
+        // Offset 0x10 is m_pSubTask in CTaskComplex
+        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (is_pointer_readable(p_sub)) {
+            void* sub = *p_sub;
+            if (sub == nullptr) {
+                return true; // If subtask is null, the task is already abortable
+            }
+        }
+    }
     return SHADOWHOOK_CALL_PREV(proxy_leave_car_make_abortable, self, ped, priority, event);
 }
 
@@ -6538,7 +6546,17 @@ static void* proxy_facial_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
-    if (!self) return nullptr; // Protect against nullptr task
+
+    if (self) {
+        // Offset 0x10 is m_pSubTask in CTaskComplex
+        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (is_pointer_readable(p_sub)) {
+            void* sub = *p_sub;
+            if (sub == nullptr) {
+                return nullptr; // Prevent crash when subtask is null
+            }
+        }
+    }
     return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
 }
 
