@@ -171,10 +171,11 @@ void* g_pure_virtual_target = nullptr;
 
 bool is_task_vtable_safe(void* task) {
     if (!task) return true;
+    // Tier 2 VMA (or Tier 3 pipe fallback) then direct read — no double pipe per field.
     if (!is_pointer_readable(task)) return false;
     void* vtable = *reinterpret_cast<void**>(task);
     if (!vtable) return false;
-    if (!is_pointer_readable(vtable)) return false;
+    if (!vma_is_readable(vtable) && !pipe_probe_readable(vtable)) return false;
 
     // Verify that the vtable is within the address space of libUE4.so.
     // We use g_vtable_CTask as a reference point.

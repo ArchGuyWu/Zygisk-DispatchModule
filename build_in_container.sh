@@ -227,6 +227,7 @@ add_library(policemod SHARED
     dispatch_emergency.cpp
     dispatch_spawn_hooks.cpp
     hooks_stability.cpp
+    pointer_sanitizer_vma.cpp
     ecs_systems.cpp
 )
 target_link_libraries(policemod
