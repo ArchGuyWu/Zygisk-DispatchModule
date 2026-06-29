@@ -299,17 +299,6 @@ bool is_vehicle_pointer_valid(void* target_veh) {
     return false;
 }
 
-static void cleanup_invalid_vehicles(std::vector<void*>& vec, std::mutex& mtx) {
-    std::lock_guard<std::mutex> lock(mtx);
-    for (auto it = vec.begin(); it != vec.end(); ) {
-        if (!is_vehicle_pointer_valid(*it)) {
-            it = vec.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
-
 unsigned short get_entity_model_index(void* entity) {
     if (!entity) return 0;
     return *reinterpret_cast<unsigned short*>(reinterpret_cast<char*>(entity) + 0x3A);
@@ -1056,8 +1045,6 @@ void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_check_if_within_range));
     if (g_stub_check_if_within_range) {
         LOGI("✅ Hooked CCarGenerator::CheckIfWithinRangeOfAnyPlayers");
-        // Resolve CPools::ms_pPedPool
-        RESOLVE_SYM(lib, g_p_ms_pPedPool, "_ZN6CPools11ms_pPedPoolE", void***);
     }
     else LOGE("❌ Failed to hook CCarGenerator::CheckIfWithinRangeOfAnyPlayers: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
@@ -1267,6 +1254,8 @@ void hook_thread_func() {
     if (lib) {
         xdl_close(lib);
     }
+
+    init_ecs_systems();
 
     LOGI("=== All hooks installed ===");
     LOGI("=== Police Intervention System ACTIVE ===");

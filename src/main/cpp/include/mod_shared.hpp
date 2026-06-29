@@ -166,8 +166,6 @@ extern void* g_stub_partner_greet_get_sequence;
 extern void* g_stub_play_loaded_sound;
 extern void* g_stub_check_if_within_range;
 extern void* g_stub_avoid_ped_control;
-extern void* g_stub_CalcTargetOffset;
-extern void* g_stub_do_foot_landed;
 extern void* g_stub_add_police_occupants;
 extern void* g_stub_play_footsteps;
 extern void* g_stub_process_buoyancy;

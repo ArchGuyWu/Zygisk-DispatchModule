@@ -32,6 +32,10 @@
 #include "ecs_engine.hpp"
 
 void init_ecs_systems() {
+    static std::atomic<bool> initialized{false};
+    if (initialized.exchange(true)) {
+        return;
+    }
     LOGI("⚡️ [ECS Engine] Initializing ECS Systems...");
 
     // 1. CleanupSystem: 监听实体销毁事件
@@ -116,7 +120,6 @@ void init_ecs_systems() {
                 new_crime->dispatch_state = STATE_IDLE; // STATE_IDLE
 
                 g_active_crimes.push_back(new_crime);
-                g_crime_active.store(true);
                 g_tracked_criminal.store(criminal);
 
                 LOGI("📡 [ECS CopDispatchSystem] Activated new crime event Case %llu! Perp: %p, Firearm: %d, Pos: (%.1f, %.1f, %.1f)",

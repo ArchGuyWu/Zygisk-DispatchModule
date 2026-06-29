@@ -62,7 +62,6 @@ struct CopVehicleBinding {
 
 struct CrimeActiveCompat {
     bool load() const;
-    void store(bool active);
     operator bool() const { return load(); }
 };
 

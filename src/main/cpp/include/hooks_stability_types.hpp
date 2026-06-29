@@ -18,8 +18,6 @@ typedef void* (*fn_GetPartnerSequence_t)(void* self);
 typedef void (*fn_PlayLoadedSound_t)(void* self);
 typedef bool (*fn_CheckIfWithinRange_t)(void* self);
 typedef void* (*fn_AvoidPedControl_t)(void* self, void* ped);
-typedef void (*fn_CalcTargetOffset_t)(void* self);
-typedef void (*fn_DoFootLanded_t)(void* ped, bool left_foot, unsigned char surface_type);
 typedef void (*fn_PlayFootSteps_t)(void* self);
 typedef void (*fn_ProcessBuoyancy_t)(void* self);
 typedef void (*fn_ProcessStaticCounter_t)(void* self);
@@ -46,8 +44,6 @@ extern fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence;
 extern fn_PlayLoadedSound_t g_orig_play_loaded_sound;
 extern fn_CheckIfWithinRange_t g_orig_check_if_within_range;
 extern fn_AvoidPedControl_t g_orig_avoid_ped_control;
-extern fn_CalcTargetOffset_t g_orig_CalcTargetOffset;
-extern fn_DoFootLanded_t g_orig_do_foot_landed;
 extern fn_AddPoliceOccupants_t g_orig_add_police_occupants;
 extern fn_PlayFootSteps_t g_orig_play_footsteps;
 extern fn_ProcessBuoyancy_t g_orig_process_buoyancy;
@@ -63,8 +59,6 @@ extern fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable;
 extern fn_UpdateCarAI_t g_orig_update_car_ai;
 extern fn_FacialControlSubTask_t g_orig_facial_control_sub_task;
 
-extern void*** g_p_ms_pPedPool;
-
 // Stability hook proxies (defined in hooks_stability.cpp, installed from module.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
 void proxy_manage_tasks(void* self);
@@ -78,8 +72,6 @@ void* proxy_partner_greet_get_sequence(void* self);
 void proxy_play_loaded_sound(void* self);
 bool proxy_check_if_within_range(void* self);
 void* proxy_avoid_ped_control(void* self, void* ped);
-void proxy_CalcTargetOffset(void* self);
-void proxy_do_foot_landed(void* ped, bool left_foot, unsigned char surface_type);
 void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm);
 void proxy_play_footsteps(void* self);
 void proxy_process_buoyancy(void* self);

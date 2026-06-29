@@ -50,10 +50,6 @@ bool CrimeActiveCompat::load() const {
     return false;
 }
 
-void CrimeActiveCompat::store(bool /*active*/) {
-    // 留空以向下兼容原有的状态修改
-}
-
 CrimeActiveCompat g_crime_active;
 
 // 兼容层：dummy 案件
@@ -1109,6 +1105,7 @@ void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
 
 // 验证该警车原先绑定的驾驶员是否依然存活
 bool is_alive_bound_driver_exists(void* vehicle) {
+    std::lock_guard<std::mutex> lock(g_bindings_mutex);
     for (const auto& binding : g_cop_vehicle_bindings) {
         if (binding.vehicle == vehicle && binding.as_driver) {
             if (binding.cop && is_ped_pointer_valid_safe(binding.cop)) {
@@ -3072,12 +3069,6 @@ void update_primary_criminal_by_threat() {
 //
 // State machine: IDLE -> TIMING -> ON_SCENE -> CLEANUP
 // =====================================================================
-// 调度状态变量
-static DispatchState g_dispatch_state = STATE_IDLE;
-static int64_t g_timer_start = 0;
-static int g_dispatch_delay_ms = 0;
-static int g_last_cops_killed = 0;
-static int64_t g_on_scene_start = 0;
 static int64_t g_last_tick_time_ms = 0;
 
 static void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime) {
@@ -3799,11 +3790,6 @@ static void on_main_thread_tick() {
     }
     g_last_tick_time_ms = cur_time;
 
-    static bool ecs_inited = false;
-    if (!ecs_inited) {
-        init_ecs_systems();
-        ecs_inited = true;
-    }
     ecs::EventDispatcher::get().dispatch(ecs::TickEvent(cur_time));
 
     if (!g_FindPlayerPed || !g_FindPlayerPed(0)) {
@@ -4244,7 +4230,6 @@ static void on_main_thread_tick() {
                                                 LOGW("⚠️ Failed to identify spawned vehicle near (%.1f, %.1f, %.1f) for case %llu", target_pos.x, target_pos.y, target_pos.z, (unsigned long long)crime->case_id);
                                                 // Fallback 清理层：如果当前没有任何活跃案件存在，则统一恢复/释放全局所有的向下兼容级 and 未分组表映射
                                                 if (g_active_crimes.empty()) {
-                                                    g_crime_active.store(false);
                                                     g_tracked_criminal.store(nullptr);
                                                     ecs::EntityManager::get().clear();
                                                 }
@@ -4455,7 +4440,6 @@ static void on_main_thread_tick() {
 
     // Fallback 清理层：如果当前没有任何活跃案件存在，则统一恢复/释放全局所有的向下兼容级和未分组表映射
     if (g_active_crimes.empty()) {
-        g_crime_active.store(false);
         g_tracked_criminal.store(nullptr);
 
         g_player_stray_bullet_flag.store(false);
@@ -4511,7 +4495,6 @@ static void on_main_thread_tick() {
             std::lock_guard<std::mutex> lock(g_spawned_cop_vehicles_mutex);
             g_spawned_cop_vehicles.clear();
         }
-        g_last_cops_killed = 0;
     }
 }
 

@@ -460,8 +460,6 @@ void proxy_play_loaded_sound(void* self) {
 // --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
 void* g_stub_check_if_within_range = nullptr;
 fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
-void*** g_p_ms_pPedPool = nullptr;  // resolved in module.cpp hook_thread_func
-
 bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return false;
@@ -501,51 +499,6 @@ void* proxy_avoid_ped_control(void* self, void* ped) {
     return SHADOWHOOK_CALL_PREV(proxy_avoid_ped_control, self, ped);
 }
 
-
-// --- CTaskGangHassleVehicle::CalcTargetOffset Hook ---
-void* g_stub_CalcTargetOffset = nullptr;
-fn_CalcTargetOffset_t g_orig_CalcTargetOffset = nullptr;
-
-void proxy_CalcTargetOffset(void* self) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
-    
-    if (self) {
-        // Check offset 0x18 (target vehicle)
-        void** pVehicle = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
-        if (is_pointer_readable(pVehicle)) {
-            void* vehicle = *pVehicle;
-            if (vehicle && !is_pointer_readable(vehicle)) {
-                LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
-                return;
-            }
-        }
-        
-        // Check offset 0x10 (target entity)
-        void** pEntity = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(pEntity)) {
-            void* entity = *pEntity;
-            if (entity && !is_pointer_readable(entity)) {
-                LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target entity is invalid (%p) at offset 0x10! Skipping calculation to prevent SIGSEGV.", entity);
-                return;
-            }
-        }
-    }
-    
-    SHADOWHOOK_CALL_PREV(proxy_CalcTargetOffset, self);
-}
-
-// --- CPed::DoFootLanded Hook ---
-void* g_stub_do_foot_landed = nullptr;
-fn_DoFootLanded_t g_orig_do_foot_landed = nullptr;
-
-void proxy_do_foot_landed(void* ped, bool left_foot, unsigned char surface_type) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (ped && (!is_ped_pointer_valid_safe(ped) || !*reinterpret_cast<void**>(ped))) {
-        return;
-    }
-    SHADOWHOOK_CALL_PREV(proxy_do_foot_landed, ped, left_foot, surface_type);
-}
 
 void* g_stub_add_police_occupants = nullptr;
 fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
@@ -622,9 +575,26 @@ void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
     if (self) {
-        void** p_ped = reinterpret_cast<void**>(self);
-        if (is_pointer_readable(p_ped)) {
-            sanitize_ped_tasks(*p_ped);
+        for (int offset = 0x8; offset <= 0x28; offset += 8) {
+            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
+            if (!is_pointer_readable(task_slot)) continue;
+            void* task = *task_slot;
+            if (task && !is_task_vtable_safe(task)) {
+                LOGW("⚠️ [ProcessStaticCounter] Clearing unsafe task %p at offset 0x%X in CPedIntelligence %p", task, offset, self);
+                *task_slot = nullptr;
+            }
+        }
+        void* task_mgr = reinterpret_cast<char*>(self) + 8;
+        if (is_pointer_readable(task_mgr)) {
+            for (int i = 0; i < 11; ++i) {
+                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                if (!is_pointer_readable(task_slot)) continue;
+                void* task = *task_slot;
+                if (task && !is_task_vtable_safe(task)) {
+                    LOGW("⚠️ [ProcessStaticCounter] Clearing unsafe task %p at slot %d in CPedIntelligence %p", task, i, self);
+                    *task_slot = nullptr;
+                }
+            }
         }
     }
     SHADOWHOOK_CALL_PREV(proxy_process_static_counter, self);
