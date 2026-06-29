@@ -34,6 +34,7 @@
 #include "dispatch_reroute.hpp"
 #include "dispatch_cop_state.hpp"
 #include "dispatch_ped_registry.hpp"
+#include "dispatch_hit_and_run.hpp"
 
 void init_ecs_systems() {
     static std::atomic<bool> initialized{false};
@@ -54,6 +55,8 @@ void init_ecs_systems() {
     ecs::EventDispatcher::get().subscribe<ecs::CrimeReportEvent>("CrimeReportEvent", [](const ecs::CrimeReportEvent& ev) {
         auto* criminal = static_cast<CPed*>(ev.criminal);
         if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
+
+        dispatch_hit_and_run::on_perpetrator_crime_report(criminal);
 
         // 在 ECS 中注册并初始化/更新犯罪分子组件
         auto* crim_comp = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(criminal);
@@ -153,12 +156,12 @@ void init_ecs_systems() {
             if (!combat_comp) {
                 combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(victim_cop);
             }
-            if (combat_comp) {
-                combat_comp->target_entity = attacker_perp;
-            }
+            dispatch_cop_state::set_self_defense_target(victim_cop, attacker_perp, ev.time_ms);
 
-            // 警员受袭，触发即时自卫反击 (不强制更新武器模型，防止重置攻击动画)
-            make_single_cop_attack_criminal(victim_cop, attacker_perp, false);
+            // 警员受袭：优先锁定并反击该攻击者，强制配枪/下任务保自身安全
+            make_single_cop_attack_criminal(victim_cop, attacker_perp, true);
+            LOGI("🛡️ [CopSelfDefense] Cop %p prioritized attacker %p (weapon=%d)",
+                 victim_cop, attacker_perp, ev.weapon_type);
         }
     });
 
@@ -247,6 +250,8 @@ void init_ecs_systems() {
     // 4. CopStuckAndWeaponSelectionSystem: 周期性 Tick 事件
     ecs::EventDispatcher::get().subscribe<ecs::TickEvent>("TickEvent", [](const ecs::TickEvent& ev) {
         int64_t cur_time = ev.current_time_ms;
+
+        dispatch_hit_and_run::tick_pending_wanted(cur_time);
 
         // 1. CriminalComponent 周期维护
         auto criminals = ecs::EntityManager::get().get_entities_with<ecs::CriminalComponent>();
@@ -349,8 +354,13 @@ void init_ecs_systems() {
             // 2.2 智能武器选择与高响应收枪控制链 (零延迟、高响应性切枪与即时自动收枪机制)
             bool should_disarm = false;
             CPed* target = nullptr;
+            CPed* self_defense_target =
+                dispatch_cop_state::get_self_defense_target(cop, ev.current_time_ms);
 
-            if (combat_comp) {
+            if (self_defense_target) {
+                target = self_defense_target;
+                make_single_cop_attack_criminal(cop, self_defense_target, true);
+            } else if (combat_comp) {
                 target = dispatch_cop_state::resolve_combat_target(cop);
             }
 
@@ -363,8 +373,10 @@ void init_ecs_systems() {
                 should_disarm = true; // 目标指针已失效或被引擎清理
             } else if (g_IsAlive && !g_IsAlive(target)) {
                 should_disarm = true; // 目标已被击毙
-            } else if (!g_crime_active.load()) {
+            } else if (!g_crime_active.load() && !self_defense_target) {
                 should_disarm = true; // 警情已全局解除
+            } else if (self_defense_target) {
+                should_disarm = false;
             } else {
                 // 校验该目标是否属于任何一个活跃的犯罪现场
                 bool target_is_active_criminal = false;
@@ -406,7 +418,7 @@ void init_ecs_systems() {
             }
 
             // 视听范围内：禁止收枪/上车/移除战斗组件，必须参战
-            if (should_disarm && within_native_av) {
+            if (should_disarm && within_native_av && !self_defense_target) {
                 should_disarm = false;
                 CPed* engage_target = nullptr;
                 if (target && is_ped_pointer_valid_safe(target) && (g_IsAlive == nullptr || g_IsAlive(target))) {
@@ -465,7 +477,8 @@ void init_ecs_systems() {
                         if (bound_veh) {
                             // 驾驶员生存性晋升系统 (Driver Survivability Promotion)
                             // 如果当前警员是乘客，但该车原绑定的驾驶员已经殉职/不存在，则自动将该警员晋升为驾驶员！
-                            if (!is_driver && !is_alive_bound_driver_exists(bound_veh)) {
+                            if (!is_driver && !vehicle_has_physical_driver(bound_veh) &&
+                                !is_alive_bound_driver_exists(bound_veh)) {
                                 is_driver = true;
                                 // 同步更新绑定关系
                                 {

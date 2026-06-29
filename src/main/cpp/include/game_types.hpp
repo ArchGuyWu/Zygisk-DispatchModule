@@ -66,6 +66,8 @@ enum eWeaponType : int {
     WEAPON_RIFLE = 33,
     WEAPON_SNIPER = 34,
     WEAPON_MINIGUN = 38,
+    WEAPON_RAMMEDBYCAR = 49,
+    WEAPON_RUNOVERBYCAR = 50,
 };
 
 // 函数指针类型定义（全部从 nm -D 确认 of 导出符号）
@@ -97,3 +99,5 @@ typedef CPed* (*fn_GetPoolPed_t)(int);
 typedef void (*fn_GiveWeapon_t)(void*, eWeaponType, unsigned int, bool);
 typedef void (*fn_SetCurrentWeapon_t)(void*, eWeaponType);
 typedef void (*fn_GiveWeaponAtStartOfFight_t)(void*);
+typedef void* (*fn_CreateCarForScript_t)(int modelid, CVector posn, unsigned char missionCleanUpFlag);
+typedef void (*fn_FlyAIHeliToTarget_FixedOrientation_t)(void* pHeli, float orientation, CVector posn);

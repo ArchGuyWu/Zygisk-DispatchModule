@@ -39,57 +39,37 @@
 std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
 std::mutex g_emergency_stuck_vehicles_mutex;
 
-std::vector<void*> g_emergency_vehicles_emptied;
-std::mutex g_emergency_vehicles_emptied_mutex;
-
-constexpr int PED_TYPE_MEDIC     = 18;
-constexpr int PED_TYPE_FIREMAN   = 19;
-
 void emergency_vehicles_tick() {
-    if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return;
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle) return;
 
-    void* ped_pool = *reinterpret_cast<void**>(g_ms_pPedPool);
-    if (!ped_pool) return;
+    void* v_pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!v_pool) return;
 
-    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(ped_pool) + 8);
-    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(ped_pool) + 16);
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(v_pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(v_pool) + 16);
     if (!byte_map) return;
 
     int64_t now_time = now_ms();
 
-    // 1. 定期清理已失效的离车标记
     {
-        std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-        for (auto it = g_emergency_vehicles_emptied.begin(); it != g_emergency_vehicles_emptied.end(); ) {
-            if (!*it || !is_vehicle_pointer_valid(*it)) {
-                it = g_emergency_vehicles_emptied.erase(it);
+        std::lock_guard<std::mutex> stuck_lock(g_emergency_stuck_vehicles_mutex);
+        for (auto it = g_emergency_stuck_vehicles.begin(); it != g_emergency_stuck_vehicles.end(); ) {
+            if (!is_vehicle_pointer_valid(it->first)) {
+                it = g_emergency_stuck_vehicles.erase(it);
             } else {
                 ++it;
             }
         }
     }
 
-    // 2. 遍历 Ped 池，找出医护人员 (18) 与消防员 (19) 的载具
-    std::vector<void*> processed_vehicles; // 避免同一车辆有多个乘员时重复处理
     for (int i = 0; i < size; i++) {
         signed char flag = byte_map[i];
         if (flag >= 0) {
             int handle = (i << 8) | flag;
-            CPed* ped = g_GetPoolPed(handle);
-            if (ped && is_ped_pointer_valid_safe(ped)) {
-                if (g_IsAlive && !g_IsAlive(ped)) {
-                    continue;
-                }
-                int ped_type = g_GetPedType(ped);
-                if (ped_type == PED_TYPE_MEDIC || ped_type == PED_TYPE_FIREMAN) {
-                    void* veh = find_vehicle_of_cop(ped); // 此辅助函数能安全返回 ped 的当前载具
-                    if (veh && is_vehicle_pointer_valid(veh)) {
-                        unsigned int model = get_entity_model_index(veh);
-                        if (model == 416 || model == 407) { // Ambulance or Firetruck
-                            if (std::find(processed_vehicles.begin(), processed_vehicles.end(), veh) != processed_vehicles.end()) {
-                                continue;
-                            }
-                            processed_vehicles.push_back(veh);
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_vehicle_pointer_valid(veh)) {
+                unsigned int model = get_entity_model_index(veh);
+                if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
 
                             CVector current_pos = get_entity_pos(veh);
                             
@@ -178,17 +158,11 @@ void emergency_vehicles_tick() {
                                         };
                                         bool will_fall = (p_pos.z < 1.0f && current_pos.z >= 2.0f);
                                         if (will_fall) {
-                                            bool already_emptied = false;
-                                            {
-                                                std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-                                                already_emptied = std::find(g_emergency_vehicles_emptied.begin(), g_emergency_vehicles_emptied.end(), veh) != g_emergency_vehicles_emptied.end();
-                                            }
-                                            if (!already_emptied) {
+                                            if (!is_vehicle_emptied(veh)) {
                                                 if (g_TellOccupantsToLeaveCar) {
                                                     dispatch_tell_occupants_to_leave_car(veh);
                                                 }
-                                                std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-                                                g_emergency_vehicles_emptied.push_back(veh);
+                                                add_vehicle_emptied(veh);
                                                 LOGW("🌊 [Emergency Escaper - Water rescue] Cinematic emergency exit triggered for %p to avoid drowning!", veh);
                                             }
                                         }
@@ -305,7 +279,7 @@ void emergency_vehicles_tick() {
                                     }
 
                                     // E. [Fire Avoidance]：仅对救护车 (Ambulance) 开启火源智能避让。消防车需要逆火而行不避让！
-                                    if (!car_blocked && model == 416 && g_FireManager && g_FindNearestFire) {
+                                    if (!car_blocked && model == MODEL_AMBULANCE && g_FireManager && g_FindNearestFire) {
                                         void* nearest_fire = g_FindNearestFire(g_FireManager, current_pos, true, true);
                                         if (nearest_fire) {
                                             CVector fire_pos;
@@ -318,17 +292,11 @@ void emergency_vehicles_tick() {
                                                 if (fire_dist < 15.0f) {
                                                     if (fire_dist < 6.5f && speed < 2.0f) {
                                                         // 距离过近，强制退出保护
-                                                        bool already_emptied = false;
-                                                        {
-                                                            std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-                                                            already_emptied = std::find(g_emergency_vehicles_emptied.begin(), g_emergency_vehicles_emptied.end(), veh) != g_emergency_vehicles_emptied.end();
-                                                        }
-                                                        if (!already_emptied) {
+                                                        if (!is_vehicle_emptied(veh)) {
                                                             if (g_TellOccupantsToLeaveCar) {
                                                                 dispatch_tell_occupants_to_leave_car(veh);
                                                             }
-                                                            std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-                                                            g_emergency_vehicles_emptied.push_back(veh);
+                                                            add_vehicle_emptied(veh);
                                                             LOGW("🔥 [Emergency Escaper - Ambulance Fire Exit] Trapped near fire, emergency exit triggered.");
                                                         }
                                                     } else {
@@ -383,17 +351,11 @@ void emergency_vehicles_tick() {
                             
                             // B1. 落水检测二次熔断
                             if (current_pos.z < 1.0f) {
-                                bool already_emptied = false;
-                                {
-                                    std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-                                    already_emptied = std::find(g_emergency_vehicles_emptied.begin(), g_emergency_vehicles_emptied.end(), veh) != g_emergency_vehicles_emptied.end();
-                                }
-                                if (!already_emptied) {
+                                if (!is_vehicle_emptied(veh)) {
                                     if (g_TellOccupantsToLeaveCar) {
                                         dispatch_tell_occupants_to_leave_car(veh);
                                     }
-                                    std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
-                                    g_emergency_vehicles_emptied.push_back(veh);
+                                    add_vehicle_emptied(veh);
                                     LOGW("[Emergency Escaper - Water escape] Low elevation Z < 1.0m. Evacuated emergency personnel.");
                                 }
                             }
@@ -465,7 +427,7 @@ void emergency_vehicles_tick() {
                                                     void* other_veh = g_GetPoolVehicle(v_handle);
                                                     if (other_veh && other_veh != veh && is_vehicle_pointer_valid(other_veh)) {
                                                         unsigned int o_model = get_entity_model_index(other_veh);
-                                                        if (o_model != 416 && o_model != 407 && o_model != MODEL_POLICE_CAR && o_model != MODEL_SWAT_VAN && o_model != MODEL_POLICE_BIKE) {
+                                                        if (o_model != MODEL_AMBULANCE && o_model != MODEL_FIRETRUCK && o_model != MODEL_POLICE_CAR && o_model != MODEL_SWAT_VAN && o_model != MODEL_POLICE_BIKE) {
                                                             CVector other_pos = get_entity_pos(other_veh);
                                                             float ov_dx = other_pos.x - current_pos.x;
                                                             float ov_dy = other_pos.y - current_pos.y;
@@ -502,8 +464,6 @@ void emergency_vehicles_tick() {
                                 set_entity_pos(veh, nudged_pos);
                                 LOGI("   +- Applied Stage 1 Nudge (seen=%d)", is_seen);
                             }
-                        }
-                    }
                 }
             }
         }

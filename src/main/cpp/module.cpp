@@ -52,6 +52,8 @@ fn_GetMatrix_t                g_GetMatrix = nullptr;
 fn_FindDistToNearestPedOfType_t g_FindDistToNearestCop = nullptr;
 fn_ScriptGenEmergencyCar_t    g_ScriptGenEmergencyCar = nullptr;
 fn_GenOneEmergencyCar_t       g_GenOneEmergencyCar = nullptr;
+fn_CreateCarForScript_t       g_CreateCarForScript = nullptr;
+fn_FlyAIHeliToTarget_FixedOrientation_t g_FlyAIHeliToTarget_FixedOrientation = nullptr;
 fn_AddPoliceOccupants_t       g_AddPoliceOccupants = nullptr;
 fn_AddCriminalToKill_t        g_AddCriminalToKill = nullptr;
 fn_GiveWeapon_t               g_GiveWeapon = nullptr;
@@ -277,6 +279,22 @@ unsigned short get_entity_model_index(void* entity) {
     return *reinterpret_cast<unsigned short*>(reinterpret_cast<char*>(entity) + 0x3A);
 }
 
+void zero_entity_velocity(void* entity) {
+    if (!entity || !is_entity_pointer_valid(entity)) return;
+    float* move_speed = reinterpret_cast<float*>(reinterpret_cast<char*>(entity) + 0x44);
+    float* turn_speed = reinterpret_cast<float*>(reinterpret_cast<char*>(entity) + 0x50);
+    if (is_pointer_readable(move_speed)) {
+        move_speed[0] = 0.0f;
+        move_speed[1] = 0.0f;
+        move_speed[2] = 0.0f;
+    }
+    if (is_pointer_readable(turn_speed)) {
+        turn_speed[0] = 0.0f;
+        turn_speed[1] = 0.0f;
+        turn_speed[2] = 0.0f;
+    }
+}
+
 void stabilize_motorcycle(void* veh) {
     if (!veh || !g_GetMatrix) return;
     CMatrix* mat = g_GetMatrix(veh);
@@ -304,6 +322,8 @@ void stabilize_motorcycle(void* veh) {
     mat->right_x = norm_up_y;
     mat->right_y = -norm_up_x;
     mat->right_z = 0.0f;
+
+    zero_entity_velocity(veh);
 }
 
 

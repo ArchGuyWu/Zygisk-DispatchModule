@@ -57,13 +57,14 @@ void cop_attack_vehicle_initial_order(
                                          session.v_dist, veh, ctx.active_vehicles_count, ctx.max_vehicles);
                                 }
 
-                                // 2. 动态警笛唤醒
+                                // 2. 动态警笛唤醒（假坐标导航，不以罪犯为 native 伤害源）
                                 if (!ctx.vector_contains(ctx.vehicles_emptied_snapshot, veh) && session.v_dist < 90.0f && !ctx.vector_contains(ctx.vehicles_siren_awakened_snapshot, veh)) {
+                                    CVector decoy = compute_vehicle_staging_decoy(target_crime_pos, session.veh_pos);
                                     if (g_GetCarToGoToCoors) {
-                                        g_GetCarToGoToCoors(veh, &target_crime_pos, 0, false);
+                                        g_GetCarToGoToCoors(veh, &decoy, 0, false);
                                     }
                                     if (g_VehicleInflictDamage) {
-                                        g_VehicleInflictDamage(veh, reinterpret_cast<CEntity*>(target_criminal), WEAPON_UNARMED, 0.0f, session.veh_pos);
+                                        g_VehicleInflictDamage(veh, nullptr, WEAPON_UNARMED, 0.0f, session.veh_pos);
                                     }
                                     ctx.vehicles_siren_awakened_snapshot.push_back(veh); // 局部同步
                                     ctx.pending_vehicles_siren_awakened.push_back(veh);

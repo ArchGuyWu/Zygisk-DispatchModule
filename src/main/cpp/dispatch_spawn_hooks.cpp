@@ -31,6 +31,8 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_emergency_services.hpp"
+#include "game_config.hpp"
 
 
 // =====================================================================
@@ -179,27 +181,13 @@ void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
         }
     }
 
-    if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
-        CVector player_pos = g_FindPlayerCoors(0);
-        float dx = pos.x - player_pos.x;
-        float dy = pos.y - player_pos.y;
-        float dz = pos.z - player_pos.z;
-        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-
-        // 如果生成距离太远（比如大于 75 米），在移动端极易因为超出 Streaming Clip Distance 被秒删（Despawn）
-        // 我们实施 Workaround：将生成距离缩减比例（Scale Down Ratio），控制在 55 到 65 米的安全加载视距内
-        if (dist > 75.0f) {
-            float target_dist = 60.0f; // 黄金视距：既在移动端加载范围内，又不至于让玩家眼睁睁看着刷出
-            float scale = target_dist / dist;
-            CVector scaled_pos = {
-                player_pos.x + dx * scale,
-                player_pos.y + dy * scale,
-                player_pos.z + dz * scale // 保持原有的高度关系
-            };
-            LOGI("🚑🚒 [Emergency Workaround] Mobile draw distance scale applied! Model=%u, Original spawn dist=%.1f m, scaled to %.1f m (pos: %.1f, %.1f, %.1f)", 
-                 model, dist, target_dist, scaled_pos.x, scaled_pos.y, scaled_pos.z);
-            pos = scaled_pos;
+    if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
+        if (!g_is_generating_custom_dispatch.load()) {
+            LOGI("🚫 [ModEMS] Blocked native emergency spawn (model=%u) — mod dispatch handles ambulance/firetruck",
+                 model);
+            return;
         }
+        pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(pos, pos);
     }
 
     SHADOWHOOK_CALL_PREV(proxy_generate_one_emergency_car, model, pos);
@@ -213,25 +201,8 @@ void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
 
     // We do NOT block or relocate scripted police cars to ensure 100% mission compatibility
 
-    if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
-        CVector player_pos = g_FindPlayerCoors(0);
-        float dx = pos.x - player_pos.x;
-        float dy = pos.y - player_pos.y;
-        float dz = pos.z - player_pos.z;
-        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-
-        if (dist > 75.0f) {
-            float target_dist = 60.0f;
-            float scale = target_dist / dist;
-            CVector scaled_pos = {
-                player_pos.x + dx * scale,
-                player_pos.y + dy * scale,
-                player_pos.z + dz * scale
-            };
-            LOGI("🚑🚒 [Emergency Script Workaround] Mobile draw distance scale applied! Model=%u, Original spawn dist=%.1f m, scaled to %.1f m (pos: %.1f, %.1f, %.1f)", 
-                 model, dist, target_dist, scaled_pos.x, scaled_pos.y, scaled_pos.z);
-            pos = scaled_pos;
-        }
+    if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
+        pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(pos, pos);
     }
 
     SHADOWHOOK_CALL_PREV(proxy_script_generate_one_emergency_car, model, pos);

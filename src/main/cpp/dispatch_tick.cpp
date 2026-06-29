@@ -31,6 +31,7 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_emergency_services.hpp"
 
 
 // =====================================================================
@@ -75,6 +76,7 @@ void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime) {
         }
     }
     crime->case_vehicles.clear();
+    dispatch_emergency_services::clear_case_emergency_records(crime->case_id);
     LOGI("📡 [dispatchCenter - GC] Cleaned up vehicles and route closures for case %llu", (unsigned long long)crime->case_id);
 }
 

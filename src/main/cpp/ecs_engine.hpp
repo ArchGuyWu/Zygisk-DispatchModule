@@ -193,6 +193,11 @@ struct CopComponent : public IComponent {
     float last_pos_z = 0.0f;
     int stuck_count = 0;
 
+    // 受袭自卫：优先反击主动攻击者
+    Entity self_defense_attacker = nullptr;
+    int self_defense_attacker_handle = -1;
+    int64_t self_defense_until_ms = 0;
+
     CopComponent(Entity ped) : cop_ped(ped) {}
 };
 

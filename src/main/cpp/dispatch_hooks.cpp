@@ -31,6 +31,8 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_emergency_services.hpp"
+#include "dispatch_hit_and_run.hpp"
 
 
 // =====================================================================
@@ -156,39 +158,17 @@ void proxy_register_kill(const CPed* dead_ped,
             }
         }
 
-        // 警察被杀 → 针对 80 米内最近的活跃案件触发增援
+        // 警察被杀 → 仅案犯亲手所杀才计入 cops_killed；车辆肇事逃逸进待通缉列表
         if (dead_type == PED_TYPE_COP) {
-            std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
             CVector cop_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
-            
-            std::shared_ptr<CrimeEvent> nearest_crime = nullptr;
-            float min_dist_sq = 80.0f * 80.0f; // 仅计算 80 米内的案件
-            
-            for (auto& crime : g_active_crimes) {
-                if (crime && !crime->cancelled) {
-                    float dx = cop_pos.x - crime->location.x;
-                    float dy = cop_pos.y - crime->location.y;
-                    float dz = cop_pos.z - crime->location.z;
-                    float dist_sq = dx * dx + dy * dy + dz * dz;
-                    if (dist_sq < min_dist_sq) {
-                        min_dist_sq = dist_sq;
-                        nearest_crime = crime;
-                    }
-                }
-            }
-            
-            if (nearest_crime) {
-                nearest_crime->cops_killed++;
-                int killed = nearest_crime->cops_killed;
-                LOGI("📡 [dispatchCenter] Cop killed at scene of case %llu (total: %d, dist: %.1f) -> triggering reinforcement!", 
-                     (unsigned long long)nearest_crime->case_id, killed, sqrtf(min_dist_sq));
-            } else {
-                LOGI("📡 [dispatchCenter] Cop killed far from any active case -> ignored");
-            }
+            dispatch_hit_and_run::handle_cop_death_near_case(
+                dead_ped, killer, weapon, cop_pos);
         }
     }
 
     if (dead_ped && is_ped_pointer_valid_safe(const_cast<CPed*>(dead_ped))) {
+        CVector death_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
+        dispatch_emergency_services::on_civilian_casualty_near_crime(dead_ped, death_pos);
         ecs::EventDispatcher::get().dispatch(ecs::EntityCleanupEvent(const_cast<CPed*>(dead_ped), true));
     }
 

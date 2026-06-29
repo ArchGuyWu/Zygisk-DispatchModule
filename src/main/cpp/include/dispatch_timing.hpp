@@ -36,6 +36,13 @@ constexpr int SPAWN_FALLBACK_MELEE_MAX_MS = 16000;
 // --- 刷车后识别/配置载具 ---
 constexpr int64_t VEHICLE_IDENTIFY_DELAY_MS = 400;
 constexpr int64_t VEHICLE_IDENTIFY_STAGGER_MS = 600;
+constexpr int64_t VEHICLE_IDENTIFY_RETRY_MS = 500;
+constexpr int VEHICLE_IDENTIFY_MAX_ATTEMPTS = 3;
+constexpr float VEHICLE_IDENTIFY_RADIUS_M = 40.0f;
+
+// --- 视野外刷车等待：识别失败或警车赶路 ---
+constexpr int64_t SPAWN_PENDING_TIMEOUT_MS = 45000;
+constexpr int64_t SPAWN_ARRIVED_SCENE_TIMEOUT_MS = 60000;
 
 // --- 到场后伤亡增援：先附近调度，再刷车 ---
 constexpr int64_t REINFORCE_NEARBY_ATTEMPT_MS = 4000;
@@ -54,9 +61,46 @@ constexpr int64_t FOOT_ASSIGN_ACTIVE_WINDOW_MS = 15000;
 // --- on_scene 分派心跳（视听外降频，视听内由调用方即时触发）---
 constexpr int64_t ON_SCENE_DISPATCH_INTERVAL_MS = 2500;
 
+// --- 救护/消防模组调度 ---
+constexpr float EMERGENCY_STREAMING_MAX_DIST_M = 75.0f;
+constexpr float EMERGENCY_STREAMING_TARGET_DIST_M = 60.0f;
+constexpr float EMERGENCY_CAP_RANGE_M = 150.0f;
+constexpr int MAX_AMBULANCE_NEAR_PLAYER = 2;
+constexpr int MAX_FIRETRUCK_NEAR_PLAYER = 2;
+constexpr float FIRE_DETECT_RANGE_M = 55.0f;
+constexpr float CASUALTY_CASE_RANGE_M = 80.0f;
+constexpr float GLOBAL_FIRE_PLAYER_RANGE_M = 75.0f;
+constexpr int64_t EMERGENCY_EVAL_INTERVAL_MS = 2000;
+constexpr int AMBULANCE_SPAWN_DELAY_MIN_MS = 5000;
+constexpr int AMBULANCE_SPAWN_DELAY_MAX_MS = 8000;
+constexpr int FIRETRUCK_SPAWN_DELAY_MIN_MS = 3000;
+constexpr int FIRETRUCK_SPAWN_DELAY_MAX_MS = 5000;
+constexpr int64_t EMERGENCY_REROUTE_INTERVAL_MS = 3000;
+constexpr int64_t GLOBAL_FIRE_COOLDOWN_MS = 20000;
+constexpr int EMS_REROUTE_PRIORITY_MARGIN = 8;
+constexpr float EMS_PRIORITY_DISTANCE_PENALTY_M = 15.0f;
+
+// --- 警用直升机空中支援 ---
+constexpr float HELI_SPAWN_ALTITUDE_M = 80.0f;
+constexpr float HELI_HOVER_ALTITUDE_M = 28.0f;
+constexpr float HELI_GLOBAL_CAP_RANGE_M = 200.0f;
+constexpr int MAX_POLICE_HELI_NEAR_PLAYER = 1;
+constexpr int HELI_SPAWN_DELAY_MIN_MS = 10000;
+constexpr int HELI_SPAWN_DELAY_MAX_MS = 15000;
+constexpr int64_t HELI_REFRESH_INTERVAL_MS = 3000;
+
 // --- 载具警到场下车 ---
+constexpr float VEHICLE_STAGING_OFFSET_M = 32.0f;
+constexpr float VEHICLE_STAGING_EXIT_MARGIN_M = 4.0f;
+constexpr float VEHICLE_BIKE_STAGING_OFFSET_M = 20.0f;
 constexpr int64_t VEHICLE_STUCK_EXIT_MS = 8000;
 constexpr int64_t VEHICLE_MAX_APPROACH_MS = 15000;
+
+// --- 步行转场 / 司乘 / 下车接战 ---
+constexpr float NEARBY_FOOT_PREFER_DIST_M = 55.0f;
+constexpr float ACTIVE_CRIME_FOOT_DUTY_RADIUS_M = 80.0f;
+constexpr int64_t VEHICLE_ENTER_COMMAND_COOLDOWN_MS = 10000;
+constexpr int64_t COP_EXIT_COMBAT_BLOCK_MS = 8000;
 
 float get_av_range_for_crime(const CrimeEvent& crime);
 int64_t get_natural_response_grace_ms(const CrimeEvent& crime);

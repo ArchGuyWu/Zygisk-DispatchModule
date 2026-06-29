@@ -34,6 +34,8 @@
 #include "dispatch_tick_internal.hpp"
 #include "dispatch_reroute.hpp"
 #include "dispatch_cop_state.hpp"
+#include "dispatch_emergency_services.hpp"
+#include "dispatch_hit_and_run.hpp"
 
 
 // =====================================================================
@@ -44,7 +46,8 @@ static int64_t g_last_tick_time_ms = 0;
 // =====================================================================
 // Custom dispatch vehicle spawn wrapper
 // =====================================================================
-void dispatch_spawn_emergency_car(unsigned int model, CVector pos) {
+CVector dispatch_spawn_emergency_car(unsigned int model, CVector pos, CVector incident_anchor) {
+    pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(incident_anchor, pos);
     g_is_generating_custom_dispatch.store(true);
     if (g_ScriptGenEmergencyCar) {
         g_ScriptGenEmergencyCar(model, pos);
@@ -52,6 +55,7 @@ void dispatch_spawn_emergency_car(unsigned int model, CVector pos) {
         g_GenOneEmergencyCar(model, pos);
     }
     g_is_generating_custom_dispatch.store(false);
+    return pos;
 }
 void on_main_thread_tick() {
     // 1. 每帧高频平滑避让更新（无感避让）
@@ -96,21 +100,35 @@ void on_main_thread_tick() {
 
     std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
 
-    // 判断是否有任意活动案件
+    // 复制一份 shared_ptr 数组快照，绝对规避在派发和回调过程中（同一线程上重入时）导致 `g_active_crimes` 扩容而引发的迭代器失效 crash
+    std::vector<std::shared_ptr<CrimeEvent>> crimes_snapshot = g_active_crimes;
+
     bool any_active_case = false;
-    for (const auto& crime : g_active_crimes) {
+    for (const auto& crime : crimes_snapshot) {
         if (crime && !crime->cancelled) {
             any_active_case = true;
             break;
         }
     }
 
-    // Periodically bind occupants of active vehicles (only for our custom spawned initial response & reinforcement vehicles)
+    // Periodically bind occupants of active mod-spawned vehicles
     if (any_active_case) {
         std::lock_guard<std::mutex> lock_sp(g_spawned_cop_vehicles_mutex);
         for (void* veh : g_spawned_cop_vehicles) {
             if (is_vehicle_pointer_valid(veh)) {
                 bind_vehicle_occupants(veh);
+            }
+        }
+        for (const auto& crime : crimes_snapshot) {
+            if (!crime || crime->cancelled) continue;
+            for (void* veh : crime->case_vehicles) {
+                if (!veh || !is_vehicle_pointer_valid(veh)) continue;
+                unsigned int model = get_entity_model_index(veh);
+                if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK ||
+                    model == MODEL_POLICE_CAR || model == MODEL_POLICE_BIKE ||
+                    model == MODEL_SWAT_VAN) {
+                    bind_vehicle_occupants(veh);
+                }
             }
         }
     }
@@ -121,9 +139,6 @@ void on_main_thread_tick() {
         last_siren_refresh = cur_time;
     }
 
-    // 复制一份 shared_ptr 数组快照，绝对规避在派发和回调过程中（同一线程上重入时）导致 `g_active_crimes` 扩容而引发的迭代器失效 crash
-    std::vector<std::shared_ptr<CrimeEvent>> crimes_snapshot = g_active_crimes;
-
     // =====================================================================
     // 👻 [dispatchCenter - GhostVehicleGuard] 幽灵车急停锁定保护（防止半路警员跌落摩托，空车狂奔）
     // =====================================================================
@@ -132,6 +147,7 @@ void on_main_thread_tick() {
             if (!crime || crime->cancelled) continue;
             for (void* veh : crime->case_vehicles) {
                 if (is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
+                    if (get_entity_model_index(veh) == MODEL_POLICE_HELI) continue;
                     if (!is_vehicle_occupied_by_driver(veh)) {
                         CVector veh_pos = get_entity_pos(veh);
                         if (g_GetCarToGoToCoors) {
@@ -146,6 +162,7 @@ void on_main_thread_tick() {
     }
 
     dispatch_reroute::apply_enroute_vehicle_reroutes(crimes_snapshot);
+    dispatch_emergency_services::emergency_services_tick(crimes_snapshot, cur_time);
 
     for (auto& crime : crimes_snapshot) {
         if (!crime || crime->cancelled) {
@@ -203,6 +220,8 @@ void on_main_thread_tick() {
             std::lock_guard<std::mutex> lock_bind(g_bindings_mutex);
             g_cop_vehicle_bindings.clear();
         }
+        clear_vehicle_driver_locks();
+        clear_vehicle_enter_command_timestamps();
         {
             std::lock_guard<std::mutex> lock_ex(g_exits_mutex);
             g_cop_exits.clear();
@@ -211,6 +230,8 @@ void on_main_thread_tick() {
             std::lock_guard<std::mutex> lock(g_spawned_cop_vehicles_mutex);
             g_spawned_cop_vehicles.clear();
         }
+        dispatch_emergency_services::clear_all_emergency_records();
+        dispatch_hit_and_run::clear_all_pending();
     }
 }
 

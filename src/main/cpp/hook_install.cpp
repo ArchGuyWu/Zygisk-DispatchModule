@@ -127,6 +127,12 @@ void hook_thread_func() {
     RESOLVE_SYM(lib, g_GenOneEmergencyCar,
         "_ZN8CCarCtrl31GenerateOneEmergencyServicesCarEj7CVector",
         fn_GenOneEmergencyCar_t);
+    RESOLVE_SYM(lib, g_CreateCarForScript,
+        "_ZN8CCarCtrl18CreateCarForScriptEi7CVectorh",
+        fn_CreateCarForScript_t);
+    RESOLVE_SYM(lib, g_FlyAIHeliToTarget_FixedOrientation,
+        "_ZN8CCarCtrl35FlyAIHeliToTarget_FixedOrientationEP5CHelif7CVector",
+        fn_FlyAIHeliToTarget_FixedOrientation_t);
     RESOLVE_SYM(lib, g_AddPoliceOccupants,
         "_ZN6CCarAI21AddPoliceCarOccupantsEP8CVehicleb",
         fn_AddPoliceOccupants_t);

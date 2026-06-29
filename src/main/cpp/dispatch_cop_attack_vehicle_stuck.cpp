@@ -116,10 +116,14 @@ void cop_attack_vehicle_stuck_monitor(
                                                 cur_dir_y = dy_s / dist_moved;
                                             }
 
+                                            bool is_bike_spin = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                            float spin_dot_threshold = is_bike_spin ? 0.45f : 0.85f;
+                                            int spin_count_threshold = is_bike_spin ? 6 : 3;
+
                                             if (dist_moved > 0.5f) {
                                                 if (session.tracker.last_dir_x != 0.0f || session.tracker.last_dir_y != 0.0f) {
                                                     float dir_dot = cur_dir_x * session.tracker.last_dir_x + cur_dir_y * session.tracker.last_dir_y;
-                                                    if (dir_dot < 0.85f) { // 宽限至 31.8度角，更容易灵敏捕获摩托画圈
+                                                    if (dir_dot < spin_dot_threshold) {
                                                         session.tracker.spin_count++;
                                                     } else {
                                                         session.tracker.spin_count = 0;
@@ -131,16 +135,16 @@ void cop_attack_vehicle_stuck_monitor(
                                                 session.tracker.spin_count = 0;
                                             }
 
-                                            if (session.tracker.spin_count >= 3) {
+                                            if (session.tracker.spin_count >= spin_count_threshold) {
                                                 float dx_vc = target_crime_pos.x - session.current_pos.x;
                                                 float dy_vc = target_crime_pos.y - session.current_pos.y;
                                                 float dz_vc = target_crime_pos.z - session.current_pos.z;
                                                 float dist_vc = sqrtf(dx_vc * dx_vc + dy_vc * dy_vc + dz_vc * dz_vc);
 
                                                 if (dist_vc < 60.0f) {
-                                                    // A. Close range: Force immediate emergency exit
+                                                    // A. Close range: stop fully then exit on foot
                                                     if (!ctx.vector_contains(ctx.vehicles_emptied_snapshot, veh)) {
-                                                        g_GetCarToGoToCoors(veh, &session.current_pos, 4, false); // Emergency handbrake stop
+                                                        vehicle_stop_for_exit(veh);
                                                         if (g_TellOccupantsToLeaveCar) {
                                                             dispatch_tell_occupants_to_leave_car(veh);
                                                         }
@@ -155,6 +159,7 @@ void cop_attack_vehicle_stuck_monitor(
                                                      // B. Far range: Force reverse nudge and physical 120-degree yaw rotation to break physical circling loop
                                                      bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
                                                      if (is_bike) {
+                                                         bool is_seen = is_cop_visible_to_player(veh, session.current_pos.x, session.current_pos.y, session.current_pos.z);
                                                          float dx_aim = target_crime_pos.x - session.current_pos.x;
                                                          float dy_aim = target_crime_pos.y - session.current_pos.y;
                                                          float dist_aim_2d = sqrtf(dx_aim * dx_aim + dy_aim * dy_aim);
@@ -183,17 +188,19 @@ void cop_attack_vehicle_stuck_monitor(
                                                              }
                                                          }
 
-                                                         CVector realigned_pos = {
-                                                             session.current_pos.x + dx_aim * 5.0f,
-                                                             session.current_pos.y + dy_aim * 5.0f,
-                                                             session.current_pos.z + 0.15f
-                                                         };
-                                                         
-                                                         set_entity_pos(veh, realigned_pos);
+                                                         if (!is_seen) {
+                                                             float nudge_m = 2.0f;
+                                                             CVector realigned_pos = {
+                                                                 session.current_pos.x + dx_aim * nudge_m,
+                                                                 session.current_pos.y + dy_aim * nudge_m,
+                                                                 session.current_pos.z + 0.15f
+                                                             };
+                                                             set_entity_pos(veh, realigned_pos);
+                                                         }
                                                          stabilize_motorcycle(veh);
                                                          
                                                          command_vehicle_ai(veh, target_crime_pos, dist_vc);
-                                                         LOGW("🔄🏍️ [Anti-Spin Guard - BIKE] Realignment Orbit Break. Pointed directly to crime scene (%.1fm) and teleported forward 5m.", dist_vc);
+                                                         LOGW("🔄🏍️ [Anti-Spin Guard - BIKE] Realignment (seen=%d, dist=%.1fm).", is_seen, dist_vc);
                                                      } else {
                                                          bool is_seen = is_cop_visible_to_player(veh, session.current_pos.x, session.current_pos.y, session.current_pos.z);
                                                          float f_x = 0.0f, f_y = 0.0f, f_z = 0.0f;

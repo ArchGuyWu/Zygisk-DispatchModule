@@ -6,6 +6,8 @@
 
 namespace dispatch_cop_state {
 
+static constexpr int64_t SELF_DEFENSE_PRIORITY_MS = 20000;
+
 static ecs::CombatComponent* get_or_create_combat(CPed* cop) {
     auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
     if (!combat) {
@@ -148,7 +150,67 @@ std::vector<CPed*> collect_cops_targeting_case(uint64_t case_id, int criminal_ha
     return cops;
 }
 
+void set_self_defense_target(CPed* cop, CPed* attacker, int64_t time_ms) {
+    if (!cop || !attacker || !is_ped_pointer_valid_safe(cop) || !is_ped_pointer_valid_safe(attacker)) {
+        return;
+    }
+
+    auto* cop_comp = get_or_create_cop(cop);
+    if (!cop_comp) return;
+
+    sync_ped_pool_handle(attacker);
+    cop_comp->self_defense_attacker = attacker;
+    cop_comp->self_defense_attacker_handle = get_ped_pool_handle(attacker);
+    cop_comp->self_defense_until_ms = time_ms + SELF_DEFENSE_PRIORITY_MS;
+    cop_comp->dispatch_active = true;
+
+    auto* combat = get_or_create_combat(cop);
+    if (combat) {
+        combat->target_entity = attacker;
+        combat->target_ped_handle = cop_comp->self_defense_attacker_handle;
+        combat->last_dispatch_assign_ms = time_ms;
+    }
+}
+
+CPed* get_self_defense_target(CPed* cop, int64_t cur_time) {
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+    if (!cop_comp || cur_time > cop_comp->self_defense_until_ms) {
+        return nullptr;
+    }
+
+    if (cop_comp->self_defense_attacker_handle >= 0) {
+        CPed* resolved = resolve_ped_from_handle(cop_comp->self_defense_attacker_handle);
+        if (resolved && is_ped_pointer_valid_safe(resolved) &&
+            (g_IsAlive == nullptr || g_IsAlive(resolved))) {
+            cop_comp->self_defense_attacker = resolved;
+            return resolved;
+        }
+    }
+
+    auto* attacker = static_cast<CPed*>(cop_comp->self_defense_attacker);
+    if (attacker && is_ped_pointer_valid_safe(attacker) &&
+        (g_IsAlive == nullptr || g_IsAlive(attacker))) {
+        cop_comp->self_defense_attacker_handle = get_ped_pool_handle(attacker);
+        return attacker;
+    }
+
+    cop_comp->self_defense_attacker = nullptr;
+    cop_comp->self_defense_attacker_handle = -1;
+    cop_comp->self_defense_until_ms = 0;
+    return nullptr;
+}
+
+bool blocks_mass_assign(CPed* cop, CPed* proposed_target, int64_t cur_time) {
+    CPed* attacker = get_self_defense_target(cop, cur_time);
+    return attacker && attacker != proposed_target;
+}
+
 CPed* resolve_combat_target(CPed* cop) {
+    CPed* self_defense = get_self_defense_target(cop, now_ms());
+    if (self_defense) {
+        return self_defense;
+    }
+
     auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
     if (!combat) return nullptr;
 
@@ -191,6 +253,13 @@ void purge_cop_combat_state(CPed* ped) {
 
     set_dispatch_active(ped, false);
 
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
+    if (cop_comp) {
+        cop_comp->self_defense_attacker = nullptr;
+        cop_comp->self_defense_attacker_handle = -1;
+        cop_comp->self_defense_until_ms = 0;
+    }
+
     for (auto ent : ecs::EntityManager::get().get_entities_with<ecs::CombatComponent>()) {
         auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ent);
         if (!combat) continue;
@@ -215,6 +284,9 @@ void clear_all_cop_dispatch_state() {
         if (cop_comp) {
             cop_comp->dispatch_active = false;
             cop_comp->last_assign_time_ms = 0;
+            cop_comp->self_defense_attacker = nullptr;
+            cop_comp->self_defense_attacker_handle = -1;
+            cop_comp->self_defense_until_ms = 0;
         }
     }
     for (auto ent : ecs::EntityManager::get().get_entities_with<ecs::CombatComponent>()) {

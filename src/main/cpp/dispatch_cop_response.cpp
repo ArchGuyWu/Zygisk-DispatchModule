@@ -71,9 +71,57 @@ bool is_cop_visible_to_player(void* veh, float current_x, float current_y, float
 
 // 前向声明，解决编译循环依赖问题
 bool is_vehicle_occupied_by_driver(void* veh);
+CPed* get_vehicle_driver_ped(void* veh);
+void* find_vehicle_of_cop_cached(CPed* cop);
+void vehicle_stop_for_exit(void* vehicle);
+
+static std::map<void*, CPed*> g_vehicle_driver_locks;
+static std::mutex g_vehicle_driver_lock_mutex;
+static std::map<void*, int64_t> g_vehicle_last_enter_command_ms;
+static std::mutex g_vehicle_enter_command_mutex;
+
+static bool living_criminals_near_position(CVector pos, float radius) {
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    float radius_sq = radius * radius;
+    for (const auto& crime : g_active_crimes) {
+        if (!crime || crime->cancelled) continue;
+        for (CPed* criminal : crime->consolidated_criminals) {
+            if (!criminal || !is_ped_pointer_valid_safe(criminal)) continue;
+            if (g_IsAlive && !g_IsAlive(criminal)) continue;
+            CVector crim_pos = get_entity_pos(criminal);
+            float dx = pos.x - crim_pos.x;
+            float dy = pos.y - crim_pos.y;
+            float dz = pos.z - crim_pos.z;
+            if (dx * dx + dy * dy + dz * dz <= radius_sq) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static bool try_acquire_vehicle_driver_lock(void* vehicle, CPed* cop) {
+    if (!vehicle || !cop) return false;
+    std::lock_guard<std::mutex> lock(g_vehicle_driver_lock_mutex);
+    CPed* physical_driver = get_vehicle_driver_ped(vehicle);
+    if (physical_driver && physical_driver != cop &&
+        is_ped_pointer_valid_safe(physical_driver) &&
+        (g_IsAlive == nullptr || g_IsAlive(physical_driver))) {
+        return false;
+    }
+    auto it = g_vehicle_driver_locks.find(vehicle);
+    if (it != g_vehicle_driver_locks.end() && it->second != cop &&
+        it->second && is_ped_pointer_valid_safe(it->second) &&
+        (g_IsAlive == nullptr || g_IsAlive(it->second))) {
+        return false;
+    }
+    g_vehicle_driver_locks[vehicle] = cop;
+    return true;
+}
 
 void dispatch_tell_occupants_to_leave_car(void* vehicle) {
     if (!vehicle || !g_orig_tell_occupants_leave_car) return;
+    vehicle_stop_for_exit(vehicle);
     bind_vehicle_occupants(vehicle);
     record_exit_start_for_occupants(vehicle);
     g_orig_tell_occupants_leave_car(vehicle);
@@ -109,6 +157,13 @@ bool should_block_cop_reenter_vehicle(CPed* cop) {
     if (!g_crime_active.load()) return false;
 
     CVector cop_pos = get_entity_pos(cop);
+    bool on_foot = find_vehicle_of_cop_cached(cop) == nullptr;
+
+    if (on_foot && living_criminals_near_position(
+            cop_pos, dispatch_timing::ACTIVE_CRIME_FOOT_DUTY_RADIUS_M)) {
+        return true;
+    }
+
     std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
     for (const auto& crime : g_active_crimes) {
         if (!crime || crime->cancelled) continue;
@@ -138,10 +193,21 @@ void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
         return;
     }
 
+    {
+        int64_t cur_time = now_ms();
+        std::lock_guard<std::mutex> lock(g_vehicle_enter_command_mutex);
+        int64_t last_vehicle_cmd = g_vehicle_last_enter_command_ms[vehicle];
+        if (cur_time - last_vehicle_cmd < 1500) {
+            return;
+        }
+        g_vehicle_last_enter_command_ms[vehicle] = cur_time;
+    }
+
     auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
     if (cop_comp) {
         int64_t cur_time = now_ms();
-        if (cur_time - cop_comp->last_enter_vehicle_command_time_ms < 10000) {
+        if (cur_time - cop_comp->last_enter_vehicle_command_time_ms <
+            dispatch_timing::VEHICLE_ENTER_COMMAND_COOLDOWN_MS) {
             return;
         }
         cop_comp->last_enter_vehicle_command_time_ms = cur_time;
@@ -151,13 +217,18 @@ void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
     if (!intelligence) return;
 
     void* task_manager = reinterpret_cast<void*>(reinterpret_cast<char*>(intelligence) + 8);
-    
-    // 司乘关系/抢驾驶位冲突保护 (Seat Conflict Guard)
-    // 如果我们想让警员作为司机上车，但该警车上已经有了现役司机（另一个警员），
-    // 为了防止警员强行将同僚拽下车开走，我们强制将其改为作为乘客上车！
-    if (as_driver && is_vehicle_occupied_by_driver(vehicle)) {
-        as_driver = false;
-        LOGW("👮 [make_cop_enter_vehicle - SeatConflictGuard] Vehicle %p already has a driver. Forcing cop %p to enter as passenger to maintain good driver-passenger relationship!", vehicle, cop);
+
+    CPed* physical_driver = get_vehicle_driver_ped(vehicle);
+    if (as_driver) {
+        if (physical_driver && physical_driver != cop) {
+            as_driver = false;
+            LOGW("👮 [make_cop_enter_vehicle - SeatConflictGuard] Vehicle %p has driver %p. Cop %p enters as passenger.",
+                 vehicle, physical_driver, cop);
+        } else if (!try_acquire_vehicle_driver_lock(vehicle, cop)) {
+            as_driver = false;
+            LOGW("👮 [make_cop_enter_vehicle - DriverLock] Vehicle %p driver lock held. Cop %p enters as passenger.",
+                 vehicle, cop);
+        }
     }
 
     void* task = g_TaskNew(512);
@@ -272,6 +343,28 @@ void purge_dispatch_state_for_ped(CPed* ped) {
     LOGI("🧹 [EntityGC] Purged ECS dispatch state for ped %p", ped);
 }
 
+CPed* get_vehicle_driver_ped(void* veh) {
+    if (!veh || !g_ms_pPedPool || !g_GetPoolPed || !g_IsDriver) return nullptr;
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return nullptr;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return nullptr;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            if (ped && g_IsDriver(veh, ped)) {
+                return ped;
+            }
+        }
+    }
+    return nullptr;
+}
+
 // 检查该载具中是否已经有了司机（防止无人巡警车行驶）
 bool is_vehicle_occupied_by_driver(void* veh) {
     if (!veh || !g_ms_pPedPool || !g_GetPoolPed || !g_IsDriver) return false;
@@ -297,28 +390,88 @@ bool is_vehicle_occupied_by_driver(void* veh) {
     return false;
 }
 
-// 智能驾驶 AI 控制逻辑：
-// 1. 尽量限制在正常路网上，防止开上人行道
-// 2. 距离目标较近时温柔减速，防止直接蛮力撞击犯罪 NPC / 玩家
-void command_vehicle_ai(void* vehicle, const CVector& target_loc, float dist_to_target) {
+bool vehicle_has_physical_driver(void* vehicle) {
+    CPed* driver = get_vehicle_driver_ped(vehicle);
+    if (!driver || !is_ped_pointer_valid_safe(driver)) return false;
+    return g_IsAlive == nullptr || g_IsAlive(driver);
+}
+
+void remove_vehicle_emptied(void* vehicle) {
+    if (!vehicle) return;
+    std::lock_guard<std::mutex> lock(g_vehicles_emptied_mutex);
+    g_vehicles_emptied.erase(vehicle);
+}
+
+void vehicle_stop_for_exit(void* vehicle) {
+    if (!vehicle || !g_GetCarToGoToCoors) return;
+    CVector veh_pos = get_entity_pos(vehicle);
+    g_GetCarToGoToCoors(vehicle, &veh_pos, 4, false);
+    g_GetCarToGoToCoors(vehicle, &veh_pos, 0, true);
+}
+
+bool should_prefer_foot_mobilization(CPed* cop, CVector crime_pos, void* bound_vehicle) {
+    if (!cop) return true;
+    if (find_vehicle_of_cop_cached(cop) == nullptr) return true;
+    if (is_cop_currently_exiting(cop)) return true;
+    if (should_block_cop_reenter_vehicle(cop)) return true;
+
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+    if (cop_comp && cop_comp->has_exited_vehicle) return true;
+
+    if (bound_vehicle && is_vehicle_emptied(bound_vehicle)) return true;
+
+    CVector cop_pos = get_entity_pos(cop);
+    float dx = cop_pos.x - crime_pos.x;
+    float dy = cop_pos.y - crime_pos.y;
+    float dz = cop_pos.z - crime_pos.z;
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+    return dist <= dispatch_timing::NEARBY_FOOT_PREFER_DIST_M;
+}
+
+CVector compute_vehicle_staging_decoy(CVector crime_pos, CVector vehicle_pos) {
+    float dx = vehicle_pos.x - crime_pos.x;
+    float dy = vehicle_pos.y - crime_pos.y;
+    float dist_xy = sqrtf(dx * dx + dy * dy);
+    float offset = dispatch_timing::VEHICLE_STAGING_OFFSET_M;
+
+    if (dist_xy < 1.0f) {
+        return {crime_pos.x + offset, crime_pos.y, crime_pos.z};
+    }
+
+    if (dist_xy <= offset + 4.0f) {
+        return vehicle_pos;
+    }
+
+    float nx = dx / dist_xy;
+    float ny = dy / dist_xy;
+    return {
+        crime_pos.x + nx * offset,
+        crime_pos.y + ny * offset,
+        crime_pos.z
+    };
+}
+
+static float vehicle_staging_exit_radius(void* vehicle) {
+    bool is_bike = vehicle && get_entity_model_index(vehicle) == MODEL_POLICE_BIKE;
+    float offset = is_bike ? dispatch_timing::VEHICLE_BIKE_STAGING_OFFSET_M
+                           : dispatch_timing::VEHICLE_STAGING_OFFSET_M;
+    return offset + dispatch_timing::VEHICLE_STAGING_EXIT_MARGIN_M;
+}
+
+// 智能驾驶：假坐标导航至 staging 外圈；下车由 cop_attack / on_scene 统一触发，避免重复下令
+void command_vehicle_ai(void* vehicle, const CVector& crime_loc, float dist_to_crime) {
     if (!g_GetCarToGoToCoors || !vehicle) return;
 
-    // 当距离目标非常近（例如 < 32 米）时：
-    // 我们将驾驶目的地重置为车辆当前的 3D 坐标（原地诱骗急刹），防止其开到人行道或越野冲撞，
-    // 调用 TellOccupantsToLeaveCar 让警员提前下车
-    if (dist_to_target < 16.0f) {
-        CVector veh_pos = get_entity_pos(vehicle);
-        g_GetCarToGoToCoors(vehicle, &veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
-        dispatch_tell_occupants_to_leave_car(vehicle);
+    CVector veh_pos = get_entity_pos(vehicle);
+    float exit_radius = vehicle_staging_exit_radius(vehicle);
+
+    if (dist_to_crime <= exit_radius) {
+        vehicle_stop_for_exit(vehicle);
         return;
     }
 
-    // 默认使用温柔且合规的紧急响应模式：
-    // 模式 2 (DF_FAST/Emergency) 会开启警笛并超速/闯红灯，但被路网硬约束在车行道上，绝对不会越界开上人行道 (Avoid Sidewalks)
-    int mode = 2;
-    bool bAvoidPeds = true;
-
-    g_GetCarToGoToCoors(vehicle, const_cast<CVector*>(&target_loc), mode, bAvoidPeds);
+    CVector drive_target = compute_vehicle_staging_decoy(crime_loc, veh_pos);
+    g_GetCarToGoToCoors(vehicle, &drive_target, 2, true);
 }
 
 // 调度行驶的统一入口：有司机才让车开过去，没司机尝试再加人，若依旧没司机则拦截，防止幽灵车行驶
@@ -329,6 +482,7 @@ void command_cop_vehicle_to_scene(void* vehicle, const CVector& target_loc) {
         LOGW("⚠️ Dispatched vehicle %p has no driver yet. Re-running AddPoliceCarOccupants", vehicle);
         if (g_AddPoliceOccupants) {
             g_AddPoliceOccupants(reinterpret_cast<CVehicle*>(vehicle), true);
+            bind_vehicle_occupants(vehicle);
         }
     }
 
@@ -363,16 +517,18 @@ void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
     return nullptr;
 }
 
-// 验证该警车原先绑定的驾驶员是否依然存活
+// 验证该警车是否有存活驾驶员（优先物理座位，其次绑定表且人在驾驶位）
 bool is_alive_bound_driver_exists(void* vehicle) {
+    if (vehicle_has_physical_driver(vehicle)) {
+        return true;
+    }
     std::lock_guard<std::mutex> lock(g_bindings_mutex);
     for (const auto& binding : g_cop_vehicle_bindings) {
-        if (binding.vehicle == vehicle && binding.as_driver) {
-            if (binding.cop && is_ped_pointer_valid_safe(binding.cop)) {
-                if (g_IsAlive && g_IsAlive(binding.cop)) {
-                    return true;
-                }
-            }
+        if (binding.vehicle != vehicle || !binding.as_driver) continue;
+        if (!binding.cop || !is_ped_pointer_valid_safe(binding.cop)) continue;
+        if (g_IsAlive && !g_IsAlive(binding.cop)) continue;
+        if (g_IsDriver && g_IsDriver(vehicle, binding.cop)) {
+            return true;
         }
     }
     return false;
@@ -408,6 +564,16 @@ void add_vehicle_emptied(void* vehicle) {
     if (!vehicle) return;
     std::lock_guard<std::mutex> lock(g_vehicles_emptied_mutex);
     g_vehicles_emptied.insert(vehicle);
+}
+
+void clear_vehicle_driver_locks() {
+    std::lock_guard<std::mutex> lock(g_vehicle_driver_lock_mutex);
+    g_vehicle_driver_locks.clear();
+}
+
+void clear_vehicle_enter_command_timestamps() {
+    std::lock_guard<std::mutex> lock(g_vehicle_enter_command_mutex);
+    g_vehicle_last_enter_command_ms.clear();
 }
 
 bool is_vehicle_ordered_to_scene(void* vehicle) {
@@ -497,6 +663,13 @@ void bind_vehicle_occupants(void* vehicle) {
                             cop_comp->is_in_vehicle = true;
                             cop_comp->has_exited_vehicle = false;
                         }
+
+                        if (is_driver) {
+                            std::lock_guard<std::mutex> lock_drv(g_vehicle_driver_lock_mutex);
+                            g_vehicle_driver_locks[vehicle] = ped;
+                        }
+
+                        remove_vehicle_emptied(vehicle);
 
                         bool found = false;
                         for (auto& binding : g_cop_vehicle_bindings) {
@@ -590,14 +763,13 @@ void setup_dispatched_cops(void* vehicle, CPed* criminal) {
         }
     }
     
-    // 3. 对载具施加 0.0f 拳头伤害瞬间唤醒！指定来源为 criminal。
-    // 此时载具内自然持枪的警员会受到受击冲击，自动开启警灯与警笛，司机将自动一脚油门驶向该伤害来源处（即 criminal 的位置）！
-    if (criminal && is_ped_pointer_valid_safe(criminal)) {
-        if (g_VehicleInflictDamage) {
-            CVector veh_pos = get_entity_pos(vehicle);
-            g_VehicleInflictDamage(vehicle, reinterpret_cast<CEntity*>(criminal), WEAPON_UNARMED, 0.0f, veh_pos);
-            LOGI("setup_dispatched_cops: Inflicted 0.0f punch damage to vehicle %p to wake it up towards criminal %p", vehicle, criminal);
-        }
+    // 3. 警笛唤醒（不向引擎传递罪犯坐标，避免 native AI 直冲罪犯造成冲撞）
+    if (!is_vehicle_siren_awakened(vehicle) && g_VehicleInflictDamage) {
+        CVector veh_pos = get_entity_pos(vehicle);
+        g_VehicleInflictDamage(vehicle, nullptr, WEAPON_UNARMED, 0.0f, veh_pos);
+        add_vehicle_siren_awakened(vehicle);
+        LOGI("setup_dispatched_cops: Siren wake for vehicle %p (decoy routing, criminal %p on foot)",
+             vehicle, criminal);
     }
 }
 
@@ -705,9 +877,13 @@ int dispatch_nearby_available_cops_to_crime(
         if (mobilized >= max_cops) break;
         if (dispatched_cops.count(candidate.cop)) continue;
 
-        if (candidate.vehicle && is_vehicle_pointer_valid(candidate.vehicle)) {
+        bool prefer_foot = should_prefer_foot_mobilization(
+            candidate.cop, crime_pos, candidate.vehicle);
+
+        if (!prefer_foot && candidate.vehicle && is_vehicle_pointer_valid(candidate.vehicle)) {
             if (dispatched_vehicles.count(candidate.vehicle)) continue;
             if (!is_vehicle_occupied_by_driver(candidate.vehicle)) continue;
+            if (is_vehicle_emptied(candidate.vehicle)) continue;
 
             command_cop_vehicle_to_scene(candidate.vehicle, crime_pos);
             setup_dispatched_cops(candidate.vehicle, criminal);
@@ -869,36 +1045,36 @@ static CopCombatDispatchMethod dispatch_cop_combat_ladder(
         return CopCombatDispatchMethod::ALREADY_ACTIVE;
     }
 
-    bool in_vehicle = find_vehicle_of_cop_cached(cop) != nullptr;
-    bool used_kill_task = false;
-    bool used_add_criminal = false;
-
-    if (!in_vehicle) {
-        // 地面警：原生 API 对普通巡逻警常无效，先尝试但不以其返回值作为终止条件
-        used_kill_task = try_dispatch_via_kill_task(cop, criminal);
-        used_add_criminal = try_dispatch_via_add_criminal(cop, criminal);
-
-        // 事件唤醒是地面警最可靠路径（358aecc 之前即如此）；无 LockOn 时始终补发
-        if (!cop_has_lock_on_target(cop, criminal)) {
-            CopCombatDispatchMethod event_method = try_dispatch_via_events(cop, criminal, weapon);
-            if (event_method != CopCombatDispatchMethod::NONE) {
-                LOGI("🎯 [Foot Dispatch] Event wake supplement for cop %p -> criminal %p (native_kill=%d, native_add=%d)",
-                     cop, criminal, used_kill_task ? 1 : 0, used_add_criminal ? 1 : 0);
-                return event_method;
-            }
-        }
-
-        if (used_kill_task) return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
-        if (used_add_criminal) return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
+    if (is_cop_currently_exiting(cop)) {
+        LOGI("🎯 [Native Dispatch] Cop %p is exiting vehicle — defer combat inject", cop);
         return CopCombatDispatchMethod::NONE;
     }
 
-    // 载具内：原生优先，事件仅兜底
-    if (try_dispatch_via_add_criminal(cop, criminal)) {
-        return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
+    bool in_vehicle = find_vehicle_of_cop_cached(cop) != nullptr;
+    if (in_vehicle) {
+        LOGI("🎯 [Native Dispatch] Cop %p still in vehicle — defer combat until on foot", cop);
+        return CopCombatDispatchMethod::NONE;
+    }
+    bool used_kill_task = false;
+    bool used_add_criminal = false;
+
+    // 地面警：原生 API 对普通巡逻警常无效，先尝试但不以其返回值作为终止条件
+    used_kill_task = try_dispatch_via_kill_task(cop, criminal);
+    used_add_criminal = try_dispatch_via_add_criminal(cop, criminal);
+
+    // 事件唤醒是地面警最可靠路径（358aecc 之前即如此）；无 LockOn 时始终补发
+    if (!cop_has_lock_on_target(cop, criminal)) {
+        CopCombatDispatchMethod event_method = try_dispatch_via_events(cop, criminal, weapon);
+        if (event_method != CopCombatDispatchMethod::NONE) {
+            LOGI("🎯 [Foot Dispatch] Event wake supplement for cop %p -> criminal %p (native_kill=%d, native_add=%d)",
+                 cop, criminal, used_kill_task ? 1 : 0, used_add_criminal ? 1 : 0);
+            return event_method;
+        }
     }
 
-    return try_dispatch_via_events(cop, criminal, weapon);
+    if (used_kill_task) return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
+    if (used_add_criminal) return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
+    return CopCombatDispatchMethod::NONE;
 }
 
 static void register_cop_combat_ecs(CPed* cop, CPed* criminal) {
@@ -979,6 +1155,15 @@ void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapo
     apply_cop_weapon_for_combat(cop, criminal, force_weapon_update);
 
     bool is_firearm = is_specific_criminal_armed_with_firearm(criminal);
+    if (!is_firearm) {
+        auto* attacker_combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(criminal);
+        if (attacker_combat) {
+            int weapon = attacker_combat->current_weapon_type;
+            if (weapon >= WEAPON_PISTOL && weapon <= WEAPON_MINIGUN) {
+                is_firearm = true;
+            }
+        }
+    }
     eWeaponType target_weapon = determine_weapon_for_cop(cop, criminal, is_firearm);
 
     bool force_redispatch = force_weapon_update;

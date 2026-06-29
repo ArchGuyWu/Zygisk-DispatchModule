@@ -186,7 +186,16 @@ void cop_attack_single_pass_dispatch(CopAttackContext& ctx) {
     count_active_from_entries(ctx, entries);
     cop_attack_compute_quotas(ctx);
 
+    int64_t cur_time = now_ms();
     for (const CopPoolEntry& entry : entries) {
+        if (dispatch_cop_state::blocks_mass_assign(entry.ped, entry.target_criminal, cur_time)) {
+            CPed* attacker = dispatch_cop_state::get_self_defense_target(entry.ped, cur_time);
+            if (attacker) {
+                make_single_cop_attack_criminal(entry.ped, attacker, true);
+            }
+            continue;
+        }
+
         if (entry.vehicle && is_vehicle_pointer_valid(entry.vehicle)) {
             cop_attack_dispatch_vehicle_cop(
                 ctx, entry.ped, entry.target_criminal, entry.target_crime_pos, entry.vehicle);

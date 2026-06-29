@@ -97,9 +97,10 @@ void cop_attack_vehicle_unstuck_intervene(
                                         }
                                         ctx.pending_stuck_vehicles.push_back({veh, session.tracker});
 
-                                        float warp_factor = 25.0f / dist_v;
-                                        if (warp_factor > 0.8f) warp_factor = 0.5f; 
                                         bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
+                                        float max_warp_m = is_bike ? 8.0f : 25.0f;
+                                        float warp_factor = max_warp_m / dist_v;
+                                        if (warp_factor > 0.8f) warp_factor = is_bike ? 0.25f : 0.5f;
                                         float height_offset = is_bike ? 0.15f : 0.8f;
                                         CVector warp_pos = {
                                             session.current_pos.x + dx_v * warp_factor,
@@ -107,9 +108,13 @@ void cop_attack_vehicle_unstuck_intervene(
                                             session.current_pos.z + dz_v * warp_factor + height_offset
                                         };
                                         
-                                        set_entity_pos(veh, warp_pos);
+                                        if (!is_bike || !cop_visible) {
+                                            set_entity_pos(veh, warp_pos);
+                                        }
                                         if (is_bike) {
                                             stabilize_motorcycle(veh);
+                                        } else {
+                                            zero_entity_velocity(veh);
                                         }
                                         command_vehicle_ai(veh, target_crime_pos, dist_v);
                                         LOGI("[dispatchCenter - Stage 2 Warp] Teleported vehicle %p forward 25m to break deadlock. (visible=%d, stuck_duration=%lld ms)", 
@@ -213,15 +218,15 @@ void cop_attack_vehicle_unstuck_intervene(
                                                                                              LOGI("   +- Nudged vehicle %p BACKWARDS 3.5m and elevated %.2fm to pull away from obstacles (visible).", veh, height_lift);
                                                                                          } else {
                                                                                              bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
-                                                                                             // Unseen: Nudge towards destination forward by 12.0m to cross walls quickly
                                                                                              float nx = dx_v / dist_v;
                                                                                              float ny = dy_v / dist_v;
                                                                                              float nz = dz_v / dist_v;
+                                                                                             float forward_m = is_bike ? 4.0f : 12.0f;
                                                                                              float height_lift = is_bike ? 0.15f : 0.75f;
-                                                                                             nudged_pos.x = session.current_pos.x + nx * 12.0f;
-                                                                                             nudged_pos.y = session.current_pos.y + ny * 12.0f;
+                                                                                             nudged_pos.x = session.current_pos.x + nx * forward_m;
+                                                                                             nudged_pos.y = session.current_pos.y + ny * forward_m;
                                                                                              nudged_pos.z = session.current_pos.z + nz * 0.1f + height_lift;
-                                                                                             LOGI("   +- Nudged vehicle %p FORWARD 12.0m (unseen warp) and elevated %.2fm to bypass obstacles.", veh, height_lift);
+                                                                                             LOGI("   +- Nudged vehicle %p FORWARD %.1fm (unseen) elevated %.2fm.", veh, forward_m, height_lift);
                                                                                          }
 
                                                                                          bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
@@ -229,6 +234,8 @@ void cop_attack_vehicle_unstuck_intervene(
                                                                                          set_entity_pos(veh, nudged_pos);
                                                                                          if (is_bike) {
                                                                                              stabilize_motorcycle(veh);
+                                                                                         } else {
+                                                                                             zero_entity_velocity(veh);
                                                                                          }
                                                                                          
                                                                                          command_vehicle_ai(veh, target_crime_pos, dist_v);

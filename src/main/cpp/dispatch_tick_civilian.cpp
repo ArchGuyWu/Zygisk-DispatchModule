@@ -38,9 +38,9 @@
 // Civilian vehicle avoidance near emergency units
 // =====================================================================
 static bool is_emergency_vehicle_model(unsigned int model) {
-    return (model == 416 || model == 407 || 
-            model == 596 || model == 597 || model == 598 || model == 599 || 
-            model == 601 || model == 528 || model == 490 || model == 523);
+    return (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK ||
+            model == MODEL_POLICE_CAR || model == 597 || model == 598 || model == 599 ||
+            model == MODEL_SWAT_VAN || model == 528 || model == 490 || model == MODEL_POLICE_BIKE);
 }
 
 // 🚗💨 平民车辆避让时的惊慌按喇叭与急刹车冷却定时器

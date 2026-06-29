@@ -20,6 +20,11 @@ struct CrimeEvent {
     int cops_dispatched = 0;
     int cops_killed = 0;
     int reinforcements_sent = 0;
+    int mod_ambulance_dispatched = 0;
+    int mod_firetruck_dispatched = 0;
+    int mod_heli_dispatched = 0;
+    int civilian_casualties_recorded = 0;
+    int64_t last_emergency_eval_ms = 0;
 
     std::vector<CPed*> consolidated_criminals;
     std::vector<bool> criminal_is_firearm;
@@ -35,6 +40,7 @@ struct CrimeEvent {
 
     void* spawned_vehicle = nullptr;
     bool occupants_ordered_out = false;
+    bool vehicle_spawn_pending = false;
     int64_t spawn_time_ms = 0;
 
     struct DelayedTask {
