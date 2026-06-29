@@ -80,6 +80,22 @@ struct CrimeActiveCompat {
     operator bool() const { return load(); }
 };
 
+struct AttackedNPC {
+    CPed* npc;
+    int64_t attack_time;
+};
+
+struct CommandedCriminal {
+    CPed* criminal;
+    int64_t command_time;
+};
+
+struct TemporaryRoadClosure {
+    CVector center;
+    float radius;
+    int64_t reopen_time_ms;
+};
+
 enum DispatchState {
     STATE_IDLE = 0,
     STATE_TIMING,
