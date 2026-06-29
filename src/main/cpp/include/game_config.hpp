@@ -16,5 +16,6 @@ static constexpr int PED_TYPE_GANG8     = 14;  // Varrio Los Aztecas
 static constexpr int PED_TYPE_CRIMINAL  = 20;
 
 // 警车模型 ID
-static constexpr unsigned int MODEL_POLICE_CAR = 596;  // LSPD 警车
-static constexpr unsigned int MODEL_SWAT_VAN   = 427;  // SWAT Enforcer 警车
+static constexpr unsigned int MODEL_POLICE_CAR  = 596;  // LSPD 警车
+static constexpr unsigned int MODEL_POLICE_BIKE = 523;  // 警用摩托
+static constexpr unsigned int MODEL_SWAT_VAN    = 427;  // SWAT Enforcer 警车

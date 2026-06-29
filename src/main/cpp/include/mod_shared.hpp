@@ -199,6 +199,15 @@ std::shared_ptr<CrimeEvent> get_primary_active_crime();
 #define g_active_crime (*get_primary_active_crime())
 
 // --- 跨文件共享函数 ---
+bool is_firearm(eCrimeType crime);
+bool is_gang_or_criminal(int ped_type);
+bool get_fire_position(void* fire, CVector& out_pos);
+void stabilize_motorcycle(void* veh);
+void set_entity_pos(void* entity, CVector pos);
+bool is_pos_visible_to_player_camera(CVector pos);
+int count_criminals_near(CVector pos, float radius);
+CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radius);
+
 bool is_ped_pointer_valid_safe(void* target_ped);
 bool is_task_vtable_safe(void* task);
 bool is_vehicle_pointer_valid(void* target_veh);

@@ -232,20 +232,20 @@ bool is_task_vtable_safe(void* task) {
     return true;
 }
 
-static bool is_firearm(eCrimeType crime) {
+bool is_firearm(eCrimeType crime) {
     return crime == CRIME_FIRE_WEAPON
         || crime == CRIME_KILL_PED_WITH_GUN
         || crime == CRIME_KILL_COP;
 }
 
-static bool is_gang_or_criminal(int ped_type) {
+bool is_gang_or_criminal(int ped_type) {
     return (ped_type >= PED_TYPE_GANG1 && ped_type <= PED_TYPE_GANG8)
         || ped_type == PED_TYPE_DEALER
         || ped_type == PED_TYPE_CRIMINAL;
 }
 
 // 火源 3D 坐标安全提取函数（双偏移兼容 + 异常坐标边界过滤）
-static bool get_fire_position(void* fire, CVector& out_pos) {
+bool get_fire_position(void* fire, CVector& out_pos) {
     if (!fire) return false;
     
     // 1. 尝试标准 32位 偏移 4 (GTA 经典引擎 CFire Layout: 4字节标志位后即为 CVector 坐标)
@@ -310,14 +310,12 @@ static void cleanup_invalid_vehicles(std::vector<void*>& vec, std::mutex& mtx) {
     }
 }
 
-#define MODEL_POLICE_BIKE 523
-
 unsigned short get_entity_model_index(void* entity) {
     if (!entity) return 0;
     return *reinterpret_cast<unsigned short*>(reinterpret_cast<char*>(entity) + 0x3A);
 }
 
-static void stabilize_motorcycle(void* veh) {
+void stabilize_motorcycle(void* veh) {
     if (!veh || !g_GetMatrix) return;
     CMatrix* mat = g_GetMatrix(veh);
     if (!mat) return;
@@ -372,7 +370,7 @@ CVector get_entity_pos(void* entity) {
     return pos;
 }
 
-static void set_entity_pos(void* entity, CVector pos) {
+void set_entity_pos(void* entity, CVector pos) {
     if (is_entity_pointer_valid(entity) && g_GetMatrix) {
         CMatrix* mat = g_GetMatrix(entity);
         if (mat) {
@@ -384,7 +382,7 @@ static void set_entity_pos(void* entity, CVector pos) {
 }
 
 // 防穿帮视野检测
-static bool is_pos_visible_to_player_camera(CVector pos) {
+bool is_pos_visible_to_player_camera(CVector pos) {
     if (!g_TheCamera || !g_GetGameCamPosition || !g_GetLookDirection) {
         return true; // 备份退化：默认认为可见，以安全为主
     }
@@ -579,7 +577,7 @@ CVector get_spawn_target(CVector crime_pos) {
 }
 
 // 统计特定范围内的犯罪分子密度，以作为警力配置的依据
-static int count_criminals_near(CVector pos, float radius) {
+int count_criminals_near(CVector pos, float radius) {
     if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return 0;
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
     if (!pool) return 0;
@@ -613,7 +611,7 @@ static int count_criminals_near(CVector pos, float radius) {
 }
 
 // 寻找最靠近指定警员的、在犯罪地点附近的犯罪 NPC，实现多对多任务均衡分配
-static CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radius) {
+CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radius) {
     if (!cop || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return nullptr;
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
     if (!pool) return nullptr;
