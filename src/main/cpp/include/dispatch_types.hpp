@@ -65,3 +65,11 @@ struct CrimeActiveCompat {
     void store(bool active);
     operator bool() const { return load(); }
 };
+
+enum DispatchState {
+    STATE_IDLE = 0,
+    STATE_TIMING,
+    STATE_DISPATCHED,
+    STATE_ON_SCENE,
+    STATE_CLEANUP,
+};

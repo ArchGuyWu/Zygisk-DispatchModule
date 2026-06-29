@@ -137,7 +137,6 @@ fn_AddTaskPrimaryMaybeInGroup_t g_AddTaskPrimaryMaybeInGroup = nullptr;
 typedef void* (*fn_FindTaskByType_t)(const void* ped_intel_this, int task_type);
 fn_FindTaskByType_t g_FindTaskByType = nullptr;
 
-constexpr int TASK_COMPLEX_KILL_CRIMINAL = 1105;
 
 // =====================================================================
 // Hook 存根
@@ -169,7 +168,7 @@ std::atomic<int> g_player_wanted_level{0};
 // =====================================================================
 
 // 验证 Ped 指针在 Ped Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
-static bool is_ped_pointer_valid_safe(void* target_ped) {
+bool is_ped_pointer_valid_safe(void* target_ped) {
     if (!target_ped) return false;
 
     // 优先通过 FindPlayerPed 判定玩家 Ped 的有效性，防止转场/淡入淡出期间玩家 Ped 临时不在 Pool 中而被误判
@@ -207,7 +206,7 @@ static bool is_ped_pointer_valid_safe(void* target_ped) {
 
 void* g_pure_virtual_target = nullptr;
 
-static inline bool is_task_vtable_safe(void* task) {
+bool is_task_vtable_safe(void* task) {
     if (!task) return true;
     if (!is_pointer_readable(task)) return false;
     void* vtable = *reinterpret_cast<void**>(task);
@@ -282,7 +281,7 @@ static bool get_fire_position(void* fire, CVector& out_pos) {
 }
 
 // 验证载具指针在 Vehicle Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
-static bool is_vehicle_pointer_valid(void* target_veh) {
+bool is_vehicle_pointer_valid(void* target_veh) {
     if (!target_veh || !g_ms_pVehiclePool || !is_pointer_readable(g_ms_pVehiclePool) || !g_GetPoolVehicle) return false;
     void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
     if (!pool || !is_pointer_readable(pool)) return false;
@@ -322,7 +321,7 @@ static void cleanup_invalid_vehicles(std::vector<void*>& vec, std::mutex& mtx) {
 
 #define MODEL_POLICE_BIKE 523
 
-static unsigned short get_entity_model_index(void* entity) {
+unsigned short get_entity_model_index(void* entity) {
     if (!entity) return 0;
     return *reinterpret_cast<unsigned short*>(reinterpret_cast<char*>(entity) + 0x3A);
 }
@@ -358,7 +357,7 @@ static void stabilize_motorcycle(void* veh) {
 
 
 // 统一验证实体 (CPed/CVehicle) 的有效性，保障野指针安全
-static bool is_entity_pointer_valid(void* entity) {
+bool is_entity_pointer_valid(void* entity) {
     if (!entity) return false;
     if (is_ped_pointer_valid_safe(entity)) {
         return true;
@@ -369,7 +368,7 @@ static bool is_entity_pointer_valid(void* entity) {
     return false;
 }
 
-static CVector get_entity_pos(void* entity) {
+CVector get_entity_pos(void* entity) {
     CVector pos = {0, 0, 0};
     if (is_entity_pointer_valid(entity) && g_GetMatrix) {
         CMatrix* mat = g_GetMatrix(entity);
@@ -428,7 +427,7 @@ static bool is_pos_visible_to_player_camera(CVector pos) {
     return false; // 在玩家视野外（后方或被挡）
 }
 
-static CVector get_spawn_target(CVector crime_pos) {
+CVector get_spawn_target(CVector crime_pos) {
     CVector spawn_target = crime_pos;
     float base_z = crime_pos.z;
     if (g_FindPlayerCoors) {
@@ -767,17 +766,17 @@ std::vector<TemporaryRoadClosure> g_temp_road_closures;
 std::mutex                         g_temp_closures_mutex;
 
 void make_cops_attack_criminal_immediate(CPed* criminal);
-static bool is_specific_criminal_armed_with_firearm(CPed* target_criminal);
-static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update);
-static void update_cops_targeting_criminal_event_driven(CPed* criminal);
-static void update_primary_criminal_by_threat();
+bool is_specific_criminal_armed_with_firearm(CPed* target_criminal);
+void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update);
+void update_cops_targeting_criminal_event_driven(CPed* criminal);
+void update_primary_criminal_by_threat();
 
 void init_ecs_systems();
 
 // =====================================================================
 // 时间工具
 // =====================================================================
-static int64_t now_ms() {
+int64_t now_ms() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
@@ -793,7 +792,7 @@ static int get_random_range(int min_val, int max_val) {
 // 1. 多犯罪 NPC 响应只应该发生在原版中非枪械攻击（<= 35m）/枪械攻击（<= 75m）的视听范围内。
 // 2. 仅当视听范围内不存在枪械攻击时，才允许激活（或劫持）一处远端范围的枪械攻击响应。
 // 3. 远端范围的非枪械攻击响应，仅当视听范围内无任何活跃犯罪，且警力不足（周边 60m 无警员或有警员牺牲）时才激活一处。
-static bool should_activate_or_hijack_crime(CVector crime_pos, bool firearm) {
+bool should_activate_or_hijack_crime(CVector crime_pos, bool firearm) {
     if (!g_FindPlayerCoors) return true; // 降级默认允许
     
     CVector player_pos = g_FindPlayerCoors(0);
@@ -942,7 +941,7 @@ static bool should_activate_or_hijack_crime(CVector crime_pos, bool firearm) {
 // =====================================================================
 static void make_cops_attack_criminal(CPed* criminal);
 
-static bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
+bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
     if (!perpetrator || !is_ped_pointer_valid_safe(perpetrator)) return false;
     if (!g_FindPlayerCoors) return false;
     
@@ -1558,7 +1557,7 @@ static bool is_cop_visible_to_player(void* veh, float current_x, float current_y
 static bool is_vehicle_occupied_by_driver(void* veh);
 
 // 指派 CTaskComplexEnterCar 任务，让其上车
-static void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
+void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
     if (!cop || !is_ped_pointer_valid_safe(cop) || !vehicle || !is_vehicle_pointer_valid(vehicle) || !g_TaskNew || !g_TaskEnterCar_ctor || !g_SetTask) return;
     if (g_IsAlive && !g_IsAlive(cop)) return;
 
@@ -1745,7 +1744,7 @@ void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver) {
 }
 
 // 验证该警车原先绑定的驾驶员是否依然存活
-static bool is_alive_bound_driver_exists(void* vehicle) {
+bool is_alive_bound_driver_exists(void* vehicle) {
     for (const auto& binding : g_cop_vehicle_bindings) {
         if (binding.vehicle == vehicle && binding.as_driver) {
             if (binding.cop && is_ped_pointer_valid_safe(binding.cop)) {
@@ -1870,7 +1869,7 @@ static bool is_swat_van_nearby(CVector pos, float radius) {
     return false;
 }
 
-static void bind_vehicle_occupants(void* vehicle) {
+void bind_vehicle_occupants(void* vehicle) {
     if (!vehicle || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType || !g_IsDriver || !g_IsPassenger) return;
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
     if (!pool) return;
@@ -1920,7 +1919,7 @@ static void bind_vehicle_occupants(void* vehicle) {
     }
 }
 
-static void record_exit_start_for_occupants(void* vehicle) {
+void record_exit_start_for_occupants(void* vehicle) {
     if (!vehicle || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType || !g_IsDriver || !g_IsPassenger) return;
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
     if (!pool) return;
@@ -2021,7 +2020,7 @@ static void setup_dispatched_cops(void* vehicle, CPed* criminal) {
     }
 }
 
-static eWeaponType determine_weapon_for_cop(CPed* cop, CPed* criminal, bool is_firearm_crime) {
+eWeaponType determine_weapon_for_cop(CPed* cop, CPed* criminal, bool is_firearm_crime) {
     if (!cop || !criminal) return WEAPON_PISTOL;
     if (is_firearm_crime) return WEAPON_PISTOL;
     return WEAPON_NIGHTSTICK; // 非枪击案，全程手持警棍规范执法
@@ -3508,7 +3507,7 @@ void make_cops_attack_criminal_immediate(CPed* criminal) {
     make_cops_attack_criminal(criminal);
 }
 
-static bool is_specific_criminal_armed_with_firearm(CPed* target_criminal) {
+bool is_specific_criminal_armed_with_firearm(CPed* target_criminal) {
     if (!target_criminal) return false;
     std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
     if (g_crime_active.load() && !g_active_crime.cancelled) {
@@ -3528,7 +3527,7 @@ static bool is_specific_criminal_armed_with_firearm(CPed* target_criminal) {
     return false;
 }
 
-static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update) {
+void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update) {
     if (!cop || !is_ped_pointer_valid_safe(cop) || !criminal || !is_ped_pointer_valid_safe(criminal)) return;
     if (g_IsAlive && !g_IsAlive(cop)) return;
     if (g_GetPedType && g_GetPedType(cop) != PED_TYPE_COP) return;
@@ -3620,7 +3619,7 @@ static void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool forc
     }
 }
 
-static void update_cops_targeting_criminal_event_driven(CPed* criminal) {
+void update_cops_targeting_criminal_event_driven(CPed* criminal) {
     if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
 
     std::vector<CPed*> cops_to_update;
@@ -3642,7 +3641,7 @@ static void update_cops_targeting_criminal_event_driven(CPed* criminal) {
     }
 }
 
-static void update_primary_criminal_by_threat() {
+void update_primary_criminal_by_threat() {
     std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
     if (!g_crime_active.load() || g_active_crime.cancelled) {
         return;
@@ -3710,14 +3709,6 @@ static void update_primary_criminal_by_threat() {
 // 核心状态机：
 //   IDLE → TIMING → ON_SCENE → CLEANUP
 // =====================================================================
-enum DispatchState {
-    STATE_IDLE = 0,
-    STATE_TIMING,        // 等待调度延迟
-    STATE_DISPATCHED,    // 警车已生成，正在前往 (已弃用/仅作兼容占位)
-    STATE_ON_SCENE,      // 警车已抵达现场
-    STATE_CLEANUP,       // 事件结束，清理
-};
-
 // 调度状态变量
 static DispatchState g_dispatch_state = STATE_IDLE;
 static int64_t g_timer_start = 0;

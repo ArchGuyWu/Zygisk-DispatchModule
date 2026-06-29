@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -170,15 +171,20 @@ bool is_vehicle_pointer_valid(void* target_veh);
 bool is_entity_pointer_valid(void* entity);
 CVector get_entity_pos(void* entity);
 unsigned short get_entity_model_index(void* entity);
-uint64_t now_ms();
-CVector get_spawn_target(const CVector& player_pos);
+int64_t now_ms();
+CVector get_spawn_target(CVector crime_pos);
 void bind_vehicle_occupants(void* vehicle);
 void record_exit_start_for_occupants(void* vehicle);
 bool try_consolidate_crime(CPed* criminal, CVector location, bool is_firearm);
 bool should_activate_or_hijack_crime(CVector location, bool is_firearm);
 void update_primary_criminal_by_threat();
 void* find_vehicle_of_cop(CPed* cop);
+void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver);
+bool is_alive_bound_driver_exists(void* vehicle);
+void* get_ped_intelligence(CPed* ped);
 void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver);
+void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update);
+void update_cops_targeting_criminal_event_driven(CPed* criminal);
 bool is_specific_criminal_armed_with_firearm(CPed* criminal);
 eWeaponType determine_weapon_for_cop(CPed* cop, CPed* target, bool firearm_threat);
 
