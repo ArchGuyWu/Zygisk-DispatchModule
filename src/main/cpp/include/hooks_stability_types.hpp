@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "include/game_types.hpp"
+#include "game_types.hpp"
 
 // Stability-hook callback typedefs (shared by hooks_stability.cpp and module.cpp hook installer)
 typedef void (*fn_SetPedPosition_t)(void* self, void* ped);

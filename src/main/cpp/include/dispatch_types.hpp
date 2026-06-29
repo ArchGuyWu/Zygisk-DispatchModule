@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "include/game_types.hpp"
+#include "game_types.hpp"
 
 struct CrimeEvent {
     CPed* criminal = nullptr;

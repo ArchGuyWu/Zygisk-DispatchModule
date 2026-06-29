@@ -25,11 +25,11 @@
 #include "third_party/xdl/xdl.h"
 #include "sh_nothing_bin.h"
 
-#include "include/log.hpp"
-#include "include/game_config.hpp"
-#include "include/game_types.hpp"
-#include "include/pointer_sanitizer.hpp"
-#include "include/mod_shared.hpp"
+#include "log.hpp"
+#include "game_config.hpp"
+#include "game_types.hpp"
+#include "pointer_sanitizer.hpp"
+#include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 
 void init_ecs_systems() {

@@ -44,12 +44,12 @@
 #include <random>
 #include <functional>
 
-#include "include/log.hpp"
-#include "include/game_config.hpp"
-#include "include/game_types.hpp"
-#include "include/pointer_sanitizer.hpp"
+#include "log.hpp"
+#include "game_config.hpp"
+#include "game_types.hpp"
+#include "pointer_sanitizer.hpp"
 #include "ecs_engine.hpp"
-#include "include/mod_shared.hpp"
+#include "mod_shared.hpp"
 
 // =====================================================================
 // 全局函数指针（运行时通过 dlsym 解析）

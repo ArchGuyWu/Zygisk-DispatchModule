@@ -9,10 +9,10 @@
 #include <vector>
 
 #include "third_party/xdl/xdl.h"
-#include "include/log.hpp"
-#include "include/game_types.hpp"
-#include "include/dispatch_types.hpp"
-#include "include/hooks_stability_types.hpp"
+#include "log.hpp"
+#include "game_types.hpp"
+#include "dispatch_types.hpp"
+#include "hooks_stability_types.hpp"
 
 // --- 符号解析宏 ---
 #define RESOLVE_SYM(handle, var, mangled, type) do { \
