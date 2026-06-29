@@ -351,6 +351,8 @@ static fn_EventDamage_ctor_t g_orig_event_damage_ctor_c2 = nullptr;
 static void* g_stub_set_current_weapon = nullptr;
 static fn_SetCurrentWeapon_t g_orig_SetCurrentWeapon = nullptr;
 
+static std::atomic<int> g_player_wanted_level{0};
+
 // =====================================================================
 // 辅助函数
 // =====================================================================
@@ -1498,6 +1500,7 @@ static void proxy_set_wanted_level(void* this_wanted, int level) {
         return;
     }
 
+    g_player_wanted_level.store(level);
     SHADOWHOOK_CALL_PREV(proxy_set_wanted_level, this_wanted, level);
 }
 
@@ -6032,6 +6035,97 @@ static bool is_police_vehicle_model(unsigned int model) {
             model == 433 || model == 432);                                  // Barracks (Army Truck), Rhino (Tank)
 }
 
+static int count_active_police_vehicles_near_player(float range) {
+    if (!g_ms_pVehiclePool || !g_GetPoolVehicle || !g_FindPlayerCoors) return 0;
+    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
+    if (!pool || !is_pointer_readable(pool)) return 0;
+
+    char** p_byte_map = reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    if (!is_pointer_readable(p_byte_map)) return 0;
+    char* byte_map = *p_byte_map;
+    if (!byte_map || !is_pointer_readable(byte_map)) return 0;
+
+    int* p_size = reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!is_pointer_readable(p_size)) return 0;
+    int size = *p_size;
+
+    CVector player_pos = g_FindPlayerCoors(0);
+    int count = 0;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            void* veh = g_GetPoolVehicle(handle);
+            if (veh && is_pointer_readable(veh)) {
+                unsigned short model = get_entity_model_index(veh);
+                if (is_police_vehicle_model(model)) {
+                    CVector pos = get_entity_pos(veh);
+                    float dx = pos.x - player_pos.x;
+                    float dy = pos.y - player_pos.y;
+                    float dz = pos.z - player_pos.z;
+                    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+                    if (dist < range) {
+                        count++;
+                    }
+                }
+            }
+        }
+    }
+    return count;
+}
+
+static bool relocate_police_car_spawn(unsigned int model, CVector& pos) {
+    int wanted_level = g_player_wanted_level.load();
+    if (wanted_level <= 0) {
+        return false;
+    }
+
+    int max_cars = 0;
+    if (wanted_level == 1 || wanted_level == 2) {
+        max_cars = 1;
+    } else if (wanted_level == 3 || wanted_level == 4) {
+        max_cars = 2;
+    } else if (wanted_level >= 5) {
+        max_cars = 3;
+    }
+
+    int active_cars = count_active_police_vehicles_near_player(150.0f);
+    if (active_cars >= max_cars) {
+        LOGI("🚫 [trueDispatch] Blocked native cop spawn (Cap reached: %d/%d). Model: %u", active_cars, max_cars, model);
+        return false;
+    }
+
+    static std::atomic<uint64_t> last_spawn_time_ms{0};
+    uint64_t now = now_ms();
+    if (now - last_spawn_time_ms.load() < 15000) { // 15s cooldown
+        LOGI("🚫 [trueDispatch] Blocked native cop spawn (Cooldown active). Model: %u", model);
+        return false;
+    }
+
+    CVector player_pos = g_FindPlayerCoors ? g_FindPlayerCoors(0) : pos;
+    CVector target_pos = get_spawn_target(player_pos);
+
+    float dx = target_pos.x - player_pos.x;
+    float dy = target_pos.y - player_pos.y;
+    float dz = target_pos.z - player_pos.z;
+    float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+    if (dist > 65.0f) {
+        float scale = 60.0f / dist;
+        target_pos.x = player_pos.x + dx * scale;
+        target_pos.y = player_pos.y + dy * scale;
+        target_pos.z = player_pos.z + dz * scale;
+    }
+
+    LOGI("🚓 [trueDispatch] Relocating native cop spawn! Model: %u, original pos: (%.1f, %.1f, %.1f), relocated to (%.1f, %.1f, %.1f), dist: %.1f m",
+         model, pos.x, pos.y, pos.z, target_pos.x, target_pos.y, target_pos.z, dist);
+
+    last_spawn_time_ms.store(now);
+    pos = target_pos;
+    return true;
+}
+
 static void* g_stub_generate_one_emergency_car = nullptr;
 static fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
 
@@ -6040,8 +6134,9 @@ static void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
 
     if (is_police_vehicle_model(model)) {
         if (!g_is_generating_custom_dispatch.load()) {
-            LOGI("🚫 [trueDispatch] Intercepted native cheap cop spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", model, pos.x, pos.y, pos.z);
-            return; // Intercept and quietly block native spawning
+            if (!relocate_police_car_spawn(model, pos)) {
+                return; // Intercept and block
+            }
         }
     }
 
@@ -6079,8 +6174,9 @@ static void proxy_script_generate_one_emergency_car(unsigned int model, CVector 
 
     if (is_police_vehicle_model(model)) {
         if (!g_is_generating_custom_dispatch.load()) {
-            LOGI("🚫 [trueDispatch] Intercepted native cheap cop script spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", model, pos.x, pos.y, pos.z);
-            return; // Intercept and quietly block native spawning
+            if (!relocate_police_car_spawn(model, pos)) {
+                return; // Intercept and block
+            }
         }
     }
 
