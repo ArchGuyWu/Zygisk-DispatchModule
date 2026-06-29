@@ -186,9 +186,10 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
     if (g_FindDistToNearestCop) {
         dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
     }
-    if (dist_to_cop < dispatch_timing::COP_NATURAL_RESPONSE_M) {
-        LOGI("Natural police response zone for case %llu (nearest=%.1fm) -> STATE_ON_SCENE",
-             (unsigned long long)crime->case_id, dist_to_cop);
+    if (dispatch_timing::is_cop_within_native_av(dist_to_cop, *crime)) {
+        LOGI("Cop entered native AV for case %llu (nearest=%.1fm < %.0fm) -> STATE_ON_SCENE",
+             (unsigned long long)crime->case_id, dist_to_cop,
+             dispatch_timing::get_av_range_for_crime(*crime));
         crime->dispatch_sent = true;
         crime->on_scene_start = cur_time;
         crime->dispatch_state = STATE_ON_SCENE;

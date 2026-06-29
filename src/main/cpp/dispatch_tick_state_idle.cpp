@@ -59,23 +59,25 @@ void dispatch_tick_state_idle(const std::shared_ptr<CrimeEvent>& crime) {
             dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
         }
 
-        if (dist_to_cop < dispatch_timing::COP_ON_SCENE_IMMEDIATE_M) {
-            LOGI("Cops nearby (dist=%.1f) for case %llu, transition to STATE_ON_SCENE directly", dist_to_cop, (unsigned long long)crime->case_id);
+        float av_range = dispatch_timing::get_av_range_for_crime(*crime);
+        if (dispatch_timing::is_cop_within_native_av(dist_to_cop, *crime)) {
+            LOGI("Cop within native AV (dist=%.1f < %.0fm, firearm=%d) for case %llu -> STATE_ON_SCENE",
+                 dist_to_cop, av_range, crime->is_firearm ? 1 : 0, (unsigned long long)crime->case_id);
             crime->dispatch_sent = true;
             crime->on_scene_start = now_ms();
             crime->dispatch_state = STATE_ON_SCENE;
             crime->last_cops_killed = 0;
         } else {
-            // 进入统一计时状态：先留自然响应窗口，再轮询附近警员，最后才刷增援车
+            // 视听外：先留与 AV 类型匹配的自然缓冲，再轮询附近警员，最后刷增援车
             int64_t cur_time = now_ms();
             crime->timer_start = cur_time;
             crime->last_nearby_dispatch_attempt_ms = 0;
             crime->dispatch_delay_ms = dispatch_timing::compute_spawn_fallback_delay_ms(crime->is_firearm);
             crime->dispatch_state = STATE_TIMING;
             crime->last_cops_killed = 0;
-            LOGI("Case %llu: nearest cop %.1fm away -> TIMING (grace=%lldms, nearby_retry=%lldms, spawn_fallback=%dms)",
-                 (unsigned long long)crime->case_id, dist_to_cop,
-                 (long long)dispatch_timing::NATURAL_RESPONSE_GRACE_MS,
+            LOGI("Case %llu: nearest cop %.1fm outside AV %.0fm -> TIMING (grace=%lldms, retry=%lldms, spawn=%dms)",
+                 (unsigned long long)crime->case_id, dist_to_cop, av_range,
+                 (long long)dispatch_timing::get_natural_response_grace_ms(*crime),
                  (long long)dispatch_timing::NEARBY_RETRY_INTERVAL_MS,
                  crime->dispatch_delay_ms);
         }
