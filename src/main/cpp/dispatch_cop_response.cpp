@@ -116,7 +116,8 @@ bool should_block_cop_reenter_vehicle(CPed* cop) {
             float dy = cop_pos.y - crim_pos.y;
             float dz = cop_pos.z - crim_pos.z;
             float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-            if (dist < 70.0f) {
+            float av_range = dispatch_timing::get_av_range_for_crime(*crime);
+            if (dist < av_range) {
                 return true;
             }
         }

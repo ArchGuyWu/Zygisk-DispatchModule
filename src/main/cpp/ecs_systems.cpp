@@ -30,6 +30,7 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_timing.hpp"
 
 void init_ecs_systems() {
     static std::atomic<bool> initialized{false};
@@ -442,9 +443,11 @@ void init_ecs_systems() {
                 }
             }
 
+            CVector cop_pos = get_entity_pos(cop);
+            bool within_native_av = dispatch_timing::is_cop_within_any_active_crime_av(cop_pos);
+
             // 追加测距脱离检测：如果追击目标超过 100 米未果，算作跟丢脱战，立即收枪
-            if (!should_disarm && target) {
-                CVector cop_pos = get_entity_pos(cop);
+            if (!should_disarm && target && !within_native_av) {
                 CVector tgt_pos = get_entity_pos(target);
                 float dx = cop_pos.x - tgt_pos.x;
                 float dy = cop_pos.y - tgt_pos.y;
@@ -452,6 +455,40 @@ void init_ecs_systems() {
                 float dist = sqrtf(dx * dx + dy * dy + dz * dz);
                 if (dist > 100.0f) {
                     should_disarm = true;
+                }
+            }
+
+            // 视听范围内：禁止收枪/上车/移除战斗组件，必须参战
+            if (should_disarm && within_native_av) {
+                should_disarm = false;
+                CPed* engage_target = nullptr;
+                if (target && is_ped_pointer_valid_safe(target) && (g_IsAlive == nullptr || g_IsAlive(target))) {
+                    engage_target = target;
+                } else {
+                    float best_dist_sq = 999999.0f;
+                    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+                    for (const auto& crime : g_active_crimes) {
+                        if (!crime || crime->cancelled) continue;
+                        float av_range = dispatch_timing::get_av_range_for_crime(*crime);
+                        float av_range_sq = av_range * av_range;
+                        for (CPed* criminal : crime->consolidated_criminals) {
+                            if (!criminal || !is_ped_pointer_valid_safe(criminal)) continue;
+                            if (g_IsAlive && !g_IsAlive(criminal)) continue;
+                            CVector crim_pos = get_entity_pos(criminal);
+                            float dx = cop_pos.x - crim_pos.x;
+                            float dy = cop_pos.y - crim_pos.y;
+                            float dz = cop_pos.z - crim_pos.z;
+                            float dist_sq = dx * dx + dy * dy + dz * dz;
+                            if (dist_sq <= av_range_sq && dist_sq < best_dist_sq) {
+                                best_dist_sq = dist_sq;
+                                engage_target = criminal;
+                            }
+                        }
+                    }
+                }
+                if (engage_target) {
+                    make_single_cop_attack_criminal(cop, engage_target, true);
+                    LOGI("🎯 [ECS WeaponSelectionSystem] Cop %p AV-forced re-engage -> criminal %p", cop, engage_target);
                 }
             }
 

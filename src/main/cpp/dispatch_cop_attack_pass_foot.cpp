@@ -42,10 +42,14 @@ void cop_attack_dispatch_foot_cop(
     CVector target_crime_pos,
     float dist_sq) {
     CVector cop_pos = get_entity_pos(ped);
-                    // 地面警员只在 70m 内响应（保持最高效追杀半径）
-                    if (dist_sq > 70.0f * 70.0f) {
+                    float scan_range_sq = ctx.av_range_sq > 0.0f
+                        ? ctx.av_range_sq
+                        : (dispatch_timing::AV_RANGE_FIREARM_M * dispatch_timing::AV_RANGE_FIREARM_M);
+                    if (dist_sq > scan_range_sq) {
                         return;
                     }
+
+                    bool within_native_av = ctx.av_range_sq > 0.0f && dist_sq <= ctx.av_range_sq;
 
                     // =====================================================================
                     // 地面警员的事件驱动型分派调度与高频限流控制 (3 秒限频 & 15 秒存留状态查询)
@@ -141,24 +145,26 @@ void cop_attack_dispatch_foot_cop(
                         }
                     }
 
-                    // 【核心近战防抖限流控制】：由于近战没有 LockOnTarget 瞄准状态，already_targeting 始终为 false。
-                    // 因而，对近战警员采用 15 秒（在场存留时限）长限流拦截；枪械警员继续保持 3 秒心跳唤醒。这可确保近战挥舞不被 0 伤物理受击打断！
-                    if (!just_exited_vehicle &&
-                        (already_targeting || (now_ms() - last_assign < (is_melee ?
-                            dispatch_timing::FOOT_ASSIGN_MELEE_MS : dispatch_timing::FOOT_ASSIGN_FIREARM_MS)))) {
-                        return; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
+                    // 视听范围内：无条件强制响应，绕过限频与配额
+                    if (!within_native_av) {
+                        // 【核心近战防抖限流控制】：由于近战没有 LockOnTarget 瞄准状态，already_targeting 始终为 false。
+                        // 因而，对近战警员采用长限流拦截；枪械警员继续保持心跳唤醒。这可确保近战挥舞不被 0 伤物理受击打断！
+                        if (!just_exited_vehicle &&
+                            (already_targeting || (now_ms() - last_assign < (is_melee ?
+                                dispatch_timing::FOOT_ASSIGN_MELEE_MS : dispatch_timing::FOOT_ASSIGN_FIREARM_MS)))) {
+                            return;
+                        }
                     }
 
                     // 判定是否是已经响应过的地面警员（使用 15 秒内分派或正在瞄准）
                     bool already_assigned_foot_cop = already_targeting ||
                         (now_ms() - last_assign < dispatch_timing::FOOT_ASSIGN_ACTIVE_WINDOW_MS);
-                    if (!already_assigned_foot_cop && ctx.active_foot_cops_count >= ctx.max_foot_cops) {
-                        // 超过地面警员配额上限且在现场目击范围 (30m) 之外，直接跳过，使其优雅走过
+                    if (!within_native_av && !already_assigned_foot_cop && ctx.active_foot_cops_count >= ctx.max_foot_cops) {
                         return;
                     }
 
-                    // 原生 + 事件混合唤醒（地面警以事件兜底保证响应，不再因枪击案+玩家近场而跳过）
-                    make_single_cop_attack_criminal(ped, target_criminal, false);
+                    // 原生 + 事件混合唤醒；视听内强制重分派
+                    make_single_cop_attack_criminal(ped, target_criminal, within_native_av);
 
                     int64_t assign_time = now_ms();
                     bool found_assign = false;
@@ -203,6 +209,7 @@ void cop_attack_dispatch_foot_cop(
                     if (!already_assigned_foot_cop) {
                         ctx.active_foot_cops_count++;
                     }
-                    LOGI("🎯 [Foot Cop Dispatch] Native-first combat dispatch to cop %p -> criminal %p (active_foot_cops=%d/%d)",
-                         ped, target_criminal, ctx.active_foot_cops_count, ctx.max_foot_cops);
+                    LOGI("🎯 [Foot Cop Dispatch] %s combat dispatch to cop %p -> criminal %p (active_foot_cops=%d/%d, dist=%.1f)",
+                         within_native_av ? "AV-forced" : "Native-first",
+                         ped, target_criminal, ctx.active_foot_cops_count, ctx.max_foot_cops, sqrtf(dist_sq));
 }

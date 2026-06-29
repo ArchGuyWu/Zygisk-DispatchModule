@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "dispatch_types.hpp"
+#include "game_types.hpp"
 
 // =====================================================================
 // 调度时序常量（与 GTA 原生视听 AV 对齐）
@@ -57,6 +58,7 @@ constexpr int64_t VEHICLE_MAX_APPROACH_MS = 15000;
 float get_av_range_for_crime(const CrimeEvent& crime);
 int64_t get_natural_response_grace_ms(const CrimeEvent& crime);
 bool is_cop_within_native_av(float dist_to_cop, const CrimeEvent& crime);
+bool is_cop_within_any_active_crime_av(const CVector& cop_pos);
 
 int compute_spawn_fallback_delay_ms(bool is_firearm);
 int64_t elapsed_since_dispatch_timer(const CrimeEvent& crime, int64_t now_ms);

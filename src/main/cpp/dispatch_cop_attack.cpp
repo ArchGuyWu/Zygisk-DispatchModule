@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
+#include "dispatch_timing.hpp"
 
 
 void make_cops_attack_criminal(CPed* criminal) {
@@ -55,6 +56,11 @@ void make_cops_attack_criminal(CPed* criminal) {
     ctx.crime_pos = get_entity_pos(criminal);
     ctx.pool_size = size;
     ctx.byte_map = byte_map;
+
+    if (crime_case && !crime_case->cancelled) {
+        float av_range = dispatch_timing::get_av_range_for_crime(*crime_case);
+        ctx.av_range_sq = av_range * av_range;
+    }
 
     cop_attack_snapshot_globals(ctx);
     cop_attack_detect_firearm_threat(ctx);

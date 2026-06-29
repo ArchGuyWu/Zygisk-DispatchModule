@@ -111,10 +111,16 @@ void cop_attack_dispatch_vehicle_cop(
                             }
                             session.elapsed = now_ms() - session.first_seen;
 
+                            float av_range = ctx.av_range_sq > 0.0f
+                                ? sqrtf(ctx.av_range_sq)
+                                : dispatch_timing::AV_RANGE_FIREARM_M;
+                            bool within_native_av = session.v_dist < av_range;
+
                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
                             float exit_dist = is_bike ? 12.0f : 16.0f;
-                            // 复合下车判定：距离接近 (摩托车12米/轿车16米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或超时过久 (行驶超12秒)
-                            bool should_exit = (session.v_dist < exit_dist) ||
+                            // 视听内无条件下车参战；否则按距离/卡死/超时复合判定
+                            bool should_exit = within_native_av ||
+                                               (session.v_dist < exit_dist) ||
                                                (session.elapsed > dispatch_timing::VEHICLE_STUCK_EXIT_MS && session.v_dist < 60.0f) ||
                                                (session.elapsed > dispatch_timing::VEHICLE_MAX_APPROACH_MS);
 
@@ -156,7 +162,7 @@ void cop_attack_dispatch_vehicle_cop(
             cop_attack_vehicle_unstuck_intervene(ctx, session, ped, veh, target_criminal, target_crime_pos);
         }
 
-        if (!session.already_dispatched && ctx.active_vehicles_count >= ctx.max_vehicles) {
+        if (!within_native_av && !session.already_dispatched && ctx.active_vehicles_count >= ctx.max_vehicles) {
             return;
         }
         cop_attack_vehicle_initial_order(ctx, session, ped, veh, target_criminal, target_crime_pos);

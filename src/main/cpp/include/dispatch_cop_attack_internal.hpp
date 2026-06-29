@@ -21,6 +21,9 @@ struct CopAttackContext {
     int max_vehicles = 2;
     int max_foot_cops = 2;
 
+    // 原生视听范围内：无条件强制响应（绕过配额/限频）
+    float av_range_sq = 0.0f;
+
     std::vector<std::pair<std::pair<CPed*, CPed*>, int64_t>> cop_attack_assign_time_snapshot;
     std::vector<std::pair<CPed*, int64_t>> armed_cops_time_snapshot;
     std::vector<std::pair<CPed*, eWeaponType>> cop_assigned_weapon_snapshot;

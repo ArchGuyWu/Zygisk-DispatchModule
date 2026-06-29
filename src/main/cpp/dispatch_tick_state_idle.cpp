@@ -67,6 +67,7 @@ void dispatch_tick_state_idle(const std::shared_ptr<CrimeEvent>& crime) {
             crime->on_scene_start = now_ms();
             crime->dispatch_state = STATE_ON_SCENE;
             crime->last_cops_killed = 0;
+            make_cops_attack_criminal_immediate(crime->criminal);
         } else {
             // 视听外：先留与 AV 类型匹配的自然缓冲，再轮询附近警员，最后刷增援车
             int64_t cur_time = now_ms();

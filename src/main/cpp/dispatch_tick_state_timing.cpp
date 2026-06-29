@@ -193,6 +193,7 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
         crime->dispatch_sent = true;
         crime->on_scene_start = cur_time;
         crime->dispatch_state = STATE_ON_SCENE;
+        make_cops_attack_criminal_immediate(crime->criminal);
         return;
     }
 
