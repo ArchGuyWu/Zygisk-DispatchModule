@@ -65,13 +65,25 @@ void dispatch_tick_state_idle(const std::shared_ptr<CrimeEvent>& crime) {
             crime->dispatch_state = STATE_ON_SCENE;
             crime->last_cops_killed = 0;
         } else {
-            // 缩短调度计时器以让警车快速抵达：枪械犯罪 4~7 秒，近战/非枪械犯罪 8~12 秒，防止战斗提前完结导致警察“不响应”
-            crime->dispatch_delay_ms = crime->is_firearm ?
-                get_random_range(4000, 7000) : get_random_range(8000, 12000);
-            crime->timer_start = now_ms();
-            crime->dispatch_state = STATE_TIMING;
-            crime->last_cops_killed = 0;
-            LOGI("No cops nearby for case %llu, starting dispatch timer: %d ms", (unsigned long long)crime->case_id, crime->dispatch_delay_ms);
+            float search_radius = compute_nearby_cop_search_radius(crime);
+            int mobilized = dispatch_nearby_available_cops_for_crime_auto(crime);
+            if (mobilized > 0) {
+                LOGI("Nearby cop dispatch for case %llu mobilized %d officers (dist_to_nearest=%.1f) -> STATE_ON_SCENE",
+                     (unsigned long long)crime->case_id, mobilized, dist_to_cop);
+                crime->dispatch_sent = true;
+                crime->on_scene_start = now_ms();
+                crime->dispatch_state = STATE_ON_SCENE;
+                crime->last_cops_killed = 0;
+            } else {
+                // 附近无可调度警员，回退计时后刷增援车
+                crime->dispatch_delay_ms = crime->is_firearm ?
+                    get_random_range(4000, 7000) : get_random_range(8000, 12000);
+                crime->timer_start = now_ms();
+                crime->dispatch_state = STATE_TIMING;
+                crime->last_cops_killed = 0;
+                LOGI("No mobilizable cops within %.0fm for case %llu, starting spawn timer: %d ms",
+                     search_radius, (unsigned long long)crime->case_id, crime->dispatch_delay_ms);
+            }
         }
     }
 }

@@ -61,10 +61,39 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
     }
 
     int64_t elapsed = now_ms() - crime->timer_start;
+
+    // 计时等待期间周期性尝试调度附近可用警员（替代纯刷车增援）
+    if (elapsed >= 1500 && elapsed < crime->dispatch_delay_ms) {
+        int mobilized = dispatch_nearby_available_cops_for_crime_auto(crime);
+        if (mobilized > 0) {
+            LOGI("Nearby cop dispatch during timing for case %llu mobilized %d officers -> STATE_ON_SCENE",
+                 (unsigned long long)crime->case_id, mobilized);
+            crime->dispatch_sent = true;
+            crime->spawn_time_ms = now_ms();
+            crime->on_scene_start = now_ms();
+            crime->dispatch_state = STATE_ON_SCENE;
+            return;
+        }
+    }
+
     if (elapsed >= crime->dispatch_delay_ms) {
         int density = count_criminals_near(crime->location, 40.0f);
         LOGI("Dispatch timer expired. Target scene %llu (%.1f, %.1f, %.1f) has criminal density = %d",
              (unsigned long long)crime->case_id, crime->location.x, crime->location.y, crime->location.z, density);
+
+        int mobilized = dispatch_nearby_available_cops_for_crime_auto(crime);
+        if (mobilized > 0) {
+            LOGI("Timer expired: nearby cop dispatch mobilized %d officers for case %llu (skipped emergency spawn)",
+                 mobilized, (unsigned long long)crime->case_id);
+            crime->dispatch_sent = true;
+            crime->spawn_time_ms = now_ms();
+            crime->on_scene_start = now_ms();
+            crime->dispatch_state = STATE_ON_SCENE;
+            return;
+        }
+
+        LOGI("Timer expired: no nearby cops for case %llu, falling back to emergency vehicle spawn",
+             (unsigned long long)crime->case_id);
 
         CVector target_pos = get_spawn_target(crime->location);
         crime->dispatch_sent = true;

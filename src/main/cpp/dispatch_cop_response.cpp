@@ -574,6 +574,153 @@ eWeaponType determine_weapon_for_cop(CPed* cop, CPed* criminal, bool is_firearm_
     return WEAPON_NIGHTSTICK; // 非枪击案，全程手持警棍规范执法
 }
 
+int compute_nearby_cop_quota_for_crime(const std::shared_ptr<CrimeEvent>& crime) {
+    if (!crime) return 1;
+    int density = count_criminals_near(crime->location, 40.0f);
+    if (density >= 6) return 4;
+    if (density >= 3) return 2;
+    return 1;
+}
+
+float compute_nearby_cop_search_radius(const std::shared_ptr<CrimeEvent>& crime) {
+    if (!crime) return 100.0f;
+    // 超出视听自动响应范围，但仍属「附近」可调度半径
+    return crime->is_firearm ? 150.0f : 80.0f;
+}
+
+int dispatch_nearby_available_cops_to_crime(
+    const std::shared_ptr<CrimeEvent>& crime,
+    int max_cops,
+    float search_radius) {
+    if (!crime || crime->cancelled || max_cops <= 0) return 0;
+
+    CPed* criminal = crime->criminal;
+    if (!criminal || !is_ped_pointer_valid_safe(criminal)) return 0;
+    if (g_IsAlive && !g_IsAlive(criminal)) return 0;
+    if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return 0;
+
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return 0;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return 0;
+
+    CVector crime_pos = crime->location;
+    float radius_sq = search_radius * search_radius;
+    int64_t cur_time = now_ms();
+
+    struct NearbyCopCandidate {
+        CPed* cop = nullptr;
+        float dist_sq = 0.0f;
+        void* vehicle = nullptr;
+    };
+    std::vector<NearbyCopCandidate> candidates;
+    candidates.reserve(32);
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag < 0) continue;
+
+        int handle = (i << 8) | flag;
+        CPed* ped = g_GetPoolPed(handle);
+        if (!ped || !is_ped_pointer_valid_safe(ped)) continue;
+        if (g_IsAlive && !g_IsAlive(ped)) continue;
+        if (g_GetPedType(ped) != PED_TYPE_COP) continue;
+
+        bool is_case_criminal = false;
+        for (CPed* c : crime->consolidated_criminals) {
+            if (c == ped) {
+                is_case_criminal = true;
+                break;
+            }
+        }
+        if (is_case_criminal) continue;
+
+        CVector cop_pos = get_entity_pos(ped);
+        float dx = cop_pos.x - crime_pos.x;
+        float dy = cop_pos.y - crime_pos.y;
+        float dz = cop_pos.z - crime_pos.z;
+        float dist_sq = dx * dx + dy * dy + dz * dz;
+        if (dist_sq > radius_sq) continue;
+
+        if (g_GetWeaponLockOnTarget) {
+            CEntity* lock_target = g_GetWeaponLockOnTarget(ped);
+            if (lock_target == reinterpret_cast<CEntity*>(criminal)) {
+                continue;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+            auto it = g_cop_attack_assign_time.find({ped, criminal});
+            if (it != g_cop_attack_assign_time.end() && (cur_time - it->second < 5000)) {
+                continue;
+            }
+        }
+
+        candidates.push_back({ped, dist_sq, find_vehicle_of_cop(ped)});
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+        [](const NearbyCopCandidate& a, const NearbyCopCandidate& b) {
+            return a.dist_sq < b.dist_sq;
+        });
+
+    std::set<CPed*> dispatched_cops;
+    std::set<void*> dispatched_vehicles;
+    int mobilized = 0;
+
+    for (const auto& candidate : candidates) {
+        if (mobilized >= max_cops) break;
+        if (dispatched_cops.count(candidate.cop)) continue;
+
+        if (candidate.vehicle && is_vehicle_pointer_valid(candidate.vehicle)) {
+            if (dispatched_vehicles.count(candidate.vehicle)) continue;
+            if (!is_vehicle_occupied_by_driver(candidate.vehicle)) continue;
+
+            command_cop_vehicle_to_scene(candidate.vehicle, crime_pos);
+            setup_dispatched_cops(candidate.vehicle, criminal);
+            add_vehicle_ordered_to_scene(candidate.vehicle);
+            bind_vehicle_occupants(candidate.vehicle);
+
+            if (std::find(crime->case_vehicles.begin(), crime->case_vehicles.end(), candidate.vehicle) ==
+                crime->case_vehicles.end()) {
+                crime->case_vehicles.push_back(candidate.vehicle);
+            }
+            if (!crime->spawned_vehicle) {
+                crime->spawned_vehicle = candidate.vehicle;
+            }
+
+            dispatched_vehicles.insert(candidate.vehicle);
+            dispatched_cops.insert(candidate.cop);
+            mobilized++;
+            LOGI("🚓 [NearbyCopDispatch] Routed patrol vehicle %p (cop %p) to case %llu (dist=%.1fm)",
+                 candidate.vehicle, candidate.cop, (unsigned long long)crime->case_id, sqrtf(candidate.dist_sq));
+        } else {
+            make_single_cop_attack_criminal(candidate.cop, criminal, true);
+            dispatched_cops.insert(candidate.cop);
+            mobilized++;
+            LOGI("🚓 [NearbyCopDispatch] Dispatched foot cop %p to case %llu (dist=%.1fm)",
+                 candidate.cop, (unsigned long long)crime->case_id, sqrtf(candidate.dist_sq));
+        }
+    }
+
+    if (mobilized > 0) {
+        LOGI("🚓 [NearbyCopDispatch] Case %llu mobilized %d/%d nearby cops within %.0fm",
+             (unsigned long long)crime->case_id, mobilized, max_cops, search_radius);
+    }
+    return mobilized;
+}
+
+int dispatch_nearby_available_cops_for_crime_auto(const std::shared_ptr<CrimeEvent>& crime) {
+    if (!crime) return 0;
+    return dispatch_nearby_available_cops_to_crime(
+        crime,
+        compute_nearby_cop_quota_for_crime(crime),
+        compute_nearby_cop_search_radius(crime));
+}
+
 void make_cops_attack_criminal_immediate(CPed* criminal) {
     make_cops_attack_criminal(criminal);
 }
