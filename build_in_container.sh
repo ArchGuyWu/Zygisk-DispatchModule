@@ -47,8 +47,9 @@ if [ "$IS_IN_CONTAINER" -eq 0 ]; then
     CONTAINER_NAME="ubuntu-build"
     WORKSPACE_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
     
-    # 自动以 --isolated 隔离模式及绑定工作区执行自身
-    exec proot-distro login --isolated --bind "$WORKSPACE_DIR:/workspace" "$CONTAINER_NAME" -- bash "/workspace/Zygisk-DispatchModule/$(basename "$0")" "$@"
+    # 自动以 --isolated 隔离模式及绑定工作区执行自身（路径随仓库目录名自动解析）
+    PROJECT_NAME="$(basename "$PROJECT_DIR")"
+    exec proot-distro login --isolated --bind "$WORKSPACE_DIR:/workspace" "$CONTAINER_NAME" -- bash "/workspace/${PROJECT_NAME}/$(basename "$0")" "$@"
 fi
 
 # 允许通过环境变量定制编译架构，例如：ABIS="arm64-v8a armeabi-v7a" ./build_in_container.sh
@@ -154,8 +155,9 @@ set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 enable_language(ASM)
 
-# Zygisk 头文件
+# Zygisk 与项目头文件
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/zygisk)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # ShadowHook 源码路径
 set(SHADOWHOOK_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/shadowhook-src")

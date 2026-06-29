@@ -1,7 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # =====================================================================
 # auto_commit_push.sh
-# 每次完整修改后，自动编译、打包、提交并推送至远端仓库
+# 提交前可选编译验证，再推送至远端仓库
+# 跳过编译: SKIP_BUILD=1 ./auto_commit_push.sh
 # =====================================================================
 set -euo pipefail
 
@@ -9,7 +10,7 @@ WORKSPACE_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_DIR="$WORKSPACE_DIR"
 CONTAINER_NAME="ubuntu-build"
 
-echo "=== Zygisk-DispatchModule Auto Build & Auto Push System ==="
+echo "=== Zygisk-DispatchModule Auto Build & Push ==="
 echo ""
 
 # 1. 检测是否有未提交的更改
@@ -18,23 +19,30 @@ if [ -z "$(git -C "$SCRIPT_DIR" status --porcelain)" ]; then
     exit 0
 fi
 
-echo "🚀 Changes detected. Staging changes and committing directly to trigger remote CI/CD..."
+# 2. 编译验证（默认开启，可用 SKIP_BUILD=1 跳过）
+if [ "${SKIP_BUILD:-}" != "1" ]; then
+    echo "🔨 Running pre-push build verification..."
+    if ! bash "$SCRIPT_DIR/build_in_container.sh"; then
+        echo "❌ Build failed. Fix errors before pushing, or set SKIP_BUILD=1 to bypass."
+        exit 1
+    fi
+    echo "✅ Build verification passed."
+else
+    echo "⚠️ SKIP_BUILD=1 — skipping compile verification."
+fi
 
-# 2. Git 提交与推送
+# 3. Git 提交与推送
 echo "📝 Staging changes and committing..."
 git -C "$SCRIPT_DIR" add .
 
-# 自动生成或使用传入的参数作为 Commit Message
 if [ -n "${1:-}" ]; then
     COMMIT_MSG="$1"
 else
-    COMMIT_MSG="Auto-build & push: $(date '+%Y-%m-%d %H:%M:%S') - Code updates verified"
+    COMMIT_MSG="Auto-build & push: $(date '+%Y-%m-%d %H:%M:%S') - Build verified"
 fi
 git -C "$SCRIPT_DIR" commit -m "$COMMIT_MSG"
-
-# 自动运行 git push 推送至远端仓库
 git -C "$SCRIPT_DIR" push origin master
 
 echo "========================================================="
-echo "🎉 SUCCESS: Complete build & remote push achieved!"
+echo "🎉 SUCCESS: Build verified, committed, and pushed."
 echo "========================================================="
