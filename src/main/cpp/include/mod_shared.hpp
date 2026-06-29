@@ -9,7 +9,6 @@
 #include <set>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "third_party/xdl/xdl.h"
@@ -230,14 +229,7 @@ extern std::set<void*> g_vehicles_emptied;
 extern std::mutex g_vehicles_emptied_mutex;
 extern std::map<void*, int64_t> g_dispatched_vehicles_time;
 extern std::mutex g_dispatched_vehicles_time_mutex;
-extern std::map<std::pair<CPed*, CPed*>, int64_t> g_cop_attack_assign_time;
-extern std::mutex g_cop_attack_assign_mutex;
-extern std::map<CPed*, int64_t> g_armed_cops_time;
-extern std::mutex g_armed_cops_mutex;
-extern std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
-extern std::mutex g_cop_assigned_weapon_mutex;
-extern std::unordered_set<CPed*> g_dispatch_active_cops;
-extern std::mutex g_dispatch_active_cops_mutex;
+
 extern std::set<void*> g_vehicles_ordered_to_scene;
 extern std::mutex g_vehicles_mutex;
 extern std::set<void*> g_vehicles_siren_awakened;

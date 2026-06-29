@@ -38,46 +38,34 @@
 void CopAttackContext::reset() {
     thread_local static bool initialized = false;
     if (!initialized) {
-        cop_attack_assign_time_snapshot.reserve(128);
-        armed_cops_time_snapshot.reserve(128);
-        cop_assigned_weapon_snapshot.reserve(128);
         dispatched_vehicles_time_snapshot.reserve(128);
         stuck_vehicles_snapshot.reserve(128);
         vehicles_emptied_snapshot.reserve(128);
         vehicles_ordered_to_scene_snapshot.reserve(128);
         vehicles_siren_awakened_snapshot.reserve(128);
 
-        pending_armed_cops_time.reserve(128);
-        pending_cop_assigned_weapon.reserve(128);
         pending_dispatched_vehicles_time.reserve(128);
         pending_vehicles_emptied.reserve(128);
         pending_vehicles_ordered_to_scene.reserve(128);
         pending_vehicles_siren_awakened.reserve(128);
         pending_stuck_vehicles.reserve(128);
-        pending_cop_attack_assign_time.reserve(128);
         pending_temp_closures.reserve(128);
 
         counted_vehicles.reserve(128);
         initialized = true;
     }
 
-    cop_attack_assign_time_snapshot.clear();
-    armed_cops_time_snapshot.clear();
-    cop_assigned_weapon_snapshot.clear();
     dispatched_vehicles_time_snapshot.clear();
     stuck_vehicles_snapshot.clear();
     vehicles_emptied_snapshot.clear();
     vehicles_ordered_to_scene_snapshot.clear();
     vehicles_siren_awakened_snapshot.clear();
 
-    pending_armed_cops_time.clear();
-    pending_cop_assigned_weapon.clear();
     pending_dispatched_vehicles_time.clear();
     pending_vehicles_emptied.clear();
     pending_vehicles_ordered_to_scene.clear();
     pending_vehicles_siren_awakened.clear();
     pending_stuck_vehicles.clear();
-    pending_cop_attack_assign_time.clear();
     pending_temp_closures.clear();
 
     counted_vehicles.clear();
@@ -92,19 +80,6 @@ bool CopAttackContext::vector_contains(const std::vector<void*>& vec, void* val)
 }
 
 void cop_attack_snapshot_globals(CopAttackContext& ctx) {
-    // 一站式极速拷贝多线程全局状态
-    {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        ctx.cop_attack_assign_time_snapshot.assign(g_cop_attack_assign_time.begin(), g_cop_attack_assign_time.end());
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
-        ctx.armed_cops_time_snapshot.assign(g_armed_cops_time.begin(), g_armed_cops_time.end());
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-        ctx.cop_assigned_weapon_snapshot.assign(g_cop_assigned_weapon.begin(), g_cop_assigned_weapon.end());
-    }
     {
         std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
         ctx.dispatched_vehicles_time_snapshot.assign(g_dispatched_vehicles_time.begin(), g_dispatched_vehicles_time.end());
@@ -161,18 +136,6 @@ void cop_attack_compute_quotas(CopAttackContext& ctx) {
 }
 
 void cop_attack_commit_pending(CopAttackContext& ctx) {
-    if (!ctx.pending_armed_cops_time.empty()) {
-        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
-        for (const auto& item : ctx.pending_armed_cops_time) {
-            g_armed_cops_time[item.first] = item.second;
-        }
-    }
-    if (!ctx.pending_cop_assigned_weapon.empty()) {
-        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-        for (const auto& item : ctx.pending_cop_assigned_weapon) {
-            g_cop_assigned_weapon[item.first] = item.second;
-        }
-    }
     if (!ctx.pending_dispatched_vehicles_time.empty()) {
         std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
         for (const auto& item : ctx.pending_dispatched_vehicles_time) {
@@ -201,12 +164,6 @@ void cop_attack_commit_pending(CopAttackContext& ctx) {
         std::lock_guard<std::mutex> lock(g_stuck_vehicles_mutex);
         for (const auto& item : ctx.pending_stuck_vehicles) {
             g_stuck_vehicles[item.first] = item.second;
-        }
-    }
-    if (!ctx.pending_cop_attack_assign_time.empty()) {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        for (const auto& item : ctx.pending_cop_attack_assign_time) {
-            g_cop_attack_assign_time[item.first] = item.second;
         }
     }
     if (!ctx.pending_temp_closures.empty()) {

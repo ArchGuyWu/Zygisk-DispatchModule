@@ -34,6 +34,7 @@
 #include "dispatch_cop_attack_internal.hpp"
 #include "dispatch_cop_attack_vehicle_internal.hpp"
 #include "dispatch_timing.hpp"
+#include "dispatch_cop_state.hpp"
 
 
 void cop_attack_dispatch_vehicle_cop(
@@ -53,45 +54,15 @@ void cop_attack_dispatch_vehicle_cop(
     float v_dz = session.veh_pos.z - target_crime_pos.z;
     session.v_dist = sqrtf(v_dx * v_dx + v_dy * v_dy + v_dz * v_dz);
 
-                            int64_t last_armed = 0;
-                            for (const auto& item : ctx.armed_cops_time_snapshot) {
-                                if (item.first == ped) {
-                                    last_armed = item.second;
-                                    break;
-                                }
-                            }
-                            if (now_ms() - last_armed > 5000) { // 每 5 秒限制最多执行一次
+                            int64_t last_armed = dispatch_cop_state::get_last_armed_ms(ped);
+                            if (now_ms() - last_armed > 5000) {
                                 bool is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
                                 eWeaponType target_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
                                 if (g_GiveWeapon && g_SetCurrentWeapon) {
                                     g_GiveWeapon(ped, target_weapon, 9999, true);
                                     g_SetCurrentWeapon(ped, target_weapon);
                                 }
-                                bool found = false;
-                                for (auto& item : ctx.armed_cops_time_snapshot) {
-                                    if (item.first == ped) {
-                                        item.second = now_ms();
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    ctx.armed_cops_time_snapshot.push_back({ped, now_ms()});
-                                }
-                                ctx.pending_armed_cops_time.push_back({ped, now_ms()});
-
-                                bool found_w = false;
-                                for (auto& item : ctx.cop_assigned_weapon_snapshot) {
-                                    if (item.first == ped) {
-                                        item.second = target_weapon;
-                                        found_w = true;
-                                        break;
-                                    }
-                                }
-                                if (!found_w) {
-                                    ctx.cop_assigned_weapon_snapshot.push_back({ped, target_weapon});
-                                }
-                                ctx.pending_cop_assigned_weapon.push_back({ped, target_weapon});
+                                dispatch_cop_state::record_weapon(ped, target_weapon, now_ms());
                             }
 
                             session.first_seen = 0;

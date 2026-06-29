@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -180,6 +181,8 @@ struct CopComponent : public IComponent {
     bool has_exited_vehicle = false;
     int64_t last_assign_time_ms = 0;
     int64_t last_enter_vehicle_command_time_ms = 0;
+    int pool_handle = -1;
+    bool dispatch_active = false;
     void* cached_vehicle = nullptr;
     int64_t cached_vehicle_lookup_ms = 0;
     
@@ -195,10 +198,15 @@ struct CopComponent : public IComponent {
 
 // 5.2 战斗组件 (管理警员与犯罪NPC之间的武器匹配状态和指派目标)
 struct CombatComponent : public IComponent {
-    Entity target_entity = nullptr;        // 攻击目标
-    int64_t last_shot_time_ms = 0;         // 目标开火最后时间
-    int64_t last_weapon_switch_time_ms = 0; // 上次切换武器的时间
-    int current_weapon_type = 0;           // 0:警棍, 1:手枪, 2:散弹枪 等
+    Entity target_entity = nullptr;
+    int target_ped_handle = -1;
+    uint64_t target_case_id = 0;
+    uint64_t assigned_case_id = 0;
+    int64_t last_dispatch_assign_ms = 0;
+    int64_t last_armed_time_ms = 0;
+    int64_t last_shot_time_ms = 0;
+    int64_t last_weapon_switch_time_ms = 0;
+    int current_weapon_type = 0;
 
     CombatComponent() = default;
 };
@@ -223,6 +231,8 @@ struct CriminalComponent : public IComponent {
     int64_t last_attack_time_ms = 0; // 上次攻击/开火时间
     Entity current_victim = nullptr; // 当前受害人
     int64_t first_detect_time_ms = 0;
+    int pool_handle = -1;
+    uint64_t case_id = 0;
 
     CriminalComponent(Entity ped) : criminal_ped(ped) {}
 

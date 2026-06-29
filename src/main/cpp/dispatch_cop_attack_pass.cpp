@@ -34,6 +34,7 @@
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
 #include "dispatch_threat.hpp"
+#include "dispatch_cop_state.hpp"
 
 namespace {
 
@@ -73,22 +74,10 @@ static int64_t get_last_assign_ms(CopAttackContext& ctx, CPed* ped) {
     int64_t last_assign = 0;
     if (ctx.crime_case && !ctx.crime_case->cancelled) {
         for (CPed* c : ctx.crime_case->consolidated_criminals) {
-            auto key = std::make_pair(ped, c);
-            for (const auto& item : ctx.cop_attack_assign_time_snapshot) {
-                if (item.first == key) {
-                    last_assign = std::max(last_assign, item.second);
-                    break;
-                }
-            }
+            last_assign = std::max(last_assign, dispatch_cop_state::get_last_assign_ms(ped, c));
         }
     } else {
-        auto key = std::make_pair(ped, ctx.criminal);
-        for (const auto& item : ctx.cop_attack_assign_time_snapshot) {
-            if (item.first == key) {
-                last_assign = item.second;
-                break;
-            }
-        }
+        last_assign = dispatch_cop_state::get_last_assign_ms(ped, ctx.criminal);
     }
     return last_assign;
 }
@@ -112,8 +101,7 @@ static void build_cop_pool_entries(CopAttackContext& ctx, std::vector<CopPoolEnt
 
     std::unordered_set<CPed*> seen;
     {
-        std::lock_guard<std::mutex> lock(g_dispatch_active_cops_mutex);
-        for (CPed* ped : g_dispatch_active_cops) {
+        for (CPed* ped : dispatch_cop_state::collect_active_dispatch_cops()) {
             if (!ped || !is_ped_pointer_valid_safe(ped)) continue;
             if (g_IsAlive && !g_IsAlive(ped)) continue;
             if (g_GetPedType && g_GetPedType(ped) != PED_TYPE_COP) continue;

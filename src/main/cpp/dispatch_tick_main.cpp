@@ -33,6 +33,7 @@
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
 #include "dispatch_reroute.hpp"
+#include "dispatch_cop_state.hpp"
 
 
 // =====================================================================
@@ -181,18 +182,7 @@ void on_main_thread_tick() {
             std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
             g_dispatched_vehicles_time.clear();
         }
-        {
-            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-            g_cop_attack_assign_time.clear();
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
-            g_armed_cops_time.clear();
-        }
-        {
-            std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-            g_cop_assigned_weapon.clear();
-        }
+        dispatch_cop_state::clear_all_cop_dispatch_state();
         {
             std::lock_guard<std::mutex> lock(g_stuck_vehicles_mutex);
             g_stuck_vehicles.clear();

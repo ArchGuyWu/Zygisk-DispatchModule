@@ -32,6 +32,8 @@
 #include "ecs_engine.hpp"
 #include "dispatch_timing.hpp"
 #include "dispatch_reroute.hpp"
+#include "dispatch_cop_state.hpp"
+#include "dispatch_ped_registry.hpp"
 
 void init_ecs_systems() {
     static std::atomic<bool> initialized{false};
@@ -125,6 +127,7 @@ void init_ecs_systems() {
 
                 g_active_crimes.push_back(new_crime);
                 g_tracked_criminal.store(criminal);
+                dispatch_cop_state::bind_criminal_case(criminal, new_crime->case_id);
 
                 LOGI("📡 [ECS CopDispatchSystem] Activated new crime event Case %llu! Perp: %p, Firearm: %d, Pos: (%.1f, %.1f, %.1f)",
                      (unsigned long long)new_crime->case_id, criminal, ev.is_firearm, ev.location.x, ev.location.y, ev.location.z);
@@ -348,7 +351,7 @@ void init_ecs_systems() {
             CPed* target = nullptr;
 
             if (combat_comp) {
-                target = static_cast<CPed*>(combat_comp->target_entity);
+                target = dispatch_cop_state::resolve_combat_target(cop);
             }
 
             // A. 自适应判定是否应当收枪退敌 (战斗结束、离队、车内或目标失效)
@@ -449,10 +452,7 @@ void init_ecs_systems() {
                         combat_comp->target_entity = nullptr;
                         combat_comp->last_weapon_switch_time_ms = ev.current_time_ms;
                     }
-                    {
-                        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-                        g_cop_assigned_weapon.erase(cop);
-                    }
+                    dispatch_cop_state::record_weapon(cop, WEAPON_UNARMED, ev.current_time_ms);
                     LOGI("🎯 [ECS WeaponSelectionSystem - DISARM] Cop %p successfully disarmed (target dead or lost).", cop);
                 }
 

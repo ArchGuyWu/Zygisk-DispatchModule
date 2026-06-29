@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_threat.hpp"
+#include "dispatch_cop_state.hpp"
 
 // =====================================================================
 // 犯罪事件追踪系统
@@ -385,6 +386,7 @@ bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm, i
         }
         
         dispatch_threat::refresh_crime_dispatch_anchor(*best_crime);
+        dispatch_cop_state::bind_criminal_case(perpetrator, best_crime->case_id);
 
         // 立即让周边警员也攻击这个新罪犯
         make_cops_attack_criminal(perpetrator);

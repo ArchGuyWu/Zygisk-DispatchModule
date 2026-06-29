@@ -13,7 +13,7 @@
 #include <string>
 #include <cinttypes>
 #include <set>
-#include <unordered_set>
+
 #include <errno.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -34,6 +34,8 @@
 #include "ecs_engine.hpp"
 #include "dispatch_timing.hpp"
 #include "dispatch_threat.hpp"
+#include "dispatch_cop_state.hpp"
+#include "dispatch_ped_registry.hpp"
 
 // =====================================================================
 // 获取 Ped 的 CTaskManager
@@ -266,44 +268,8 @@ void* find_vehicle_of_cop_cached(CPed* cop) {
 void purge_dispatch_state_for_ped(CPed* ped) {
     if (!ped) return;
 
-    {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        for (auto it = g_cop_attack_assign_time.begin(); it != g_cop_attack_assign_time.end(); ) {
-            if (it->first.first == ped || it->first.second == ped) {
-                it = g_cop_attack_assign_time.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
-        g_armed_cops_time.erase(ped);
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-        g_cop_assigned_weapon.erase(ped);
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_active_cops_mutex);
-        g_dispatch_active_cops.erase(ped);
-    }
-
-    for (auto cop_ent : ecs::EntityManager::get().get_entities_with<ecs::CombatComponent>()) {
-        auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop_ent);
-        if (combat && combat->target_entity == ped) {
-            combat->target_entity = nullptr;
-        }
-    }
-
-    for (auto crim_ent : ecs::EntityManager::get().get_entities_with<ecs::CriminalComponent>()) {
-        auto* crim = ecs::EntityManager::get().get_component<ecs::CriminalComponent>(crim_ent);
-        if (crim && crim->current_victim == ped) {
-            crim->current_victim = nullptr;
-        }
-    }
-
-    LOGI("🧹 [EntityGC] Purged dispatch state for ped %p", ped);
+    dispatch_cop_state::purge_cop_combat_state(ped);
+    LOGI("🧹 [EntityGC] Purged ECS dispatch state for ped %p", ped);
 }
 
 // 检查该载具中是否已经有了司机（防止无人巡警车行驶）
@@ -424,18 +390,6 @@ std::mutex g_vehicles_emptied_mutex;
 
 std::map<void*, int64_t> g_dispatched_vehicles_time;
 std::mutex g_dispatched_vehicles_time_mutex;
-
-std::map<std::pair<CPed*, CPed*>, int64_t> g_cop_attack_assign_time;
-std::mutex g_cop_attack_assign_mutex;
-
-std::map<CPed*, int64_t> g_armed_cops_time;
-std::mutex g_armed_cops_mutex;
-
-std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
-std::mutex g_cop_assigned_weapon_mutex;
-
-std::unordered_set<CPed*> g_dispatch_active_cops;
-std::mutex g_dispatch_active_cops_mutex;
 
 std::set<void*> g_vehicles_ordered_to_scene;
 std::mutex g_vehicles_mutex; // as used in line 2981 and 2447
@@ -728,10 +682,9 @@ int dispatch_nearby_available_cops_to_crime(
         }
 
         {
-            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-            auto it = g_cop_attack_assign_time.find({ped, criminal});
-            if (it != g_cop_attack_assign_time.end() &&
-                (cur_time - it->second < dispatch_timing::NEARBY_ASSIGN_DEDUP_MS)) {
+            int64_t last_assign = dispatch_cop_state::get_last_assign_ms(ped, criminal);
+            if (last_assign > 0 &&
+                (cur_time - last_assign < dispatch_timing::NEARBY_ASSIGN_DEDUP_MS)) {
                 continue;
             }
         }
@@ -957,13 +910,18 @@ static void register_cop_combat_ecs(CPed* cop, CPed* criminal) {
     if (!combat_comp) {
         combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(cop);
     }
-    if (combat_comp) {
-        combat_comp->target_entity = criminal;
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_dispatch_active_cops_mutex);
-        g_dispatch_active_cops.insert(cop);
-    }
+    if (!cop_comp || !combat_comp) return;
+
+    sync_ped_pool_handle(cop);
+    sync_ped_pool_handle(criminal);
+
+    uint64_t case_id = get_case_id_for_ped(criminal);
+    combat_comp->target_entity = criminal;
+    combat_comp->target_ped_handle = get_ped_pool_handle(criminal);
+    combat_comp->target_case_id = case_id;
+    combat_comp->assigned_case_id = case_id;
+    cop_comp->dispatch_active = true;
+    cop_comp->pool_handle = get_ped_pool_handle(cop);
 }
 
 bool apply_cop_weapon_for_combat(CPed* cop, CPed* criminal, bool force_update) {
@@ -972,23 +930,8 @@ bool apply_cop_weapon_for_combat(CPed* cop, CPed* criminal, bool force_update) {
     bool is_firearm = is_specific_criminal_armed_with_firearm(criminal);
     eWeaponType target_weapon = determine_weapon_for_cop(cop, criminal, is_firearm);
 
-    eWeaponType last_assigned_weapon = WEAPON_UNARMED;
-    {
-        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-        auto it = g_cop_assigned_weapon.find(cop);
-        if (it != g_cop_assigned_weapon.end()) {
-            last_assigned_weapon = it->second;
-        }
-    }
-
-    int64_t last_armed = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
-        auto it = g_armed_cops_time.find(cop);
-        if (it != g_armed_cops_time.end()) {
-            last_armed = it->second;
-        }
-    }
+    eWeaponType last_assigned_weapon = dispatch_cop_state::get_assigned_weapon(cop);
+    int64_t last_armed = dispatch_cop_state::get_last_armed_ms(cop);
 
     bool is_upgrading = (target_weapon == WEAPON_PISTOL && last_assigned_weapon != WEAPON_PISTOL);
     bool should_switch = force_update || is_upgrading ||
@@ -1003,20 +946,7 @@ bool apply_cop_weapon_for_combat(CPed* cop, CPed* criminal, bool force_update) {
     LOGI("🎯 [Cop Weapon Switch] Cop %p switched weapon to %d (perp=%p, force=%d)",
          cop, (int)target_weapon, criminal, force_update);
 
-    {
-        std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
-        g_cop_assigned_weapon[cop] = target_weapon;
-    }
-    {
-        std::lock_guard<std::mutex> lock(g_armed_cops_mutex);
-        g_armed_cops_time[cop] = now_ms();
-    }
-
-    auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
-    if (combat_comp) {
-        combat_comp->current_weapon_type = (int)target_weapon;
-        combat_comp->last_weapon_switch_time_ms = now_ms();
-    }
+    dispatch_cop_state::record_weapon(cop, target_weapon, now_ms());
     return true;
 }
 
@@ -1028,14 +958,12 @@ bool force_cop_native_redispatch(CPed* cop, CPed* criminal) {
     apply_cop_weapon_for_combat(cop, criminal, true);
 
     if (try_dispatch_via_kill_task(cop, criminal)) {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        g_cop_attack_assign_time[{cop, criminal}] = now_ms();
+        dispatch_cop_state::record_assign(cop, criminal, get_case_id_for_ped(criminal), now_ms());
         LOGI("🎯 [Native Redispatch] KillCriminal task cop %p -> criminal %p", cop, criminal);
         return true;
     }
     if (try_dispatch_via_add_criminal(cop, criminal)) {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        g_cop_attack_assign_time[{cop, criminal}] = now_ms();
+        dispatch_cop_state::record_assign(cop, criminal, get_case_id_for_ped(criminal), now_ms());
         LOGI("🎯 [Native Redispatch] AddCriminalToKill cop %p -> criminal %p", cop, criminal);
         return true;
     }
@@ -1058,8 +986,7 @@ void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapo
     if (need_combat_dispatch) {
         CopCombatDispatchMethod method = dispatch_cop_combat_ladder(cop, criminal, target_weapon, force_redispatch);
         if (method != CopCombatDispatchMethod::NONE) {
-            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-            g_cop_attack_assign_time[{cop, criminal}] = now_ms();
+            dispatch_cop_state::record_assign(cop, criminal, get_case_id_for_ped(criminal), now_ms());
         }
     }
 }
@@ -1067,19 +994,8 @@ void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapo
 void update_cops_targeting_criminal_event_driven(CPed* criminal) {
     if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
 
-    std::vector<CPed*> cops_to_update;
-    int64_t cur_time = now_ms();
-
-    {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        for (const auto& item : g_cop_attack_assign_time) {
-            if (item.first.second == criminal) {
-                if (cur_time - item.second < 20000) {
-                    cops_to_update.push_back(item.first.first);
-                }
-            }
-        }
-    }
+    std::vector<CPed*> cops_to_update =
+        dispatch_cop_state::collect_cops_targeting_criminal(criminal, 20000);
 
     for (CPed* cop : cops_to_update) {
         make_single_cop_attack_criminal(cop, criminal, true);
@@ -1126,18 +1042,9 @@ static void update_primary_criminal_for_case(CrimeEvent& crime) {
         LOGI("⚡️ [ECS ThreatPrioritizer] Case %llu primary target switched: %p -> %p (Threat: %d)",
              (unsigned long long)crime.case_id, old_criminal, best_criminal, (int)highest_threat);
 
-        std::vector<CPed*> cops_to_redirect;
-        {
-            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-            int64_t cur_time = now_ms();
-            for (const auto& item : g_cop_attack_assign_time) {
-                if (item.first.second == old_criminal) {
-                    if (cur_time - item.second < 20000) {
-                        cops_to_redirect.push_back(item.first.first);
-                    }
-                }
-            }
-        }
+        int old_handle = get_ped_pool_handle(old_criminal);
+        std::vector<CPed*> cops_to_redirect = dispatch_cop_state::collect_cops_targeting_case(
+            crime.case_id, old_handle, 20000);
 
         for (CPed* cop : cops_to_redirect) {
             make_single_cop_attack_criminal(cop, best_criminal, true);
