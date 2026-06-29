@@ -27,14 +27,14 @@
     实时监控远端不活跃的行人、空置车辆及废弃警车并进行动态回收，确保高强度追捕场景下游戏帧率的平稳。
 *   **官方引擎漏洞修复与防闪退保护**：
     主动拦截官方原版不稳定的异步 C++ 行为（如伴随/打招呼任务 `CTaskComplexPartner::GetPartnerSequence` 与寻路任务 `CTaskComplexGoToPointAnyMeans::CreateSubTask`）。集成深层指针对齐与零值安全检测器，在官方引擎即将崩溃前，动态清除已被虚空释放/填零的不安全任务与实体引用，使引擎能安全走向 native 空值回退逻辑，彻底根治原版的内存解引用闪退问题。
-*   **极量级 ECS 引擎**：
-    底层采用零成本、高性能的实体组件系统 (ECS) 与事件驱动总线设计，与游戏引擎底层指针对接，实现 100% 零运行时开销。
+*   **轻量 ECS 调度层**：
+    使用 header-only ECS 管理警员/载具组件与每帧系统，与原生引擎指针对接；存在正常的 map 查找与锁开销，并非「零成本」抽象。
 
 ---
 
 ## 🛡️ 官方引擎漏洞修复与防闪退深层剖析
 
-在游戏原版（GTA SA DE Android）中，玩家在与警方、行人、帮派袭击或伴随任务交互时，经常会遇到随机且高频的闪退（SIGSEGV）。本模组通过深层逆向分析定位到了官方引擎的核心缺陷，并实现了一套 **12-Hook 协同防御系统** 彻底解决了这些长久以来的内存稳定性问题。
+在游戏原版（GTA SA DE Android）中，玩家在与警方、行人、帮派或伴随任务交互时，可能遇到随机 SIGSEGV。本模组通过逆向定位部分高频崩溃路径，并以 **39 处 ShadowHook 挂钩 + 指针可读性校验** 降低（而非保证消除）相关闪退概率。详见 [`docs/CRASH_STATUS.md`](docs/CRASH_STATUS.md)。
 
 ### 1. 缺陷深度分析与定位
 以最频发的伴随/打招呼任务闪退（RVA `0x57ae40c`，对应 `CTaskComplexPartnerGreet::GetPartnerSequence`）为例，崩溃时的底层汇编指令流如下：
@@ -55,8 +55,7 @@
 #### ⚠️ 深度内存对齐漏洞与 POSIX 系统调用级防御
 在第一代净化器中，我们仅对指针值进行了基础范围检测（如 `addr >= 0x10000`）与 8 字节对齐检测。然而在复杂的游戏运行时中，某些非指针成员（例如任务状态结构体中存放的 `float` 浮点数，如 `0.5f` 在内存中表示为 `0x3f000000`）在数值上**恰好满足 8 字节对齐且大于 0x10000**。当净化器盲目解引用这些伪指针去读取虚表时，依然会引发 SIGSEGV 崩溃。
 
-为了实现 100% 绝对的内存稳定性，本模组引入了 **POSIX 安全可读性验证器**：
-利用标准 POSIX 规范，通过向 `/dev/null` 虚拟设备执行极低开销的 `write(null_fd, ptr, 1)` 系统调用。若 `ptr` 对应的页表未映射、无读权限或为伪指针，内核会自动检测到非法指针并返回 `-1`，同时将 `errno` 设置为 `EFAULT`。这一机制使得我们可以**在零崩溃风险的前提下**，完美判定任意内存地址的有效性和可读性。
+为实现更稳妥的指针判定，本模组在关键路径使用 **POSIX pipe 可读性探测**（`write(pipe_fd, ptr, 1)`，非法页返回 `EFAULT`）。该手段可降低误读野指针的概率，但**不能**保证调用方后续逻辑绝对安全。
 
 ```cpp
 struct ThreadLocalPipe {
@@ -89,32 +88,13 @@ static inline bool is_pointer_readable(const void* ptr) {
     return errno != EFAULT;
 }
 
-static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
-    if (!task) return;
-    if (!is_pointer_readable(task)) return;
-    char* task_bytes = reinterpret_cast<char*>(task);
-    for (int offset = 8; offset < max_size_bytes; offset += 8) {
-        if (!is_pointer_readable(task_bytes + offset)) break;
-        void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
-        void* ptr = *ptr_slot;
-        if (ptr) {
-            if (!is_pointer_readable(ptr)) {
-                *ptr_slot = nullptr; // 强制净化不可读的垃圾指针引用
-            } else {
-                void* vtable = *reinterpret_cast<void**>(ptr);
-                if (vtable == nullptr) { // 检测到已被虚空填零的对象引用
-                    *ptr_slot = nullptr; // 强制净化为干净的 nullptr
-                }
-            }
-        }
-    }
-}
+// 注意：盲扫版 sanitize_task_pointers 已在源码中禁用（见 module.cpp 注释）。
+// 当前策略：在 Hook 入口做 is_pointer_readable / vtable 校验，而非全对象内存扫描。
 ```
 
-当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
+### 3. Hook 网络概览（39 处，2026-06-29 统计）
 
-### 3. 33-Hook 核心网络 (33-Hook System)
-模组挂钩了官方引擎内所有与通缉星级、犯罪上报、应急载具生成、任务管理器、脚步声更新、涉水浮力物理以及 Unicode 字符串解析相关的生命周期与虚表，建立起精简高效的协同网络：
+模组挂钩了与通缉、犯罪上报、应急载具、任务管理、脚步声、浮力、ICU 字符串等相关的多处符号。完整列表见 `rg shadowhook_hook_sym_name src/main/cpp/module.cpp`。按职责大致分为：
 
 1.  **玩法功能与自定义警力调度** (共 12 个 Hook)：
     *   `report_crime` (拦截并接管原版的犯罪上报逻辑)
@@ -126,7 +106,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `add_police_occupants` (在警车刷出时绑定乘员)
     *   `tell_occupants_leave_car` (控制警车乘员的下车战术)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (移动端特有的救护车与消防车加载视距缩放 Workaround)
-2.  **防御与净化安全防线** (共 21 个 Hook)：
+2.  **稳定性防御 Hook**（约 27 处，与玩法 Hook 有重叠统计）：
     *   `u_strlen_64` (防止 ICU 字符串长度计算函数在接收到野指针时发生 SIGSEGV 闪退，在访问前进行指针有效性过滤)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (防止在行人计算涉水浮力时，由于任务管理器中残留零填充或无效的任务指针而导致解引用虚表闪退。其中 `cBuoyancy::ProcessBuoyancy` 挂钩在物理计算完成后立即净化任务槽，解决了物理 tick 途中任务被销毁/空指针的竞态问题)
     *   `CPed::PlayFootSteps` (防止转场或传送期间由于行人的 `RwClump` 骨骼暂时脱离导致播放脚步声时解引用空指针闪退)
@@ -165,11 +145,15 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 ## 📦 目录结构
 
 ```text
-Zygisk-DispatchModule/
+mod-workspace/
 ├── src/main/cpp/
+│   ├── include/                 # log / game_config / game_types / pointer_sanitizer
 │   ├── zygisk/                  # Zygisk 接口头文件
-│   ├── ecs_engine.hpp           # 高性能极轻量级 ECS 及事件驱动总线
-│   └── module.cpp               # 模组核心逻辑、游戏 Hook 地址及物理控制
+│   ├── ecs_engine.hpp           # 轻量 ECS 及事件总线
+│   └── module.cpp               # 主逻辑（Hook + 派发 + ECS 装配）
+├── docs/
+│   ├── CRASH_STATUS.md
+│   └── MODULE_LAYOUT.md
 ├── third_party/
 │   ├── shadowhook/              # ShadowHook 预编译头文件
 │   └── shadowhook-src/          # ShadowHook 完整编译源码树
@@ -193,7 +177,9 @@ Zygisk-DispatchModule/
 1. 确保系统已安装 `proot-distro`。
 2. 运行隔离编译命令：
    ```bash
-   proot-distro login --isolated --bind /path/to/your/workspace:/workspace ubuntu-build -- bash /workspace/Zygisk-DispatchModule/build_in_container.sh
+   ./build_in_container.sh
+   # 或手动：proot-distro login --isolated --bind /path/to/Projects:/workspace ubuntu-build \
+   #   -- bash /workspace/mod-workspace/build_in_container.sh
    ```
 3. 脚本会自动下载并配置 Android NDK (r27c) 以及 ShadowHook 源码，为 `arm64-v8a` 编译出 `libpolicemod.so`，并直接打包成可刷入的 Magisk 模块 Zip：
    *   **输出路径**：`Zygisk-PoliceDispatch.zip`

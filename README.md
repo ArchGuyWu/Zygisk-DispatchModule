@@ -27,14 +27,14 @@ This module overwrites and optimizes the game's native AI dispatching algorithms
     Monitors and dynamically recycles distant peds, idle vehicles, and abandoned police units, maintaining native framerates under heavy dispatch scenarios.
 *   **Official Engine Bug Patches & Crash Prevention**:
     Proactively intercepts unstable official C++ engine behaviors (such as companion/greet tasks `CTaskComplexPartner::GetPartnerSequence` and pathfinding tasks `CTaskComplexGoToPointAnyMeans::CreateSubTask`). Deploys a deep pointer-sanitizer that detects zero-filled, stale, or destructed official game tasks/entities, dynamically zeroing out unsafe references to bypass engine null-pointer dereferences (SIGSEGV) safely.
-*   **Modern ECS Engine**:
-    Built on an ultra-lightweight, zero-cost Entity-Component-System (ECS) and Event-Driven architecture designed for zero overhead interfacing with GTA engine pointers.
+*   **Lightweight ECS layer**:
+    Header-only ECS for cop/vehicle components and per-frame systems. Uses normal map lookups and mutexes — not a zero-cost abstraction.
 
 ---
 
 ## 🛡️ Official Engine Bug Patches & Crash Prevention Deep-Dive
 
-In the original game (GTA SA DE Android), players frequently encounter random, high-frequency crashes (SIGSEGV) during interactions with police, pedestrians, gang hassles, or companion scenarios. Through deep reverse engineering, we pinpointed the core architectural defects in the official engine and developed a comprehensive **12-Hook Defense System** to eliminate these persistent memory stability issues.
+In the original game (GTA SA DE Android), players may hit random SIGSEGV crashes during police, ped, gang, or companion interactions. This mod hooks **39 ShadowHook sites** plus pointer readability checks to **reduce** (not guarantee elimination of) known crash paths. See [`docs/CRASH_STATUS.md`](docs/CRASH_STATUS.md).
 
 ### 1. Root Cause Analysis & Vulnerability Pinpointing
 Using the most frequent companion/greet task crash (RVA `0x57ae40c`, corresponding to `CTaskComplexPartnerGreet::GetPartnerSequence`) as an example, the crashing instruction stream is decoded below:
@@ -55,8 +55,7 @@ To leverage the engine's built-in, null-safe fallback logic rather than overridi
 #### ⚠️ Alignment Alignment Vulnerabilities & POSIX System-Call Defense
 In our first-generation sanitizer, we relied solely on standard range-checks (e.g., `addr >= 0x10000`) and 8-byte pointer alignments. However, in a complex game runtime, certain non-pointer fields (such as local task states or floats like `0.5f` represented as `0x3f000000`) can **coincidentally satisfy 8-byte alignment and exceed 0x10000**. When the sanitizer blindly dereferenced these values to read their "vtable," it induced a SIGSEGV.
 
-To achieve 100% crash-proof memory safety, we introduced a **POSIX-compliant pointer readability validator**:
-This mechanism performs a safe probe by writing 1 byte of the address `ptr` to `/dev/null` using the standard `write(null_fd, ptr, 1)` system call. If `ptr` points to an unmapped, protected, or invalid memory page, the Linux kernel detects this and returns `-1` with `errno` set to `EFAULT` **without raising any signals or crashing the process**. This allows us to safely and reliably verify if any memory pointer is actually mapped and readable in user-space with near-zero overhead.
+For safer pointer checks on hot paths, we use a **POSIX pipe probe** (`write(pipe_fd, ptr, 1)`; invalid pages return `EFAULT`). This lowers the chance of dereferencing wild pointers but does **not** make downstream engine logic crash-proof.
 
 ```cpp
 struct ThreadLocalPipe {
@@ -89,32 +88,13 @@ static inline bool is_pointer_readable(const void* ptr) {
     return errno != EFAULT;
 }
 
-static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
-    if (!task) return;
-    if (!is_pointer_readable(task)) return;
-    char* task_bytes = reinterpret_cast<char*>(task);
-    for (int offset = 8; offset < max_size_bytes; offset += 8) {
-        if (!is_pointer_readable(task_bytes + offset)) break;
-        void** ptr_slot = reinterpret_cast<void**>(task_bytes + offset);
-        void* ptr = *ptr_slot;
-        if (ptr) {
-            if (!is_pointer_readable(ptr)) {
-                *ptr_slot = nullptr; // Forcefully sanitize unreadable garbage reference
-            } else {
-                void* vtable = *reinterpret_cast<void**>(ptr);
-                if (vtable == nullptr) { // Detect zero-filled/destructed object reference
-                    *ptr_slot = nullptr; // Forcefully sanitize to a clean nullptr
-                }
-            }
-        }
-    }
-}
+// Blind-scan sanitize_task_pointers is disabled in source — see module.cpp comments.
+// Current approach: per-hook is_pointer_readable / vtable checks at entry.
 ```
 
-Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
+### 3. Hook overview (39 sites, counted 2026-06-29)
 
-### 3. The 33-Hook System
-Our solution intercepts all core lifecycles and virtual tables related to wanted levels, crime reporting, emergency vehicle spawning, task management, footstep rendering, buoyancy physics, and Unicode formatting:
+Hooks cover wanted level, crime reporting, emergency spawns, task management, footsteps, buoyancy, ICU strings, and more. Full list: `rg shadowhook_hook_sym_name src/main/cpp/module.cpp`. Rough split:
 
 1.  **Gameplay Features & Custom Dispatching** (12 Hooks):
     *   `report_crime` (Intercepts and manages wanted level crimes)
@@ -126,7 +106,7 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
     *   `add_police_occupants` (Binds occupants to spawned cop cars)
     *   `tell_occupants_leave_car` (Triggers custom vehicle exits)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (Draw distance scaling workarounds for emergency vehicles in mobile versions)
-2.  **Defensive & Sanitizing Safeguards** (21 Hooks):
+2.  **Stability defense hooks** (~27 sites, overlapping categories):
     *   `u_strlen_64` (Prevents startup crashes in ICU's Unicode string length function by validating wild pointers)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (Prevents crashes during buoyancy processing. `cBuoyancy::ProcessBuoyancy` is hooked to sanitize task slots immediately after the physics calculation, solving a race condition where a task gets destructed mid-function)
     *   `CPed::PlayFootSteps` (Prevents crashes during transitions when the ped's RW clump/model is temporarily detached)
@@ -164,11 +144,15 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
 ## 📦 Directory Structure
 
 ```text
-Zygisk-DispatchModule/
+mod-workspace/
 ├── src/main/cpp/
+│   ├── include/                 # log, game_config, game_types, pointer_sanitizer
 │   ├── zygisk/                  # Zygisk API headers
-│   ├── ecs_engine.hpp           # High-performance lightweight ECS & Event bus
-│   └── module.cpp               # Core mod logic, GTA hook addresses, & physics controls
+│   ├── ecs_engine.hpp           # Lightweight ECS & event bus
+│   └── module.cpp               # Main logic (hooks + dispatch + ECS wiring)
+├── docs/
+│   ├── CRASH_STATUS.md
+│   └── MODULE_LAYOUT.md
 ├── third_party/
 │   ├── shadowhook/              # Prebuilt headers for ShadowHook
 │   └── shadowhook-src/          # Full compiled source tree of ShadowHook
@@ -192,7 +176,10 @@ If you are developing in Termux or a clean Linux system, you can use the automat
 1. Ensure `proot-distro` is installed on your system.
 2. Run the isolated build script:
    ```bash
-   proot-distro login --isolated --bind /path/to/your/workspace:/workspace ubuntu-build -- bash /workspace/Zygisk-DispatchModule/build_in_container.sh
+   ./build_in_container.sh
+   # Or manually:
+   # proot-distro login --isolated --bind /path/to/Projects:/workspace ubuntu-build \
+   #   -- bash /workspace/mod-workspace/build_in_container.sh
    ```
 3. The script will automatically download the Android NDK (r27c), setup ShadowHook sources, compile `libpolicemod.so` for `arm64-v8a`, and output a flashable Magisk module zip:
    *   **Output**: `Zygisk-PoliceDispatch.zip`
