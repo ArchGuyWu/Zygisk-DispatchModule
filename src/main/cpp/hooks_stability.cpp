@@ -32,31 +32,36 @@
 #include "ecs_engine.hpp"
 
 // =====================================================================
-// CTaskComplexPartner & derived Hooks
+// Stability hook helpers
 // =====================================================================
-inline bool is_sequence_manager_safe() {
-    if (!g_CSequenceManager_ms_instance || !*g_CSequenceManager_ms_instance) {
-        return false;
-    }
-    void* manager = *g_CSequenceManager_ms_instance;
-    return is_pointer_readable(manager);
-}
-
-inline bool is_partner_task_safe(void* self) {
-    if (!self || !is_task_vtable_safe(self)) {
-        return false;
-    }
-    return true;
-}
-
-inline void sanitize_partner_task_pointers(void* task) {
-    // 禁用伙伴任务“净化器”以防误伤非指针数据成员
-}
-
 inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
     // Blind memory scan disabled: 8-byte stepping can mistake floats/CVector fields
     // for stale pointers and null them out, causing fault-at-0x10 crashes.
     // Re-enable only with per-task-class offsets from reverse engineering.
+}
+
+inline void sanitize_unsafe_subtask_at(void* task, size_t offset) {
+    if (!task || !is_pointer_readable(task)) return;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + offset);
+    if (!is_pointer_readable(sub_slot)) return;
+    void* sub = *sub_slot;
+    if (sub && !is_task_vtable_safe(sub)) {
+        LOGW("⚠️ [Subtask Sanitizer] Clearing unsafe subtask %p inside task %p", sub, task);
+        *sub_slot = nullptr;
+    }
+}
+
+inline void sanitize_task_manager_slots(void* task_mgr, const char* log_tag) {
+    if (!task_mgr || !is_pointer_readable(task_mgr)) return;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && !is_task_vtable_safe(task)) {
+            LOGW("⚠️ [%s] Clearing unsafe task %p at slot %d", log_tag, task, i);
+            *task_slot = nullptr;
+        }
+    }
 }
 
 // --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---
@@ -164,6 +169,7 @@ void proxy_manage_tasks(void* self) {
         // Total 11 slots of pointers starting at offset 0 of CTaskManager.
         for (int i = 0; i < 11; ++i) {
             void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+            if (!is_pointer_readable(task_slot)) continue;
             void* task = *task_slot;
             if (task) {
                 if (!is_task_vtable_safe(task)) {
@@ -183,19 +189,10 @@ fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
 
 void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (ped && !is_ped_pointer_valid_safe(ped)) return;
-    if (ped) {
-        void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-        if (intel) {
-            for (int offset = 0x8; offset <= 0x28; offset += 8) {
-                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + offset);
-                void* task = *task_slot;
-                if (task && !is_task_vtable_safe(task)) {
-                    LOGW("⚠️ [ScanForAttractorsInRange] Intercepted unsafe/destructing task %p at offset 0x%X in CPedIntelligence %p. Clearing it to prevent crash.", task, offset, intel);
-                    *task_slot = nullptr;
-                }
-            }
-        }
+    if (!ped || !is_pointer_readable(ped)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (intel && is_pointer_readable(intel)) {
+        sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForAttractorsInRange");
     }
     SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
 }
@@ -246,37 +243,39 @@ inline void sanitize_ped_tasks(void* ped) {
     }
 }
 
+inline void sanitize_optional_ped_at_slot(void** slot, const char* label) {
+    if (!slot || !is_pointer_readable(slot)) return;
+    void* ped = *slot;
+    if (!ped) return;
+    if (!is_ped_pointer_valid_safe(ped)) {
+        LOGW("⚠️ [Ped Slot Sanitizer] Clearing invalid ped %p (%s)", ped, label);
+        *slot = nullptr;
+        return;
+    }
+    sanitize_ped_tasks(ped);
+}
+
 
 void* g_stub_ccgf_control = nullptr;
 fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) {
+    if (!self || !is_pointer_readable(self)) {
         LOGW("⚠️ [GangFollower::ControlSubTask] unsafe self!");
         return nullptr;
     }
-    if (ped && !is_pointer_readable(ped)) {
+    if (!ped || !is_pointer_readable(ped)) {
         LOGW("⚠️ [GangFollower::ControlSubTask] unsafe ped!");
         return nullptr;
     }
 
-    if (ped) {
-        // Sanitize follower ped
+    if (is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
 
-    if (self) {
-        // Sanitize leader and partner peds
-        char* self_bytes = reinterpret_cast<char*>(self);
-        void** p_leader = reinterpret_cast<void**>(self_bytes + 0x18);
-        if (is_pointer_readable(p_leader)) {
-            sanitize_ped_tasks(*p_leader);
-        }
-        void** p_partner = reinterpret_cast<void**>(self_bytes + 0x20);
-        if (is_pointer_readable(p_partner)) {
-            sanitize_ped_tasks(*p_partner);
-        }
-    }
+    char* self_bytes = reinterpret_cast<char*>(self);
+    sanitize_optional_ped_at_slot(reinterpret_cast<void**>(self_bytes + 0x18), "GangFollower leader");
+    sanitize_optional_ped_at_slot(reinterpret_cast<void**>(self_bytes + 0x20), "GangFollower partner");
 
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
 }
@@ -288,49 +287,12 @@ fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next_sub_ta
 
 void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (ped && !is_pointer_readable(ped)) {
+    if (!ped || !is_pointer_readable(ped)) {
         return nullptr;
     }
-    
-    if (ped) {
-        // Sanitize the ped's task manager
+    if (is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
-
-        // 校验 Ped 是否真的拥有活动的 TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246 / 0xf6)
-        // 防止 FindActiveTaskByType 返回 nullptr 后官方引擎因缺少空指针校验而在 0x5709844 处解引用崩溃
-        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-        if (is_pointer_readable(intel_slot)) {
-            void* intel = *intel_slot;
-            if (intel && is_pointer_readable(intel)) {
-                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
-                bool has_paired_attractor = false;
-                if (is_pointer_readable(task_mgr)) {
-                    for (int i = 0; i < 11; ++i) {
-                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                        if (is_pointer_readable(task_slot)) {
-                            void* task = *task_slot;
-                            if (task && is_task_vtable_safe(task)) {
-                                typedef int (*fn_GetTaskType_t)(void* t);
-                                void** vtable = *reinterpret_cast<void***>(task);
-                                if (is_pointer_readable(vtable + 5)) {
-                                    fn_GetTaskType_t get_type = reinterpret_cast<fn_GetTaskType_t>(vtable[5]);
-                                    if (get_type(task) == 246) {
-                                        has_paired_attractor = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                if (!has_paired_attractor) {
-                    LOGW("⚠️ [PairedAttractor Sanitizer] Ped %p does not have active TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246), intercepting CreateNextSubTask to prevent crash!", ped);
-                    return nullptr;
-                }
-            }
-        }
     }
-
     return SHADOWHOOK_CALL_PREV(proxy_paired_attractor_create_next_sub_task, self, ped);
 }
 
@@ -416,7 +378,7 @@ fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence = nullptr;
 
 void* proxy_partner_greet_get_sequence(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_task_vtable_safe(self)) {
+    if (!self || !is_pointer_readable(self)) {
         return nullptr;
     }
     return SHADOWHOOK_CALL_PREV(proxy_partner_greet_get_sequence, self);
@@ -575,27 +537,7 @@ void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
     if (self) {
-        for (int offset = 0x8; offset <= 0x28; offset += 8) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
-            if (!is_pointer_readable(task_slot)) continue;
-            void* task = *task_slot;
-            if (task && !is_task_vtable_safe(task)) {
-                LOGW("⚠️ [ProcessStaticCounter] Clearing unsafe task %p at offset 0x%X in CPedIntelligence %p", task, offset, self);
-                *task_slot = nullptr;
-            }
-        }
-        void* task_mgr = reinterpret_cast<char*>(self) + 8;
-        if (is_pointer_readable(task_mgr)) {
-            for (int i = 0; i < 11; ++i) {
-                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                if (!is_pointer_readable(task_slot)) continue;
-                void* task = *task_slot;
-                if (task && !is_task_vtable_safe(task)) {
-                    LOGW("⚠️ [ProcessStaticCounter] Clearing unsafe task %p at slot %d in CPedIntelligence %p", task, i, self);
-                    *task_slot = nullptr;
-                }
-            }
-        }
+        sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessStaticCounter");
     }
     SHADOWHOOK_CALL_PREV(proxy_process_static_counter, self);
 }
@@ -638,11 +580,6 @@ fn_SequenceFlush_t g_orig_sequence_flush = nullptr;
 void proxy_sequence_flush(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        // Sanitize any zero-filled task pointers inside the sequence
-        sanitize_task_pointers(self, 128);
-    }
     SHADOWHOOK_CALL_PREV(proxy_sequence_flush, self);
 }
 
@@ -720,14 +657,7 @@ bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* e
     if (ped && !is_pointer_readable(ped)) return false;
 
     if (self) {
-        // Offset 0x10 is m_pSubTask in CTaskComplex
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub == nullptr) {
-                return true; // If subtask is null, the task is already abortable
-            }
-        }
+        sanitize_unsafe_subtask_at(self, 0x10);
     }
     return SHADOWHOOK_CALL_PREV(proxy_leave_car_make_abortable, self, ped, priority, event);
 }
@@ -759,14 +689,7 @@ void* proxy_facial_control_sub_task(void* self, void* ped) {
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
     if (self) {
-        // Offset 0x10 is m_pSubTask in CTaskComplex
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub == nullptr) {
-                return nullptr; // Prevent crash when subtask is null
-            }
-        }
+        sanitize_unsafe_subtask_at(self, 0x10);
     }
     return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
 }
