@@ -255,27 +255,48 @@ inline void sanitize_optional_ped_at_slot(void** slot, const char* label) {
     sanitize_ped_tasks(ped);
 }
 
+// GangFollower leader/partner: only clear unreadable or zero-filled peds (AGENTS.md).
+// Do not clear merely because the ped is absent from the pool — that can false-positive
+// and leave nullptr at task+0x18, which the original reads at +0x498 without a null check.
+inline void sanitize_gang_follower_ped_slot(void** slot, const char* label) {
+    if (!slot || !is_pointer_readable(slot)) return;
+    void* ped = *slot;
+    if (!ped) return;
+
+    if (!is_pointer_readable(ped)) {
+        LOGW("⚠️ [GangFollower] Clearing unreadable %s ped %p", label, ped);
+        *slot = nullptr;
+        return;
+    }
+    void** vtable_slot = reinterpret_cast<void**>(ped);
+    if (is_pointer_readable(vtable_slot) && *vtable_slot == nullptr) {
+        LOGW("⚠️ [GangFollower] Clearing zero-filled %s ped %p", label, ped);
+        *slot = nullptr;
+        return;
+    }
+    if (is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+}
+
 
 void* g_stub_ccgf_control = nullptr;
 fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe self!");
-        return nullptr;
-    }
-    if (!ped || !is_pointer_readable(ped)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe ped!");
-        return nullptr;
-    }
+    if (self && !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
 
-    if (is_ped_pointer_valid_safe(ped)) {
+    if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
 
-    char* self_bytes = reinterpret_cast<char*>(self);
-    sanitize_optional_ped_at_slot(reinterpret_cast<void**>(self_bytes + 0x18), "GangFollower leader");
-    sanitize_optional_ped_at_slot(reinterpret_cast<void**>(self_bytes + 0x20), "GangFollower partner");
+    if (self) {
+        char* self_bytes = reinterpret_cast<char*>(self);
+        sanitize_unsafe_subtask_at(self, 0x10);
+        sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x18), "leader");
+        sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x20), "partner");
+    }
 
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
 }
