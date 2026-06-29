@@ -103,7 +103,7 @@ void* get_ped_event_group(CPed* ped) {
 }
 
 // 在载具池中查找最靠近指定坐标的载具（支持排除指定载具）
-void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nullptr) {
+void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh) {
     if (!g_ms_pVehiclePool || !g_GetPoolVehicle) return nullptr;
     void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
     if (!pool) return nullptr;
