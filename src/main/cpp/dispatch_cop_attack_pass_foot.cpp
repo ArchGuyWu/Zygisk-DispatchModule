@@ -175,167 +175,52 @@ void cop_attack_dispatch_foot_cop(
                         }
                     }
 
-                    // =====================================================================
-                    // 智能双保险唤醒方案（假枪声为主，0 伤害物理注入为兜底备用）
-                    // =====================================================================
-                    bool dispatched_via_noise = false;
+                    // 原生任务阶梯（AddCriminalToKill / KillCriminal Task）优先，事件注入仅作兜底
+                    make_single_cop_attack_criminal(ped, target_criminal, false);
+
+                    int64_t assign_time = now_ms();
+                    bool found_assign = false;
+                    for (auto& item : ctx.cop_attack_assign_time_snapshot) {
+                        if (item.first == key_assign) {
+                            item.second = assign_time;
+                            found_assign = true;
+                            break;
+                        }
+                    }
+                    if (!found_assign) {
+                        ctx.cop_attack_assign_time_snapshot.push_back({key_assign, assign_time});
+                    }
+
                     is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
                     eWeaponType chosen_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
 
-                    // 一律使用虚拟枪声事件进行静默、无穿帮唤醒（已集成 GMalloc，完全消除闪退风险）
-                    if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
-                        void* event_group = get_ped_event_group(ped);
-                        if (event_group) {
-                            alignas(16) char event_buf[256];
-                            memset(event_buf, 0, sizeof(event_buf));
-                            CVector start_pos = cop_pos; // 惊雷在耳：声源直接设在警员耳边
-                            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
-                            
-                            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(target_criminal), start_pos, target_pos, false);
-                            g_CEventGroup_Add(event_group, event_buf, false);
-                            g_CEventGunShot_dtor(event_buf);
-                            
-                            // 动态赋予最优战术武器
-                            if (g_GiveWeapon && g_SetCurrentWeapon) {
-                                g_GiveWeapon(ped, chosen_weapon, 9999, true);
-                                g_SetCurrentWeapon(ped, chosen_weapon);
-                            }
-
-                            // Register ground cop to ECS
-                            {
-                                auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
-                                if (!cop_comp) {
-                                    cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
-                                }
-                                auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
-                                if (!combat_comp) {
-                                    combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(ped);
-                                }
-                                if (combat_comp) {
-                                    combat_comp->target_entity = target_criminal;
-                                }
-                            }
-                            
-                            bool found_assign = false;
-                            for (auto& item : ctx.cop_attack_assign_time_snapshot) {
-                                if (item.first == key_assign) {
-                                    item.second = now_ms();
-                                    found_assign = true;
-                                    break;
-                                }
-                            }
-                            if (!found_assign) {
-                                ctx.cop_attack_assign_time_snapshot.push_back({key_assign, now_ms()});
-                            }
-                            ctx.pending_cop_attack_assign_time.push_back({key_assign, now_ms()});
-
-                            // 同时记录到分配武器
-                            bool found_w = false;
-                            for (auto& item : ctx.cop_assigned_weapon_snapshot) {
-                                if (item.first == ped) {
-                                    item.second = chosen_weapon;
-                                    found_w = true;
-                                    break;
-                                }
-                            }
-                            if (!found_w) {
-                                ctx.cop_assigned_weapon_snapshot.push_back({ped, chosen_weapon});
-                            }
-                            ctx.pending_cop_assigned_weapon.push_back({ped, chosen_weapon});
-
-                            // 更新上次武装时间
-                            bool found_t = false;
-                            for (auto& item : ctx.armed_cops_time_snapshot) {
-                                if (item.first == ped) {
-                                    item.second = now_ms();
-                                    found_t = true;
-                                    break;
-                                }
-                            }
-                            if (!found_t) {
-                                ctx.armed_cops_time_snapshot.push_back({ped, now_ms()});
-                            }
-                            ctx.pending_armed_cops_time.push_back({ped, now_ms()});
-
-                            if (!already_assigned_foot_cop) {
-                                ctx.active_foot_cops_count++;
-                                already_assigned_foot_cop = true;
-                            }
-                            LOGI("🎯 [Virtual Sound Event] Dispatched logic sound event (Weapon=%d) to cop %p towards ctx.criminal %p (active_foot_cops=%d/%d)", 
-                                 chosen_weapon, ped, target_criminal, ctx.active_foot_cops_count, ctx.max_foot_cops);
-                            dispatched_via_noise = true;
+                    bool found_w = false;
+                    for (auto& item : ctx.cop_assigned_weapon_snapshot) {
+                        if (item.first == ped) {
+                            item.second = chosen_weapon;
+                            found_w = true;
+                            break;
                         }
                     }
-
-                    // 平滑降级
-                    if (!dispatched_via_noise && g_orig_generate_damage_event) {
-                        if (g_GiveWeapon && g_SetCurrentWeapon) {
-                            g_GiveWeapon(ped, chosen_weapon, 9999, true);
-                            g_SetCurrentWeapon(ped, chosen_weapon);
-                        }
-                        g_orig_generate_damage_event(ped, reinterpret_cast<CEntity*>(target_criminal), chosen_weapon, 0, 3, 0);
-
-                        // Register ground cop to ECS
-                        {
-                            auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
-                            if (!cop_comp) {
-                                cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
-                            }
-                            auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
-                            if (!combat_comp) {
-                                combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(ped);
-                            }
-                            if (combat_comp) {
-                                combat_comp->target_entity = target_criminal;
-                            }
-                        }
-                        
-                        bool found_assign = false;
-                        for (auto& item : ctx.cop_attack_assign_time_snapshot) {
-                            if (item.first == key_assign) {
-                                item.second = now_ms();
-                                found_assign = true;
-                                break;
-                            }
-                        }
-                        if (!found_assign) {
-                            ctx.cop_attack_assign_time_snapshot.push_back({key_assign, now_ms()});
-                        }
-                        ctx.pending_cop_attack_assign_time.push_back({key_assign, now_ms()});
-
-                        // 同时记录到分配武器
-                        bool found_w = false;
-                        for (auto& item : ctx.cop_assigned_weapon_snapshot) {
-                            if (item.first == ped) {
-                                item.second = chosen_weapon;
-                                found_w = true;
-                                break;
-                            }
-                        }
-                        if (!found_w) {
-                            ctx.cop_assigned_weapon_snapshot.push_back({ped, chosen_weapon});
-                        }
-                        ctx.pending_cop_assigned_weapon.push_back({ped, chosen_weapon});
-
-                        // 更新上次武装时间
-                        bool found_t = false;
-                        for (auto& item : ctx.armed_cops_time_snapshot) {
-                            if (item.first == ped) {
-                                item.second = now_ms();
-                                found_t = true;
-                                break;
-                            }
-                        }
-                        if (!found_t) {
-                            ctx.armed_cops_time_snapshot.push_back({ped, now_ms()});
-                        }
-                        ctx.pending_armed_cops_time.push_back({ped, now_ms()});
-
-                        if (!already_assigned_foot_cop) {
-                            ctx.active_foot_cops_count++;
-                            already_assigned_foot_cop = true;
-                        }
-                        LOGI("⚠️ [Fallback 0-Damage] Inflicted 0 damage (Weapon=%d) to cop %p by criminal %p (active_foot_cops=%d/%d)", 
-                             chosen_weapon, ped, target_criminal, ctx.active_foot_cops_count, ctx.max_foot_cops);
+                    if (!found_w) {
+                        ctx.cop_assigned_weapon_snapshot.push_back({ped, chosen_weapon});
                     }
+
+                    bool found_t = false;
+                    for (auto& item : ctx.armed_cops_time_snapshot) {
+                        if (item.first == ped) {
+                            item.second = assign_time;
+                            found_t = true;
+                            break;
+                        }
+                    }
+                    if (!found_t) {
+                        ctx.armed_cops_time_snapshot.push_back({ped, assign_time});
+                    }
+
+                    if (!already_assigned_foot_cop) {
+                        ctx.active_foot_cops_count++;
+                    }
+                    LOGI("🎯 [Foot Cop Dispatch] Native-first combat dispatch to cop %p -> criminal %p (active_foot_cops=%d/%d)",
+                         ped, target_criminal, ctx.active_foot_cops_count, ctx.max_foot_cops);
 }

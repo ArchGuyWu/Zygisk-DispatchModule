@@ -548,25 +548,143 @@ bool is_specific_criminal_armed_with_firearm(CPed* target_criminal) {
     return false;
 }
 
+enum class CopCombatDispatchMethod {
+    NONE = 0,
+    ALREADY_ACTIVE,
+    ADD_CRIMINAL_TO_KILL,
+    KILL_CRIMINAL_TASK,
+    EVENT_GUNSHOT,
+    EVENT_ZERO_DAMAGE
+};
+
+static bool cop_has_lock_on_target(CPed* cop, CPed* criminal) {
+    if (!g_GetWeaponLockOnTarget || !cop || !criminal) return false;
+    CEntity* target = g_GetWeaponLockOnTarget(cop);
+    return target == reinterpret_cast<CEntity*>(criminal);
+}
+
+static bool cop_has_kill_criminal_task(CPed* cop) {
+    if (!g_FindTaskByType || !cop) return false;
+    void* intelligence = get_ped_intelligence(cop);
+    if (!intelligence) return false;
+    return g_FindTaskByType(intelligence, TASK_COMPLEX_KILL_CRIMINAL) != nullptr;
+}
+
+static bool cop_is_already_pursuing(CPed* cop, CPed* criminal) {
+    if (cop_has_lock_on_target(cop, criminal)) {
+        return true;
+    }
+    if (cop_has_kill_criminal_task(cop)) {
+        auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
+        if (combat_comp && combat_comp->target_entity == criminal) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool try_dispatch_via_add_criminal(CPed* cop, CPed* criminal) {
+    if (!g_AddCriminalToKill || !cop || !criminal) return false;
+    g_AddCriminalToKill(cop, criminal);
+    LOGI("🎯 [Native Dispatch] AddCriminalToKill cop %p -> criminal %p", cop, criminal);
+    return true;
+}
+
+static bool try_dispatch_via_kill_task(CPed* cop, CPed* criminal) {
+    if (!g_TaskNew || !g_TaskKillCriminal_ctor || !cop || !criminal) return false;
+
+    void* intelligence = get_ped_intelligence(cop);
+    if (!intelligence) return false;
+
+    void* task = g_TaskNew(512);
+    if (!task) return false;
+
+    g_TaskKillCriminal_ctor(task, criminal, false);
+
+    if (g_AddTaskPrimaryMaybeInGroup) {
+        g_AddTaskPrimaryMaybeInGroup(intelligence, reinterpret_cast<CTask*>(task), false);
+        LOGI("🎯 [Native Dispatch] AddTaskPrimaryMaybeInGroup KillCriminal cop %p -> criminal %p", cop, criminal);
+        return true;
+    }
+
+    if (!g_SetTask) return false;
+    void* task_manager = reinterpret_cast<void*>(reinterpret_cast<char*>(intelligence) + 8);
+    if (!task_manager) return false;
+
+    g_SetTask(task_manager, reinterpret_cast<CTask*>(task), 3, false);
+    LOGI("🎯 [Native Dispatch] SetTask KillCriminal cop %p -> criminal %p", cop, criminal);
+    return true;
+}
+
+static CopCombatDispatchMethod try_dispatch_via_events(CPed* cop, CPed* criminal, eWeaponType weapon) {
+    if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
+        void* event_group = get_ped_event_group(cop);
+        if (event_group) {
+            alignas(16) char event_buf[256];
+            memset(event_buf, 0, sizeof(event_buf));
+            CVector cop_pos = get_entity_pos(cop);
+            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
+
+            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(criminal), cop_pos, target_pos, false);
+            g_CEventGroup_Add(event_group, event_buf, false);
+            g_CEventGunShot_dtor(event_buf);
+            LOGI("🎯 [Event Fallback] GunShot event cop %p -> criminal %p", cop, criminal);
+            return CopCombatDispatchMethod::EVENT_GUNSHOT;
+        }
+    }
+
+    if (g_orig_generate_damage_event) {
+        g_orig_generate_damage_event(cop, reinterpret_cast<CEntity*>(criminal), weapon, 0, 3, 0);
+        LOGI("🎯 [Event Fallback] 0-damage cop %p by criminal %p", cop, criminal);
+        return CopCombatDispatchMethod::EVENT_ZERO_DAMAGE;
+    }
+
+    return CopCombatDispatchMethod::NONE;
+}
+
+static CopCombatDispatchMethod dispatch_cop_combat_ladder(
+    CPed* cop,
+    CPed* criminal,
+    eWeaponType weapon,
+    bool force_redispatch) {
+    if (!force_redispatch && cop_is_already_pursuing(cop, criminal)) {
+        LOGI("🎯 [Native Dispatch] Cop %p already pursuing criminal %p — skip combat inject", cop, criminal);
+        return CopCombatDispatchMethod::ALREADY_ACTIVE;
+    }
+
+    bool in_vehicle = find_vehicle_of_cop(cop) != nullptr;
+
+    if (try_dispatch_via_add_criminal(cop, criminal)) {
+        return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
+    }
+
+    if (!in_vehicle && try_dispatch_via_kill_task(cop, criminal)) {
+        return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
+    }
+
+    return try_dispatch_via_events(cop, criminal, weapon);
+}
+
+static void register_cop_combat_ecs(CPed* cop, CPed* criminal) {
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+    if (!cop_comp) {
+        cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(cop, cop);
+    }
+    auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
+    if (!combat_comp) {
+        combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(cop);
+    }
+    if (combat_comp) {
+        combat_comp->target_entity = criminal;
+    }
+}
+
 void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update) {
     if (!cop || !is_ped_pointer_valid_safe(cop) || !criminal || !is_ped_pointer_valid_safe(criminal)) return;
     if (g_IsAlive && !g_IsAlive(cop)) return;
     if (g_GetPedType && g_GetPedType(cop) != PED_TYPE_COP) return;
 
-    // Register cop to ECS and set target in CombatComponent
-    {
-        auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
-        if (!cop_comp) {
-            cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(cop, cop);
-        }
-        auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
-        if (!combat_comp) {
-            combat_comp = ecs::EntityManager::get().add_component<ecs::CombatComponent>(cop);
-        }
-        if (combat_comp) {
-            combat_comp->target_entity = criminal;
-        }
-    }
+    register_cop_combat_ecs(cop, criminal);
 
     // Determine weapon based on specific threat
     bool is_firearm = is_specific_criminal_armed_with_firearm(criminal);
@@ -599,8 +717,8 @@ void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapo
             g_GiveWeapon(cop, target_weapon, 9999, true);
             g_SetCurrentWeapon(cop, target_weapon);
         }
-        LOGI("🎯 [Event-Driven Single Cop Weapon Switch] Cop %p switched weapon to %d (perp=%p, force=%d)", cop, (int)target_weapon, criminal, force_weapon_update);
-        
+        LOGI("🎯 [Cop Weapon Switch] Cop %p switched weapon to %d (perp=%p, force=%d)", cop, (int)target_weapon, criminal, force_weapon_update);
+
         {
             std::lock_guard<std::mutex> lock(g_cop_assigned_weapon_mutex);
             g_cop_assigned_weapon[cop] = target_weapon;
@@ -611,32 +729,14 @@ void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapo
         }
     }
 
-    bool sound_sent = false;
-    if (g_CEventGunShot_ctor && g_CEventGunShot_dtor && g_CEventGroup_Add) {
-        void* event_group = get_ped_event_group(cop);
-        if (event_group) {
-            alignas(16) char event_buf[256];
-            memset(event_buf, 0, sizeof(event_buf));
-            CVector cop_pos = get_entity_pos(cop);
-            CVector start_pos = cop_pos;
-            CVector target_pos(cop_pos.x, cop_pos.y, cop_pos.z + 1.0f);
-            
-            g_CEventGunShot_ctor(event_buf, reinterpret_cast<CEntity*>(criminal), start_pos, target_pos, false);
-            g_CEventGroup_Add(event_group, event_buf, false);
-            g_CEventGunShot_dtor(event_buf);
-            sound_sent = true;
-            LOGI("🎯 [Event-Driven Single Cop Sound Dispatch] Sent gunshot sound to cop %p towards criminal %p", cop, criminal);
+    bool force_redispatch = force_weapon_update;
+    bool need_combat_dispatch = force_redispatch || !cop_is_already_pursuing(cop, criminal);
+    if (need_combat_dispatch) {
+        CopCombatDispatchMethod method = dispatch_cop_combat_ladder(cop, criminal, target_weapon, force_redispatch);
+        if (method != CopCombatDispatchMethod::NONE) {
+            std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
+            g_cop_attack_assign_time[{cop, criminal}] = now_ms();
         }
-    }
-
-    if (!sound_sent && g_orig_generate_damage_event) {
-        g_orig_generate_damage_event(cop, reinterpret_cast<CEntity*>(criminal), target_weapon, 0, 3, 0);
-        LOGI("🎯 [Event-Driven Single Cop Fallback] Inflicted 0-damage to cop %p by criminal %p", cop, criminal);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
-        g_cop_attack_assign_time[{cop, criminal}] = now_ms();
     }
 }
 
