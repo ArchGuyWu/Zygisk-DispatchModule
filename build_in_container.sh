@@ -205,6 +205,9 @@ add_library(shadowhook_nothing SHARED ${SHADOWHOOK_CPP_DIR}/nothing/sh_nothing.c
 add_library(policemod SHARED
     module.cpp
     dispatch_logic.cpp
+    dispatch_hooks.cpp
+    dispatch_cop_response.cpp
+    dispatch_tick.cpp
     hooks_stability.cpp
     ecs_systems.cpp
 )
