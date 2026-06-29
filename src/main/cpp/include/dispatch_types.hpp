@@ -52,6 +52,7 @@ struct CrimeEvent {
     int dispatch_delay_ms = 0;
     int last_cops_killed = 0;
     int64_t on_scene_start = 0;
+    int64_t last_on_scene_dispatch_ms = 0;
     std::vector<void*> case_vehicles;
     uint64_t case_id = 0;
 };

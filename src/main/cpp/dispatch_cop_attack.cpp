@@ -64,8 +64,6 @@ void make_cops_attack_criminal(CPed* criminal) {
 
     cop_attack_snapshot_globals(ctx);
     cop_attack_detect_firearm_threat(ctx);
-    cop_attack_pass1_count_active(ctx);
-    cop_attack_compute_quotas(ctx);
-    cop_attack_pass2_dispatch(ctx);
+    cop_attack_single_pass_dispatch(ctx);
     cop_attack_commit_pending(ctx);
 }

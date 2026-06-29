@@ -36,7 +36,24 @@
 
 
 void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
-    make_cops_attack_criminal(crime->criminal);
+    int64_t cur_time = now_ms();
+    bool dispatch_now = false;
+
+    float dist_to_cop = 9999.0f;
+    if (g_FindDistToNearestCop) {
+        dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, get_crime_dispatch_position(*crime));
+    }
+    if (dispatch_timing::is_cop_within_native_av(dist_to_cop, *crime)) {
+        dispatch_now = true;
+    } else if (crime->last_on_scene_dispatch_ms <= 0 ||
+               (cur_time - crime->last_on_scene_dispatch_ms) >= dispatch_timing::ON_SCENE_DISPATCH_INTERVAL_MS) {
+        dispatch_now = true;
+    }
+
+    if (dispatch_now) {
+        make_cops_attack_criminal(crime->criminal);
+        crime->last_on_scene_dispatch_ms = cur_time;
+    }
 
     if (g_orig_tell_occupants_leave_car) {
         for (void* veh : crime->case_vehicles) {

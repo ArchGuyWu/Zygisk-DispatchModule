@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
+#include "dispatch_reroute.hpp"
 
 
 // =====================================================================
@@ -143,102 +144,7 @@ void on_main_thread_tick() {
         }
     }
 
-    // =====================================================================
-    // 🚨 [dispatchCenter - EnRouteRerouting] 警车响应调度沿途发生的同级及以上活跃犯罪 (Reroute en-route cops to overlapping crimes)
-    // =====================================================================
-    struct RerouteRecord {
-        void* vehicle;
-        std::shared_ptr<CrimeEvent> from_case;
-        std::shared_ptr<CrimeEvent> to_case;
-        float distance;
-    };
-    std::vector<RerouteRecord> pending_reroutes;
-
-    {
-        std::lock_guard<std::mutex> lock_sc(g_vehicles_mutex);
-        for (auto& case_A : crimes_snapshot) {
-            if (!case_A || case_A->cancelled) continue;
-
-            for (void* veh : case_A->case_vehicles) {
-                if (!veh || !is_vehicle_pointer_valid(veh)) continue;
-
-                // 仅重定向正处于行驶赶往现场途中 (g_vehicles_ordered_to_scene) 且尚未下车的警车
-                if (g_vehicles_ordered_to_scene.count(veh) > 0 && !is_vehicle_emptied(veh)) {
-                    CVector veh_pos = get_entity_pos(veh);
-                    std::shared_ptr<CrimeEvent> best_case_B = nullptr;
-                    float best_dist = 999999.0f;
-
-                    for (auto& case_B : crimes_snapshot) {
-                        if (!case_B || case_B->cancelled || case_B == case_A) continue;
-                        if (!case_B->criminal || !is_ped_pointer_valid_safe(case_B->criminal)) continue;
-
-                        // 1. 同级及以上威胁度等级限制
-                        // 枪击大案(threat=2), 近战/非枪击(threat=1)
-                        int threat_A = case_A->is_firearm ? 2 : 1;
-                        int threat_B = case_B->is_firearm ? 2 : 1;
-
-                        if (threat_B >= threat_A) {
-                            float dx = veh_pos.x - case_B->location.x;
-                            float dy = veh_pos.y - case_B->location.y;
-                            float dz = veh_pos.z - case_B->location.z;
-                            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-
-                            // 2. 动态视听 AV 响应范围：枪械 75 米，近战/空手 35 米
-                            float av_range = case_B->is_firearm ? 75.0f : 35.0f;
-
-                            if (dist <= av_range && dist < best_dist) {
-                                best_dist = dist;
-                                best_case_B = case_B;
-                            }
-                        }
-                    }
-
-                    if (best_case_B) {
-                        pending_reroutes.push_back({veh, case_A, best_case_B, best_dist});
-                    }
-                }
-            }
-        }
-    }
-
-    // 执行重定向，将警车无缝过户给新案件
-    for (const auto& record : pending_reroutes) {
-        void* veh = record.vehicle;
-        auto case_A = record.from_case;
-        auto case_B = record.to_case;
-
-        if (!case_A || case_A->cancelled || !case_B || case_B->cancelled) continue;
-
-        // A. 从原案件中移除该车
-        auto it_A = std::find(case_A->case_vehicles.begin(), case_A->case_vehicles.end(), veh);
-        if (it_A != case_A->case_vehicles.end()) {
-            case_A->case_vehicles.erase(it_A);
-        }
-        if (case_A->spawned_vehicle == veh) {
-            case_A->spawned_vehicle = nullptr;
-        }
-
-        // B. 将该车追加至新案件
-        auto it_B = std::find(case_B->case_vehicles.begin(), case_B->case_vehicles.end(), veh);
-        if (it_B == case_B->case_vehicles.end()) {
-            case_B->case_vehicles.push_back(veh);
-        }
-        if (!case_B->spawned_vehicle) {
-            case_B->spawned_vehicle = veh;
-        }
-
-        LOGI("🚨 [dispatchCenter - EnRouteReroute] Dispatched vehicle %p (originally for Case %llu, threat: %d) encountered Case %llu (threat: %d) en route! Rerouting to Case %llu (dist: %.1fm).",
-             veh, (unsigned long long)case_A->case_id, case_A->is_firearm ? 2 : 1,
-             (unsigned long long)case_B->case_id, case_B->is_firearm ? 2 : 1,
-             (unsigned long long)case_B->case_id, record.distance);
-
-        // C. 给新案件重置车辆的导航目的地
-        command_cop_vehicle_to_scene(veh, case_B->location);
-
-        // D. 重置乘员的唤醒与绑定，使司机一脚油门驶向新案件嫌犯
-        setup_dispatched_cops(veh, case_B->criminal);
-    }
-
+    dispatch_reroute::apply_enroute_vehicle_reroutes(crimes_snapshot);
 
     for (auto& crime : crimes_snapshot) {
         if (!crime || crime->cancelled) {

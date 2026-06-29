@@ -9,6 +9,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "third_party/xdl/xdl.h"
@@ -235,6 +236,8 @@ extern std::map<CPed*, int64_t> g_armed_cops_time;
 extern std::mutex g_armed_cops_mutex;
 extern std::map<CPed*, eWeaponType> g_cop_assigned_weapon;
 extern std::mutex g_cop_assigned_weapon_mutex;
+extern std::unordered_set<CPed*> g_dispatch_active_cops;
+extern std::mutex g_dispatch_active_cops_mutex;
 extern std::set<void*> g_vehicles_ordered_to_scene;
 extern std::mutex g_vehicles_mutex;
 extern std::set<void*> g_vehicles_siren_awakened;
@@ -289,6 +292,10 @@ CVector get_crime_dispatch_position(const CrimeEvent& crime);
 bool should_activate_or_hijack_crime(CVector location, bool is_firearm);
 void update_primary_criminal_by_threat();
 void* find_vehicle_of_cop(CPed* cop);
+void* find_vehicle_of_cop_cached(CPed* cop);
+void purge_dispatch_state_for_ped(CPed* ped);
+bool apply_cop_weapon_for_combat(CPed* cop, CPed* criminal, bool force_update);
+bool force_cop_native_redispatch(CPed* cop, CPed* criminal);
 void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nullptr);
 void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver);
 bool is_alive_bound_driver_exists(void* vehicle);

@@ -51,6 +51,9 @@ constexpr int64_t FOOT_ASSIGN_FIREARM_MS = 4000;
 constexpr int64_t FOOT_ASSIGN_MELEE_MS = 12000;
 constexpr int64_t FOOT_ASSIGN_ACTIVE_WINDOW_MS = 15000;
 
+// --- on_scene 分派心跳（视听外降频，视听内由调用方即时触发）---
+constexpr int64_t ON_SCENE_DISPATCH_INTERVAL_MS = 2500;
+
 // --- 载具警到场下车 ---
 constexpr int64_t VEHICLE_STUCK_EXIT_MS = 8000;
 constexpr int64_t VEHICLE_MAX_APPROACH_MS = 15000;

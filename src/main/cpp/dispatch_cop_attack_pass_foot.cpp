@@ -68,74 +68,9 @@ void cop_attack_dispatch_foot_cop(
                         already_targeting = true;
                     }
 
-                    // 提前确定分配的目标武器，判断是否是近战武器，用于高频打断防护
                     bool is_specific_firearm = is_specific_criminal_armed_with_firearm(target_criminal);
                     eWeaponType target_weapon = determine_weapon_for_cop(ped, target_criminal, is_specific_firearm);
                     bool is_melee = (target_weapon == WEAPON_NIGHTSTICK || target_weapon == WEAPON_UNARMED || target_weapon < 22);
-
-                    // =====================================================================
-                    // 🚀 【核心修复】动态战术武器切换逻辑（针对已锁定目标/已处于响应的警员）
-                    // =====================================================================
-                    bool is_assigned_or_targeting = already_targeting ||
-                        (now_ms() - last_assign < dispatch_timing::FOOT_ASSIGN_ACTIVE_WINDOW_MS);
-                    if (is_assigned_or_targeting) {
-                        int64_t last_armed = 0;
-                        for (const auto& item : ctx.armed_cops_time_snapshot) {
-                            if (item.first == ped) {
-                                last_armed = item.second;
-                                break;
-                            }
-                        }
-
-                        eWeaponType last_assigned_weapon = WEAPON_UNARMED;
-                        for (const auto& item : ctx.cop_assigned_weapon_snapshot) {
-                            if (item.first == ped) {
-                                last_assigned_weapon = item.second;
-                                break;
-                            }
-                        }
-
-                        // 如果是要切成手枪，而当前又是警棍/无武器，则说明是紧急枪械升级，必须强行无视 1.5 秒冷却，确保瞬间切枪
-                        bool is_upgrading_to_firearm = (target_weapon == WEAPON_PISTOL && last_assigned_weapon != WEAPON_PISTOL);
-                        if (now_ms() - last_armed > 1500 || is_upgrading_to_firearm) {
-                            if (target_weapon != last_assigned_weapon) {
-                                if (g_GiveWeapon && g_SetCurrentWeapon) {
-                                    g_GiveWeapon(ped, target_weapon, 9999, true);
-                                    g_SetCurrentWeapon(ped, target_weapon);
-                                }
-                                LOGI("🔄 [Weapon Dynamic Switch] Ground cop %p switched weapon from %d to %d (dist=%.1f, bypass_cooldown=%d)", 
-                                     ped, last_assigned_weapon, target_weapon, sqrtf(dist_sq), is_upgrading_to_firearm);
-
-                                // 局部同步更新
-                                bool found_w = false;
-                                for (auto& item : ctx.cop_assigned_weapon_snapshot) {
-                                    if (item.first == ped) {
-                                        item.second = target_weapon;
-                                        found_w = true;
-                                        break;
-                                    }
-                                }
-                                if (!found_w) {
-                                    ctx.cop_assigned_weapon_snapshot.push_back({ped, target_weapon});
-                                }
-                                ctx.pending_cop_assigned_weapon.push_back({ped, target_weapon});
-
-                                // 更新上次武装时间
-                                bool found_t = false;
-                                for (auto& item : ctx.armed_cops_time_snapshot) {
-                                    if (item.first == ped) {
-                                        item.second = now_ms();
-                                        found_t = true;
-                                        break;
-                                    }
-                                }
-                                if (!found_t) {
-                                    ctx.armed_cops_time_snapshot.push_back({ped, now_ms()});
-                                }
-                                ctx.pending_armed_cops_time.push_back({ped, now_ms()});
-                            }
-                        }
-                    }
 
                     bool just_exited_vehicle = is_cop_currently_exiting(ped);
                     if (!just_exited_vehicle) {

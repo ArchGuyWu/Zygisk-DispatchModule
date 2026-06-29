@@ -31,6 +31,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_timing.hpp"
+#include "dispatch_reroute.hpp"
 
 void init_ecs_systems() {
     static std::atomic<bool> initialized{false};
@@ -42,6 +43,7 @@ void init_ecs_systems() {
     // 1. CleanupSystem: 监听实体销毁事件
     ecs::EventDispatcher::get().subscribe<ecs::EntityCleanupEvent>("EntityCleanupEvent", [](const ecs::EntityCleanupEvent& ev) {
         if (ev.entity) {
+            purge_dispatch_state_for_ped(static_cast<CPed*>(ev.entity));
             ecs::EntityManager::get().destroy_entity(ev.entity);
         }
     });
@@ -272,8 +274,8 @@ void init_ecs_systems() {
                 }
             }
 
-            update_primary_criminal_by_threat();
         }
+        update_primary_criminal_by_threat();
 
         // 2. CopStuckAndWeaponSelectionSystem:
         // 遍历所有已绑定的警员实体，进行自动化战术升级与卡死检测
@@ -289,7 +291,7 @@ void init_ecs_systems() {
             auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
 
             if (cop_comp) {
-                bool actually_in_vehicle = find_vehicle_of_cop(cop) != nullptr;
+                bool actually_in_vehicle = find_vehicle_of_cop_cached(cop) != nullptr;
                 if (actually_in_vehicle) {
                     cop_comp->is_in_vehicle = true;
                     cop_comp->has_exited_vehicle = false;
@@ -317,8 +319,10 @@ void init_ecs_systems() {
                             if (cop_comp->stuck_count >= 3) { // 连续卡死 6 秒以上
                                 auto* target = static_cast<CPed*>(combat_comp->target_entity);
                                 if (target && is_ped_pointer_valid_safe(target)) {
-                                    LOGW("⚠️ [ECS StuckSolver] Ground cop %p is stuck pursuing %p. Force resetting task for pathfinding routing.", cop, target);
-                                    make_single_cop_attack_criminal(cop, target, true);
+                                    LOGW("⚠️ [ECS StuckSolver] Ground cop %p is stuck pursuing %p. Native redispatch (no event inject).", cop, target);
+                                    if (!force_cop_native_redispatch(cop, target)) {
+                                        make_single_cop_attack_criminal(cop, target, true);
+                                    }
                                 }
                                 cop_comp->stuck_count = 0;
                             }
@@ -335,69 +339,8 @@ void init_ecs_systems() {
                 }
             }
 
-            // 2.3 步行警员响应调度沿途发生的同级及以上活跃犯罪 (EnRoute Rerouting for foot cops)
             if (cop_comp && !cop_comp->is_in_vehicle && combat_comp && combat_comp->target_entity) {
-                std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
-                std::shared_ptr<CrimeEvent> case_A = nullptr;
-                for (const auto& crime : g_active_crimes) {
-                    if (!crime || crime->cancelled) continue;
-                    bool found = false;
-                    if (crime->criminal == combat_comp->target_entity) {
-                        found = true;
-                    } else {
-                        for (CPed* crim : crime->consolidated_criminals) {
-                            if (crim == combat_comp->target_entity) {
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (found) {
-                        case_A = crime;
-                        break;
-                    }
-                }
-
-                if (case_A) {
-                    CVector cop_pos = get_entity_pos(cop);
-                    std::shared_ptr<CrimeEvent> best_case_B = nullptr;
-                    float best_dist = 999999.0f;
-
-                    for (const auto& case_B : g_active_crimes) {
-                        if (!case_B || case_B->cancelled || case_B == case_A) continue;
-                        if (!case_B->criminal || !is_ped_pointer_valid_safe(case_B->criminal)) continue;
-
-                        int threat_A = case_A->is_firearm ? 2 : 1;
-                        int threat_B = case_B->is_firearm ? 2 : 1;
-
-                        if (threat_B >= threat_A) {
-                            CVector crim_pos = get_entity_pos(case_B->criminal);
-                            float dx = cop_pos.x - crim_pos.x;
-                            float dy = cop_pos.y - crim_pos.y;
-                            float dz = cop_pos.z - crim_pos.z;
-                            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-
-                            float av_range = case_B->is_firearm ? 75.0f : 35.0f;
-
-                            if (dist <= av_range && dist < best_dist) {
-                                best_dist = dist;
-                                best_case_B = case_B;
-                            }
-                        }
-                    }
-
-                    if (best_case_B) {
-                        LOGI("🚨 [dispatchCenter - FootCopReroute] Foot cop %p (originally pursuing Case %llu, threat: %d) encountered Case %llu (threat: %d) en route! Rerouting to Case %llu (dist: %.1fm).",
-                             cop, (unsigned long long)case_A->case_id, case_A->is_firearm ? 2 : 1,
-                             (unsigned long long)best_case_B->case_id, best_case_B->is_firearm ? 2 : 1,
-                             (unsigned long long)best_case_B->case_id, best_dist);
-
-                        make_single_cop_attack_criminal(cop, best_case_B->criminal, true);
-                        if (combat_comp) {
-                            combat_comp->last_weapon_switch_time_ms = 0;
-                        }
-                    }
-                }
+                dispatch_reroute::try_reroute_foot_cop(cop, static_cast<CPed*>(combat_comp->target_entity));
             }
 
             // 2.2 智能武器选择与高响应收枪控制链 (零延迟、高响应性切枪与即时自动收枪机制)
@@ -553,7 +496,7 @@ void init_ecs_systems() {
                 eWeaponType target_weapon = determine_weapon_for_cop(cop, target, firearm_threat);
 
                 // 2 秒强制武器强化周期，用来解决由于下车动作、摔倒或受击导致游戏底层自动重置武器为拳头的 bug
-                bool cop_is_in_veh = (find_vehicle_of_cop(cop) != nullptr);
+                bool cop_is_in_veh = (find_vehicle_of_cop_cached(cop) != nullptr);
                 bool periodic_reinforce = (!cop_is_in_veh) && (ev.current_time_ms - combat_comp->last_weapon_switch_time_ms > 2000);
 
                 if (target_weapon != (eWeaponType)combat_comp->current_weapon_type || periodic_reinforce) {

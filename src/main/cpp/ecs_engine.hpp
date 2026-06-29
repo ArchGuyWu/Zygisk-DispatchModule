@@ -180,6 +180,8 @@ struct CopComponent : public IComponent {
     bool has_exited_vehicle = false;
     int64_t last_assign_time_ms = 0;
     int64_t last_enter_vehicle_command_time_ms = 0;
+    void* cached_vehicle = nullptr;
+    int64_t cached_vehicle_lookup_ms = 0;
     
     // Stuck Tracker (卡死检测)
     int64_t last_stuck_check_time_ms = 0;
