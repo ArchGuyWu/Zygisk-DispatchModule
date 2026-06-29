@@ -5578,6 +5578,8 @@ static void sanitize_task_chain(void* task, int depth = 0) {
 
 static void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+
     if (self) {
         // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
         // Total 11 slots of pointers starting at offset 0 of CTaskManager.
@@ -5763,7 +5765,9 @@ static fn_FacialDtor_t g_orig_facial_dtor = nullptr;
 
 static void proxy_facial_dtor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) return;
+
+    if (self) {
         void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
         if (is_pointer_readable(p_sub)) {
             void* sub = *p_sub;
@@ -5783,7 +5787,9 @@ static fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 
 static void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) return nullptr;
+
+    if (self) {
         // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
         // Total 11 slots of pointers starting at offset 0 of CTaskManager.
         for (int i = 0; i < 11; ++i) {
@@ -5812,7 +5818,9 @@ static fn_TaskManagerDestructor_t g_orig_task_manager_destructor = nullptr;
 
 static void proxy_task_manager_destructor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) return;
+
+    if (self) {
         for (int i = 0; i < 11; ++i) {
             void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
             if (is_pointer_readable(task_slot)) {
@@ -5836,7 +5844,7 @@ static fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence = nullptr;
 
 static void* proxy_partner_greet_get_sequence(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_task_vtable_safe(self)) {
+    if (self && !is_task_vtable_safe(self)) {
         return nullptr;
     }
     return SHADOWHOOK_CALL_PREV(proxy_partner_greet_get_sequence, self);
@@ -5849,7 +5857,9 @@ static fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
 
 static void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) return;
+
+    if (self) {
         void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
         if (is_pointer_readable(p_ped)) {
             void* ped = *p_ped;
@@ -5870,8 +5880,10 @@ static void proxy_play_loaded_sound(void* self) {
                 }
             }
         }
+        LOGW("⚠️ [PlayLoadedSound Sanitizer] Skipping PlayLoadedSound on %p to prevent null speech manager crash!", self);
+    } else {
+        SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
     }
-    LOGW("⚠️ [PlayLoadedSound Sanitizer] Skipping PlayLoadedSound on %p to prevent null speech manager crash!", self);
 }
 
 // --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
@@ -6207,6 +6219,7 @@ static fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 
 static void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
     sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
@@ -6218,7 +6231,8 @@ static fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
 
 static void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) return;
+    if (self) {
         void** p_ped = reinterpret_cast<void**>(self);
         if (is_pointer_readable(p_ped)) {
             sanitize_ped_tasks(*p_ped);
@@ -6234,6 +6248,7 @@ static fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullpt
 
 static bool proxy_cbuoyancy_process_buoyancy(void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
+    if (physical && !is_pointer_readable(physical)) return false;
     bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, physical, f1, vec1, vec2);
     if (!res) {
         if (physical && is_ped_pointer_valid_safe(physical)) {
