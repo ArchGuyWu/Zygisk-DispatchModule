@@ -606,6 +606,36 @@ void hook_thread_func() {
     if (g_stub_get_nearest_car_door) LOGI("✅ Hooked CCarEnterExit::GetNearestCarDoor");
     else LOGE("❌ Failed to hook CCarEnterExit::GetNearestCarDoor: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CTaskSimpleIKManager::ProcessPed (IK 子任务零填充虚表 → fault 0x48)
+    g_stub_ik_manager_process_ped = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN20CTaskSimpleIKManager10ProcessPedEP4CPed",
+        reinterpret_cast<void*>(proxy_ik_manager_process_ped),
+        reinterpret_cast<void**>(&g_orig_ik_manager_process_ped));
+    if (g_stub_ik_manager_process_ped) LOGI("✅ Hooked CTaskSimpleIKManager::ProcessPed");
+    else LOGE("❌ Failed to hook CTaskSimpleIKManager::ProcessPed: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CCarCtrl::IsPoliceVehicleInPursuit (vehicle+0x10 空 → vtable 解引用闪退)
+    g_stub_is_police_vehicle_in_pursuit = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN8CCarCtrl24IsPoliceVehicleInPursuitEi",
+        reinterpret_cast<void*>(proxy_is_police_vehicle_in_pursuit),
+        reinterpret_cast<void**>(&g_orig_is_police_vehicle_in_pursuit));
+    if (g_stub_is_police_vehicle_in_pursuit) LOGI("✅ Hooked CCarCtrl::IsPoliceVehicleInPursuit");
+    else LOGE("❌ Failed to hook CCarCtrl::IsPoliceVehicleInPursuit: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexWanderStandard::LookForChatPartners (伙伴 intel 任务槽零填充 → fault 0x28)
+    g_stub_wander_look_for_chat_partners = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN26CTaskComplexWanderStandard19LookForChatPartnersEP4CPed",
+        reinterpret_cast<void*>(proxy_wander_look_for_chat_partners),
+        reinterpret_cast<void**>(&g_orig_wander_look_for_chat_partners));
+    if (g_stub_wander_look_for_chat_partners) LOGI("✅ Hooked CTaskComplexWanderStandard::LookForChatPartners");
+    else LOGE("❌ Failed to hook CTaskComplexWanderStandard::LookForChatPartners: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CWanted::Update (通缉系统更新)
     g_stub_wanted_update = shadowhook_hook_sym_name(
         TARGET_LIB,

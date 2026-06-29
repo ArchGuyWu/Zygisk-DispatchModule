@@ -566,16 +566,17 @@ void proxy_process_static_counter(void* self) {
 void* g_stub_cbuoyancy_process_buoyancy = nullptr;
 fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 
-bool proxy_cbuoyancy_process_buoyancy(void* physical, float f1, void* vec1, void* vec2) {
+bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
     if (physical && !is_pointer_readable(physical)) return false;
-    bool res = SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, physical, f1, vec1, vec2);
-    if (!res) {
-        if (physical && is_ped_pointer_valid_safe(physical)) {
-            sanitize_ped_tasks(physical);
-        }
+    // vec2 write at 57ff744 (tombstone_13) — reject wild output pointers from caller stack.
+    if (vec1 && !is_pointer_readable(vec1)) return false;
+    if (vec2 && !is_pointer_readable(vec2)) return false;
+    if (physical && is_ped_pointer_valid_safe(physical)) {
+        sanitize_ped_tasks(physical);
     }
-    return res;
+    return SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
 }
 
 // =====================================================================
@@ -851,4 +852,80 @@ void* proxy_facial_control_sub_task(void* self, void* ped) {
         }
     }
     return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
+}
+
+// --- CTaskSimpleIKManager::ProcessPed Hook ---
+// Subtasks at +0x10/+0x18: engine loads vtable then [vtable+0x48] with no null-vtable guard (tombstone_12).
+void* g_stub_ik_manager_process_ped = nullptr;
+fn_IKManagerProcessPed_t g_orig_ik_manager_process_ped = nullptr;
+
+void proxy_ik_manager_process_ped(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+    if (ped && !is_pointer_readable(ped)) return;
+
+    if (self) {
+        for (size_t off : {0x10u, 0x18u}) {
+            sanitize_unsafe_subtask_at(self, off);
+        }
+    }
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    SHADOWHOOK_CALL_PREV(proxy_ik_manager_process_ped, self, ped);
+}
+
+// --- CCarCtrl::IsPoliceVehicleInPursuit Hook ---
+// Vehicle+0x10 sub-object null → vtable read at +0x2bc (tombstone_14, fault 0x0).
+void* g_stub_is_police_vehicle_in_pursuit = nullptr;
+fn_IsPoliceVehicleInPursuit_t g_orig_is_police_vehicle_in_pursuit = nullptr;
+
+bool proxy_is_police_vehicle_in_pursuit(int vehicle_index) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (g_GetPoolVehicle) {
+        void* vehicle = g_GetPoolVehicle(vehicle_index);
+        if (!vehicle || !is_pointer_readable(vehicle)) return false;
+        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
+        if (!is_pointer_readable(sub_slot) || !*sub_slot) return false;
+        void* sub = *sub_slot;
+        if (!is_pointer_readable(sub)) return false;
+        void** vtable_slot = reinterpret_cast<void**>(sub);
+        if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_is_police_vehicle_in_pursuit, vehicle_index);
+}
+
+// --- CTaskComplexWanderStandard::LookForChatPartners Hook ---
+// Scans partner intel task slots +0x8…+0x28; zero-filled task → vtable+0x28 (tombstone_15).
+void* g_stub_wander_look_for_chat_partners = nullptr;
+fn_WanderLookForChatPartners_t g_orig_wander_look_for_chat_partners = nullptr;
+
+inline void sanitize_wander_chat_partner_cache(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return;
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(intel_slot)) return;
+    void* intel = *intel_slot;
+    if (!intel || !is_pointer_readable(intel)) return;
+
+    for (int i = 0; i < 16; ++i) {
+        void** partner_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x228 + i * 8);
+        if (!is_pointer_readable(partner_slot)) continue;
+        void* partner = *partner_slot;
+        if (partner && is_ped_pointer_valid_safe(partner)) {
+            sanitize_ped_tasks(partner);
+        }
+    }
+    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "WanderLookForChatPartners");
+}
+
+void proxy_wander_look_for_chat_partners(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+    if (ped && !is_pointer_readable(ped)) return;
+
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_wander_chat_partner_cache(ped);
+        sanitize_ped_tasks(ped);
+    }
+    SHADOWHOOK_CALL_PREV(proxy_wander_look_for_chat_partners, self, ped);
 }
