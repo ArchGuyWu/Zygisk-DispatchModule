@@ -296,6 +296,14 @@ void* proxy_ccgf_control(void* self, void* ped) {
         sanitize_unsafe_subtask_at(self, 0x10);
         sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x18), "leader");
         sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x20), "partner");
+
+        // Original dereferences leader+0x498 with no null guard (tombstone_01–04, fault 0x498).
+        // Skip only when leader slot is empty after sanitization — not intercepting ped args.
+        void** leader_slot = reinterpret_cast<void**>(self_bytes + 0x18);
+        if (!is_pointer_readable(leader_slot) || !*leader_slot) {
+            LOGW("⚠️ [GangFollower::ControlSubTask] no leader after sanitize — skip original");
+            return nullptr;
+        }
     }
 
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
