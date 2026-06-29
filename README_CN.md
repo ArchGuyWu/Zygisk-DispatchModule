@@ -113,7 +113,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 当被填零的不安全任务/实体指针被模组强制净化为标准的 `nullptr` 后，官方引擎原装的 `cbz` 安全检查即可完美生效，使得程序优雅地走入原本的安全 fallback 流程，完美避免崩溃。
 
-### 3. 25-Hook 核心网络 (25-Hook System)
+### 3. 33-Hook 核心网络 (33-Hook System)
 模组挂钩了官方引擎内所有与通缉星级、犯罪上报、应急载具生成、任务管理器、脚步声更新、涉水浮力物理以及 Unicode 字符串解析相关的生命周期与虚表，建立起精简高效的协同网络：
 
 1.  **玩法功能与自定义警力调度** (共 12 个 Hook)：
@@ -126,7 +126,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `add_police_occupants` (在警车刷出时绑定乘员)
     *   `tell_occupants_leave_car` (控制警车乘员的下车战术)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (移动端特有的救护车与消防车加载视距缩放 Workaround)
-2.  **防御与净化安全防线** (共 13 个 Hook)：
+2.  **防御与净化安全防线** (共 21 个 Hook)：
     *   `u_strlen_64` (防止 ICU 字符串长度计算函数在接收到野指针时发生 SIGSEGV 闪退，在访问前进行指针有效性过滤)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (防止在行人计算涉水浮力时，由于任务管理器中残留零填充或无效的任务指针而导致解引用虚表闪退。其中 `cBuoyancy::ProcessBuoyancy` 挂钩在物理计算完成后立即净化任务槽，解决了物理 tick 途中任务被销毁/空指针的竞态问题)
     *   `CPed::PlayFootSteps` (防止转场或传送期间由于行人的 `RwClump` 骨骼暂时脱离导致播放脚步声时解引用空指针闪退)
@@ -141,6 +141,14 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
     *   `CAEPedSpeechAudioEntity::PlayLoadedSound` (在播放行人语音音频时，校验语音管理器指针是否为空，防止解引用空指针进行写操作导致闪退)
     *   `CCarGenerator::CheckIfWithinRangeOfAnyPlayers` (在刷车器检测玩家距离时，检查玩家 Ped 指针在全局对象池中是否有效，防止玩家处于临时析构状态时导致的空指针闪退)
     *   `CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask` (在行人避让决策中，净化目标 Ped 的所有主任务链，防止在避让动作中读取他人野指针任务闪退)
+    *   `CTaskComplexSequence::Flush` (防止清除任务序列时，由于序列中包含已被释放填零的任务而导致解引用虚表闪退)
+    *   `CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB` (防止闪避动作回调执行时，其关联的任务上下文指针已被提前析构填零导致解引用闪退)
+    *   `CTaskComplexBeInGroup::ControlSubTask` (防止在组任务已被析构填零时，调用子任务控制导致虚表解引用闪退)
+    *   `IKChainManager_c::Update` (防止反向动力学链管理器在场景过渡置空时，解引用更新导致的空指针闪退)
+    *   `CCam::Process_FollowPed_SA` (防止相机在过渡期失效置空时，解引用跟随角色导致的空指针闪退)
+    *   `CTaskComplexLeaveCar::MakeAbortable` (防止强行中断下车动作时，其内部的子任务指针 `m_pSubTask` 为空导致虚表解引用闪退)
+    *   `CCarAI::UpdateCarAI` (防止车辆 AI 路线决策更新时，传入已被析构填零的车辆对象引发的解引用闪退)
+    *   `CTaskComplexFacial::ControlSubTask` (防止面部动画任务更新时，其内部的子任务指针 `m_pSubTask` 为空导致虚表解引用闪退)
 
 ---
 

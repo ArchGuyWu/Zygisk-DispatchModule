@@ -113,7 +113,7 @@ static inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) 
 
 Once a zero-filled, unsafe task/entity pointer is sanitized to `nullptr`, the engine's original native `cbz` checks trigger successfully, allowing the game to execute safe fallback routines gracefully instead of crashing.
 
-### 3. The 25-Hook System
+### 3. The 33-Hook System
 Our solution intercepts all core lifecycles and virtual tables related to wanted levels, crime reporting, emergency vehicle spawning, task management, footstep rendering, buoyancy physics, and Unicode formatting:
 
 1.  **Gameplay Features & Custom Dispatching** (12 Hooks):
@@ -126,7 +126,7 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
     *   `add_police_occupants` (Binds occupants to spawned cop cars)
     *   `tell_occupants_leave_car` (Triggers custom vehicle exits)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (Draw distance scaling workarounds for emergency vehicles in mobile versions)
-2.  **Defensive & Sanitizing Safeguards** (13 Hooks):
+2.  **Defensive & Sanitizing Safeguards** (21 Hooks):
     *   `u_strlen_64` (Prevents startup crashes in ICU's Unicode string length function by validating wild pointers)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (Prevents crashes during buoyancy processing. `cBuoyancy::ProcessBuoyancy` is hooked to sanitize task slots immediately after the physics calculation, solving a race condition where a task gets destructed mid-function)
     *   `CPed::PlayFootSteps` (Prevents crashes during transitions when the ped's RW clump/model is temporarily detached)
@@ -141,6 +141,14 @@ Our solution intercepts all core lifecycles and virtual tables related to wanted
     *   `CAEPedSpeechAudioEntity::PlayLoadedSound` (Prevents crashes in ped speech audio playing when the ped's speech manager is null)
     *   `CCarGenerator::CheckIfWithinRangeOfAnyPlayers` (Prevents crashes when the car generator checks range against a temporarily null player ped in the pool)
     *   `CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask` (Prevents crashes when wandering peds attempt to avoid other peds with zero-filled tasks)
+    *   `CTaskComplexSequence::Flush` (Prevents virtual table dereference crashes during task sequence flushing when the sequence contains destructed/zero-filled tasks)
+    *   `CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB` (Prevents crashes during evasive step callbacks when the task's context pointer has been destructed/zero-filled)
+    *   `CTaskComplexBeInGroup::ControlSubTask` (Prevents crashes in group tasks when calling subtask control on a destructed/zero-filled group task)
+    *   `IKChainManager_c::Update` (Prevents null pointer dereference crashes in the IK chain manager during scene transitions)
+    *   `CCam::Process_FollowPed_SA` (Prevents null pointer dereference crashes in the camera system when the followed target is temporarily null during transitions)
+    *   `CTaskComplexLeaveCar::MakeAbortable` (Prevents virtual table dereference crashes when aborting a vehicle leave task whose internal subtask pointer `m_pSubTask` is null)
+    *   `CCarAI::UpdateCarAI` (Prevents crashes during vehicle AI updates when a destructed/zero-filled vehicle object is processed)
+    *   `CTaskComplexFacial::ControlSubTask` (Prevents virtual table dereference crashes during facial task updates when the internal subtask pointer `m_pSubTask` is null)
 
 ---
 ## 🛠️ Tech Stack & Requirements
