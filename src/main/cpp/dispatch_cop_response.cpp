@@ -67,10 +67,79 @@ bool is_cop_visible_to_player(void* veh, float current_x, float current_y, float
 // 前向声明，解决编译循环依赖问题
 bool is_vehicle_occupied_by_driver(void* veh);
 
+void dispatch_tell_occupants_to_leave_car(void* vehicle) {
+    if (!vehicle || !g_orig_tell_occupants_leave_car) return;
+    bind_vehicle_occupants(vehicle);
+    record_exit_start_for_occupants(vehicle);
+    g_orig_tell_occupants_leave_car(vehicle);
+}
+
+bool is_cop_currently_exiting(CPed* cop) {
+    std::lock_guard<std::mutex> lock(g_exits_mutex);
+    int64_t cur_time = now_ms();
+    for (auto it = g_cop_exits.begin(); it != g_cop_exits.end(); ) {
+        if (!is_ped_pointer_valid_safe(it->cop)) {
+            it = g_cop_exits.erase(it);
+        } else {
+            if (it->cop == cop) {
+                if (cur_time - it->exit_time < 8000) {
+                    return true;
+                }
+            }
+            ++it;
+        }
+    }
+    return false;
+}
+
+bool should_block_cop_reenter_vehicle(CPed* cop) {
+    if (!cop || !is_ped_pointer_valid_safe(cop)) return true;
+    if (is_cop_currently_exiting(cop)) return true;
+
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+    if (cop_comp && cop_comp->has_exited_vehicle && g_crime_active.load()) {
+        return true;
+    }
+
+    if (!g_crime_active.load()) return false;
+
+    CVector cop_pos = get_entity_pos(cop);
+    std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+    for (const auto& crime : g_active_crimes) {
+        if (!crime || crime->cancelled) continue;
+        for (CPed* criminal : crime->consolidated_criminals) {
+            if (!criminal || !is_ped_pointer_valid_safe(criminal)) continue;
+            if (g_IsAlive && !g_IsAlive(criminal)) continue;
+            CVector crim_pos = get_entity_pos(criminal);
+            float dx = cop_pos.x - crim_pos.x;
+            float dy = cop_pos.y - crim_pos.y;
+            float dz = cop_pos.z - crim_pos.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dist < 70.0f) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // 指派 CTaskComplexEnterCar 任务，让其上车
 void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
     if (!cop || !is_ped_pointer_valid_safe(cop) || !vehicle || !is_vehicle_pointer_valid(vehicle) || !g_TaskNew || !g_TaskEnterCar_ctor || !g_SetTask) return;
     if (g_IsAlive && !g_IsAlive(cop)) return;
+    if (should_block_cop_reenter_vehicle(cop)) {
+        LOGI("👮 [make_cop_enter_vehicle] Blocked re-enter for cop %p (exiting or active combat nearby)", cop);
+        return;
+    }
+
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+    if (cop_comp) {
+        int64_t cur_time = now_ms();
+        if (cur_time - cop_comp->last_enter_vehicle_command_time_ms < 10000) {
+            return;
+        }
+        cop_comp->last_enter_vehicle_command_time_ms = cur_time;
+    }
 
     void* intelligence = get_ped_intelligence(cop);
     if (!intelligence) return;
@@ -198,9 +267,7 @@ void command_vehicle_ai(void* vehicle, const CVector& target_loc, float dist_to_
     if (dist_to_target < 16.0f) {
         CVector veh_pos = get_entity_pos(vehicle);
         g_GetCarToGoToCoors(vehicle, &veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
-        if (g_TellOccupantsToLeaveCar) {
-            g_TellOccupantsToLeaveCar(vehicle);
-        }
+        dispatch_tell_occupants_to_leave_car(vehicle);
         return;
     }
 
@@ -466,24 +533,6 @@ void record_exit_start_for_occupants(void* vehicle) {
     }
 }
 
-static bool is_cop_currently_exiting(CPed* cop) {
-    std::lock_guard<std::mutex> lock(g_exits_mutex);
-    int64_t cur_time = now_ms();
-    for (auto it = g_cop_exits.begin(); it != g_cop_exits.end(); ) {
-        if (!is_ped_pointer_valid_safe(it->cop)) {
-            it = g_cop_exits.erase(it);
-        } else {
-            if (it->cop == cop) {
-                if (cur_time - it->exit_time < 3500) {
-                    return true;
-                }
-            }
-            ++it;
-        }
-    }
-    return false;
-}
-
 void setup_dispatched_cops(void* vehicle, CPed* criminal) {
     if (!vehicle) return;
     
@@ -571,16 +620,7 @@ static bool cop_has_kill_criminal_task(CPed* cop) {
 }
 
 static bool cop_is_already_pursuing(CPed* cop, CPed* criminal) {
-    if (cop_has_lock_on_target(cop, criminal)) {
-        return true;
-    }
-    if (cop_has_kill_criminal_task(cop)) {
-        auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
-        if (combat_comp && combat_comp->target_entity == criminal) {
-            return true;
-        }
-    }
-    return false;
+    return cop_has_lock_on_target(cop, criminal);
 }
 
 static bool try_dispatch_via_add_criminal(CPed* cop, CPed* criminal) {
@@ -654,7 +694,20 @@ static CopCombatDispatchMethod dispatch_cop_combat_ladder(
 
     bool in_vehicle = find_vehicle_of_cop(cop) != nullptr;
 
+    if (!in_vehicle && try_dispatch_via_kill_task(cop, criminal)) {
+        return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
+    }
+
     if (try_dispatch_via_add_criminal(cop, criminal)) {
+        if (!in_vehicle && !cop_has_lock_on_target(cop, criminal)) {
+            if (try_dispatch_via_kill_task(cop, criminal)) {
+                return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
+            }
+            CopCombatDispatchMethod event_method = try_dispatch_via_events(cop, criminal, weapon);
+            if (event_method != CopCombatDispatchMethod::NONE) {
+                return event_method;
+            }
+        }
         return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
     }
 

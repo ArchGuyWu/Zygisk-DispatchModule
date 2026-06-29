@@ -142,7 +142,7 @@ void cop_attack_vehicle_stuck_monitor(
                                                     if (!ctx.vector_contains(ctx.vehicles_emptied_snapshot, veh)) {
                                                         g_GetCarToGoToCoors(veh, &session.current_pos, 4, false); // Emergency handbrake stop
                                                         if (g_TellOccupantsToLeaveCar) {
-                                                            g_TellOccupantsToLeaveCar(veh);
+                                                            dispatch_tell_occupants_to_leave_car(veh);
                                                         }
                                                         ctx.vehicles_emptied_snapshot.push_back(veh);
                                                         ctx.pending_vehicles_emptied.push_back(veh);
@@ -393,7 +393,7 @@ void cop_attack_vehicle_stuck_monitor(
                                                                         g_GetCarToGoToCoors(veh, &session.current_pos, 4, false); // 瞬间急刹
                                                                     }
                                                                     if (g_TellOccupantsToLeaveCar) {
-                                                                        g_TellOccupantsToLeaveCar(veh); // 强令离开，防烧死
+                                                                        dispatch_tell_occupants_to_leave_car(veh); // 强令离开，防烧死
                                                                     }
                                                                     if (g_VehicleInflictDamage) {
                                                                         g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, session.current_pos);

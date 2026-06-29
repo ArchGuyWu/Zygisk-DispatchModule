@@ -37,7 +37,7 @@
 void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
     make_cops_attack_criminal(crime->criminal);
 
-    if (g_TellOccupantsToLeaveCar) {
+    if (g_orig_tell_occupants_leave_car) {
         for (void* veh : crime->case_vehicles) {
             if (veh && is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
                 CVector veh_pos = get_entity_pos(veh);
@@ -54,7 +54,7 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
                     if (g_GetCarToGoToCoors) {
                         g_GetCarToGoToCoors(veh, &veh_pos, 0, false);
                     }
-                    g_TellOccupantsToLeaveCar(veh);
+                    dispatch_tell_occupants_to_leave_car(veh);
                     add_vehicle_emptied(veh);
                 }
             }

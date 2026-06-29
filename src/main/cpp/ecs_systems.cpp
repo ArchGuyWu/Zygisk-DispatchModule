@@ -286,6 +286,17 @@ void init_ecs_systems() {
             auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
             auto* combat_comp = ecs::EntityManager::get().get_component<ecs::CombatComponent>(cop);
 
+            if (cop_comp) {
+                bool actually_in_vehicle = find_vehicle_of_cop(cop) != nullptr;
+                if (actually_in_vehicle) {
+                    cop_comp->is_in_vehicle = true;
+                    cop_comp->has_exited_vehicle = false;
+                } else if (cop_comp->is_in_vehicle) {
+                    cop_comp->is_in_vehicle = false;
+                    cop_comp->has_exited_vehicle = true;
+                }
+            }
+
             // 2.1 警员卡死检测与智能重新寻路路由 (Automated Stuck routing)
             if (cop_comp) {
                 // 每 2 秒进行一次卡死坐标检查
@@ -464,34 +475,39 @@ void init_ecs_systems() {
                     LOGI("🎯 [ECS WeaponSelectionSystem - DISARM] Cop %p successfully disarmed (target dead or lost).", cop);
                 }
 
-                // 重点提升：既然此警员任务完全解除且已安全收枪，先命令其返回原本绑定的车辆
-                if (cop_comp && !cop_comp->is_in_vehicle) {
-                    bool is_driver = false;
-                    void* bound_veh = find_bound_vehicle_of_cop(cop, is_driver);
-                    if (bound_veh) {
-                        // 驾驶员生存性晋升系统 (Driver Survivability Promotion)
-                        // 如果当前警员是乘客，但该车原绑定的驾驶员已经殉职/不存在，则自动将该警员晋升为驾驶员！
-                        if (!is_driver && !is_alive_bound_driver_exists(bound_veh)) {
-                            is_driver = true;
-                            // 同步更新绑定关系
-                            {
-                                std::lock_guard<std::mutex> lock(g_bindings_mutex);
-                                for (auto& binding : g_cop_vehicle_bindings) {
-                                    if (binding.cop == cop) {
-                                        binding.as_driver = true;
-                                        break;
+                bool keep_on_duty = should_block_cop_reenter_vehicle(cop);
+                if (!keep_on_duty) {
+                    // 重点提升：既然此警员任务完全解除且已安全收枪，先命令其返回原本绑定的车辆
+                    if (cop_comp && !cop_comp->is_in_vehicle) {
+                        bool is_driver = false;
+                        void* bound_veh = find_bound_vehicle_of_cop(cop, is_driver);
+                        if (bound_veh) {
+                            // 驾驶员生存性晋升系统 (Driver Survivability Promotion)
+                            // 如果当前警员是乘客，但该车原绑定的驾驶员已经殉职/不存在，则自动将该警员晋升为驾驶员！
+                            if (!is_driver && !is_alive_bound_driver_exists(bound_veh)) {
+                                is_driver = true;
+                                // 同步更新绑定关系
+                                {
+                                    std::lock_guard<std::mutex> lock(g_bindings_mutex);
+                                    for (auto& binding : g_cop_vehicle_bindings) {
+                                        if (binding.cop == cop) {
+                                            binding.as_driver = true;
+                                            break;
+                                        }
                                     }
                                 }
+                                LOGW("👮 [ECS - DriverPromotion] Passenger cop %p promoted to DRIVER for vehicle %p because the bound driver is deceased/missing.", cop, bound_veh);
                             }
-                            LOGW("👮 [ECS - DriverPromotion] Passenger cop %p promoted to DRIVER for vehicle %p because the bound driver is deceased/missing.", cop, bound_veh);
+                            make_cop_enter_vehicle(cop, bound_veh, is_driver);
                         }
-                        make_cop_enter_vehicle(cop, bound_veh, is_driver);
                     }
-                }
 
-                // 重点提升：既然此警员任务完全解除且已安全收枪，直接移除其绑定的战术组件，不再占用下一帧的轮询资源
-                ecs::EntityManager::get().remove_component<ecs::CopComponent>(cop);
-                ecs::EntityManager::get().remove_component<ecs::CombatComponent>(cop);
+                    // 重点提升：既然此警员任务完全解除且已安全收枪，直接移除其绑定的战术组件，不再占用下一帧的轮询资源
+                    ecs::EntityManager::get().remove_component<ecs::CopComponent>(cop);
+                    ecs::EntityManager::get().remove_component<ecs::CombatComponent>(cop);
+                } else {
+                    LOGI("🎯 [ECS WeaponSelectionSystem] Cop %p kept on foot near active crime (blocked vehicle re-enter).", cop);
+                }
             } 
             else if (combat_comp && target) {
                 // B. 自适应高灵敏战术武器切换

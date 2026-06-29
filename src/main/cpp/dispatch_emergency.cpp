@@ -185,7 +185,7 @@ void emergency_vehicles_tick() {
                                             }
                                             if (!already_emptied) {
                                                 if (g_TellOccupantsToLeaveCar) {
-                                                    g_TellOccupantsToLeaveCar(veh);
+                                                    dispatch_tell_occupants_to_leave_car(veh);
                                                 }
                                                 std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
                                                 g_emergency_vehicles_emptied.push_back(veh);
@@ -325,7 +325,7 @@ void emergency_vehicles_tick() {
                                                         }
                                                         if (!already_emptied) {
                                                             if (g_TellOccupantsToLeaveCar) {
-                                                                g_TellOccupantsToLeaveCar(veh);
+                                                                dispatch_tell_occupants_to_leave_car(veh);
                                                             }
                                                             std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
                                                             g_emergency_vehicles_emptied.push_back(veh);
@@ -390,7 +390,7 @@ void emergency_vehicles_tick() {
                                 }
                                 if (!already_emptied) {
                                     if (g_TellOccupantsToLeaveCar) {
-                                        g_TellOccupantsToLeaveCar(veh);
+                                        dispatch_tell_occupants_to_leave_car(veh);
                                     }
                                     std::lock_guard<std::mutex> emptied_lock(g_emergency_vehicles_emptied_mutex);
                                     g_emergency_vehicles_emptied.push_back(veh);

@@ -124,9 +124,7 @@ void cop_attack_dispatch_vehicle_cop(
                                         g_GetCarToGoToCoors(veh, &session.veh_pos, 4, false); // Mode 4 (DF_STOP_CAR) 瞬间手刹锁死
                                     }
                                     // 2. 战术提前离车：拉开交火线包抄
-                                    if (g_TellOccupantsToLeaveCar) {
-                                        g_TellOccupantsToLeaveCar(veh);
-                                    }
+                                    dispatch_tell_occupants_to_leave_car(veh);
                                     if (g_VehicleInflictDamage) {
                                         g_VehicleInflictDamage(veh, target_criminal ? reinterpret_cast<CEntity*>(target_criminal) : nullptr, WEAPON_UNARMED, 0.0f, session.veh_pos);
                                     }
@@ -136,6 +134,13 @@ void cop_attack_dispatch_vehicle_cop(
                                     if (veh == ctx.crime_case->spawned_vehicle) {
                                         if (ctx.crime_case) ctx.crime_case->occupants_ordered_out = true;
                                     }
+
+                                    if (target_criminal && is_ped_pointer_valid_safe(target_criminal)) {
+                                        make_single_cop_attack_criminal(ped, target_criminal, true);
+                                        LOGI("Vehicle exit combat dispatch: Assigned cop %p to attack criminal %p after leaving %p",
+                                             ped, target_criminal, veh);
+                                    }
+
                                     LOGI("Vehicle exit triggered (dist=%.1f, elapsed=%lld ms): Stopped Autopilot & Ordered cops to leave vehicle %p", 
                                          session.v_dist, (long long)session.elapsed, veh);
                                 }

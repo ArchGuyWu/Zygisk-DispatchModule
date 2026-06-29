@@ -131,9 +131,18 @@ void cop_attack_dispatch_foot_cop(
                         }
                     }
 
+                    bool just_exited_vehicle = is_cop_currently_exiting(ped);
+                    if (!just_exited_vehicle) {
+                        auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(ped);
+                        if (cop_comp && cop_comp->has_exited_vehicle) {
+                            just_exited_vehicle = true;
+                        }
+                    }
+
                     // 【核心近战防抖限流控制】：由于近战没有 LockOnTarget 瞄准状态，already_targeting 始终为 false。
                     // 因而，对近战警员采用 15 秒（在场存留时限）长限流拦截；枪械警员继续保持 3 秒心跳唤醒。这可确保近战挥舞不被 0 伤物理受击打断！
-                    if (already_targeting || (now_ms() - last_assign < (is_melee ? 15000 : 3000))) {
+                    if (!just_exited_vehicle &&
+                        (already_targeting || (now_ms() - last_assign < (is_melee ? 15000 : 3000)))) {
                         return; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
                     }
 

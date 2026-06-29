@@ -292,6 +292,9 @@ void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nu
 void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver);
 bool is_alive_bound_driver_exists(void* vehicle);
 void* get_ped_intelligence(CPed* ped);
+void dispatch_tell_occupants_to_leave_car(void* vehicle);
+bool is_cop_currently_exiting(CPed* cop);
+bool should_block_cop_reenter_vehicle(CPed* cop);
 void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver);
 void make_cops_attack_criminal(CPed* criminal);
 void make_cops_attack_criminal_immediate(CPed* criminal);
