@@ -327,10 +327,10 @@ fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next_sub_ta
 
 void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!ped || !is_pointer_readable(ped)) {
+    if (ped && !is_pointer_readable(ped)) {
         return nullptr;
     }
-    if (is_ped_pointer_valid_safe(ped)) {
+    if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
     return SHADOWHOOK_CALL_PREV(proxy_paired_attractor_create_next_sub_task, self, ped);
@@ -778,9 +778,7 @@ int proxy_event_script_command_get_priority(void* self) {
                 LOGW("⚠️ [CEventScriptCommand::GetEventPriority] clearing unsafe task %p", task);
                 *task_slot = nullptr;
             }
-            if (!*task_slot) {
-                return 0;
-            }
+            // Engine cbz at +0x18 task (54ce890) handles nullptr — let CALL_PREV run.
         }
     }
     return SHADOWHOOK_CALL_PREV(proxy_event_script_command_get_priority, self);
