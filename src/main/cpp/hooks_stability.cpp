@@ -418,8 +418,15 @@ fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence = nullptr;
 
 void* proxy_partner_greet_get_sequence(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) {
         return nullptr;
+    }
+    if (self) {
+        void** vtable_ptr = reinterpret_cast<void**>(self);
+        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
+            LOGW("⚠️ [PartnerGreet::GetPartnerSequence] zero-filled self %p — skip original", self);
+            return nullptr;
+        }
     }
     return SHADOWHOOK_CALL_PREV(proxy_partner_greet_get_sequence, self);
 }
@@ -432,31 +439,31 @@ void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
 
+    // ped null: engine cbz at 52c120c handles safely. Only guard paths where
+    // ped is non-null but intel/speech chain is null (52c1398–52c13a4, no cbz).
     if (self) {
         void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
-        if (is_pointer_readable(p_ped)) {
+        if (is_pointer_readable(p_ped) && *p_ped) {
             void* ped = *p_ped;
-            if (ped && is_pointer_readable(ped)) {
-                void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-                if (is_pointer_readable(p_intel)) {
-                    void* intel = *p_intel;
-                    if (intel && is_pointer_readable(intel)) {
-                        void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
-                        if (is_pointer_readable(p_speech)) {
-                            void* speech = *p_speech;
-                            if (speech && is_pointer_readable(speech)) {
-                                SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
-                                return;
-                            }
-                        }
-                    }
-                }
+            if (!is_pointer_readable(ped)) return;
+
+            void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+            if (!is_pointer_readable(p_intel) || !*p_intel) {
+                LOGW("⚠️ [PlayLoadedSound] ped %p has null intel — skip (engine path 52c1398 has no cbz)", ped);
+                return;
             }
+            void* intel = *p_intel;
+            if (!is_pointer_readable(intel)) return;
+
+            void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
+            if (!is_pointer_readable(p_speech) || !*p_speech) {
+                LOGW("⚠️ [PlayLoadedSound] intel %p has null speech mgr — skip (engine path 52c13a4 has no cbz)", intel);
+                return;
+            }
+            if (!is_pointer_readable(*p_speech)) return;
         }
-        LOGW("⚠️ [PlayLoadedSound Sanitizer] Skipping PlayLoadedSound on %p to prevent null speech manager crash!", self);
-    } else {
-        SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
     }
+    SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
 }
 
 // --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
@@ -465,10 +472,11 @@ fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
 bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return false;
-    
+
+    // nullptr player: let engine handle. Only block stale non-null ped pointers (tombstone_36).
     if (g_FindPlayerPed) {
         void* player = g_FindPlayerPed(0);
-        if (!player || !is_ped_pointer_valid_safe(player)) {
+        if (player && !is_ped_pointer_valid_safe(player)) {
             return false;
         }
         void* player1 = g_FindPlayerPed(1);
@@ -520,35 +528,7 @@ fn_PlayFootSteps_t g_orig_play_footsteps = nullptr;
 void proxy_play_footsteps(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return;
-
-    if (self) {
-        // 1. 检查 m_pRwObject (offset 0x20) 是否有效
-        void** rw_obj_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
-        if (!is_pointer_readable(rw_obj_slot) || *rw_obj_slot == nullptr) {
-            return;
-        }
-        void* rw_obj = *rw_obj_slot;
-
-        // 2. 检查 rw_obj->field_308 (offset 0x308) 是否有效
-        void** field_308_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(rw_obj) + 0x308);
-        if (!is_pointer_readable(field_308_slot) || *field_308_slot == nullptr) {
-            return;
-        }
-        void* field_308 = *field_308_slot;
-
-        // 3. 检查 field_308->field_10 (offset 0x10) 是否非零
-        int* field_10_ptr = reinterpret_cast<int*>(reinterpret_cast<char*>(field_308) + 0x10);
-        if (!is_pointer_readable(field_10_ptr) || *field_10_ptr == 0) {
-            return;
-        }
-
-        // 4. 检查 *field_308 是否有效
-        void** field_308_deref_slot = reinterpret_cast<void**>(field_308);
-        if (!is_pointer_readable(field_308_deref_slot) || *field_308_deref_slot == nullptr) {
-            return;
-        }
-    }
-
+    // Engine cbz chain at 559ac3c–559ac54 handles null rw_clump / sub-fields safely.
     SHADOWHOOK_CALL_PREV(proxy_play_footsteps, self);
 }
 
