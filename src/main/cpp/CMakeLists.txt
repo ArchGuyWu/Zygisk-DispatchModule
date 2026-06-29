@@ -73,6 +73,10 @@ add_library(policemod SHARED
     dispatch_tick_main.cpp
     dispatch_tick_civilian.cpp
     dispatch_tick_states.cpp
+    dispatch_tick_state_idle.cpp
+    dispatch_tick_state_timing.cpp
+    dispatch_tick_state_on_scene.cpp
+    dispatch_tick_state_cleanup.cpp
     dispatch_emergency.cpp
     dispatch_spawn_hooks.cpp
     hooks_stability.cpp
