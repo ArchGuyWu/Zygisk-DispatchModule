@@ -6316,6 +6316,26 @@ static void proxy_finish_anim_evasive_step_cb(void* anim, void* context) {
     SHADOWHOOK_CALL_PREV(proxy_finish_anim_evasive_step_cb, anim, context);
 }
 
+// --- CTaskComplexBeInGroup::ControlSubTask Hook ---
+static void* g_stub_be_in_group_control_sub_task = nullptr;
+typedef void* (*fn_BeInGroupControlSubTask_t)(void* self, void* ped);
+static fn_BeInGroupControlSubTask_t g_orig_be_in_group_control_sub_task = nullptr;
+
+static void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
+
+    if (self) {
+        void** vtable_ptr = reinterpret_cast<void**>(self);
+        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
+            LOGW("⚠️ [BeInGroup] self (%p) is zero-filled! Intercepting ControlSubTask to prevent crash.", self);
+            return nullptr;
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_be_in_group_control_sub_task, self, ped);
+}
+
 
 
 // =====================================================================
@@ -6742,6 +6762,15 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_finish_anim_evasive_step_cb));
     if (g_stub_finish_anim_evasive_step_cb) LOGI("✅ Hooked CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB");
     else LOGE("❌ Failed to hook CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexBeInGroup::ControlSubTask (防止在组任务被零填充时调用子任务控制导致闪退)
+    g_stub_be_in_group_control_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN21CTaskComplexBeInGroup14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_be_in_group_control_sub_task),
+        reinterpret_cast<void**>(&g_orig_be_in_group_control_sub_task));
+    if (g_stub_be_in_group_control_sub_task) LOGI("✅ Hooked CTaskComplexBeInGroup::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexBeInGroup::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
     void* pure_virtual_target = nullptr;
