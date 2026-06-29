@@ -270,6 +270,7 @@ bool try_consolidate_crime(CPed* criminal, CVector location, bool is_firearm);
 bool should_activate_or_hijack_crime(CVector location, bool is_firearm);
 void update_primary_criminal_by_threat();
 void* find_vehicle_of_cop(CPed* cop);
+void* find_closest_vehicle_to(CVector pos, float max_dist, void* ignore_veh = nullptr);
 void* find_bound_vehicle_of_cop(CPed* cop, bool& out_is_driver);
 bool is_alive_bound_driver_exists(void* vehicle);
 void* get_ped_intelligence(CPed* ped);
