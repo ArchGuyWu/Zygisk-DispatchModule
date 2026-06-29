@@ -42,7 +42,6 @@ COMMON_INCLUDES = '''\
 
 #include "shadowhook.h"
 #include "third_party/xdl/xdl.h"
-#include "sh_nothing_bin.h"
 
 #include "include/log.hpp"
 #include "include/game_config.hpp"

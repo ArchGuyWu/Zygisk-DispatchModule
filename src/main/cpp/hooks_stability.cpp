@@ -23,7 +23,6 @@
 
 #include "shadowhook.h"
 #include "third_party/xdl/xdl.h"
-#include "sh_nothing_bin.h"
 
 #include "log.hpp"
 #include "game_config.hpp"
