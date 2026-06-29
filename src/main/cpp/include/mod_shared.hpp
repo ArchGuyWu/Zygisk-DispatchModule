@@ -284,7 +284,8 @@ bool is_cop_visible_to_player(void* veh, float current_x, float current_y, float
 bool is_swat_van_nearby(CVector pos, float radius);
 void register_spawned_swat(void* vehicle);
 void setup_dispatched_cops(void* vehicle, CPed* criminal);
-bool try_consolidate_crime(CPed* criminal, CVector location, bool is_firearm);
+bool try_consolidate_crime(CPed* criminal, CVector location, bool is_firearm, int weapon_category = 1);
+CVector get_crime_dispatch_position(const CrimeEvent& crime);
 bool should_activate_or_hijack_crime(CVector location, bool is_firearm);
 void update_primary_criminal_by_threat();
 void* find_vehicle_of_cop(CPed* cop);

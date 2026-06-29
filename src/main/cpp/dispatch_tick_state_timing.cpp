@@ -33,6 +33,7 @@
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
 #include "dispatch_timing.hpp"
+#include "dispatch_threat.hpp"
 
 static bool try_mobilize_nearby_cops(const std::shared_ptr<CrimeEvent>& crime, int64_t cur_time, const char* reason) {
     if (!dispatch_timing::should_attempt_nearby_dispatch(*crime, cur_time)) {
@@ -65,7 +66,7 @@ static void schedule_emergency_vehicle_spawn(
             if (crime->cancelled) return;
 
             CPed* criminal = crime->criminal;
-            CVector loc = crime->location;
+            CVector loc = get_crime_dispatch_position(*crime);
             int64_t identify_delay = dispatch_timing::VEHICLE_IDENTIFY_DELAY_MS;
             int64_t stagger = dispatch_timing::VEHICLE_IDENTIFY_STAGGER_MS;
 
@@ -171,9 +172,10 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
     float dist_to_player = 9999.0f;
     if (g_FindPlayerCoors) {
         CVector player_pos = g_FindPlayerCoors(0);
-        float dx = player_pos.x - crime->location.x;
-        float dy = player_pos.y - crime->location.y;
-        float dz = player_pos.z - crime->location.z;
+        CVector dispatch_pos = get_crime_dispatch_position(*crime);
+        float dx = player_pos.x - dispatch_pos.x;
+        float dy = player_pos.y - dispatch_pos.y;
+        float dz = player_pos.z - dispatch_pos.z;
         dist_to_player = sqrtf(dx * dx + dy * dy + dz * dz);
     }
     if (dist_to_player > 150.0f) {
@@ -184,7 +186,7 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
 
     float dist_to_cop = 9999.0f;
     if (g_FindDistToNearestCop) {
-        dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
+        dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, get_crime_dispatch_position(*crime));
     }
     if (dispatch_timing::is_cop_within_native_av(dist_to_cop, *crime)) {
         LOGI("Cop entered native AV for case %llu (nearest=%.1fm < %.0fm) -> STATE_ON_SCENE",
@@ -222,8 +224,11 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
     LOGI("Timer expired: no nearby cops for case %llu after %lldms, falling back to emergency vehicle spawn",
          (unsigned long long)crime->case_id, (long long)elapsed);
 
-    int density = count_criminals_near(crime->location, 40.0f);
-    CVector target_pos = get_spawn_target(crime->location);
+    CVector dispatch_pos = get_crime_dispatch_position(*crime);
+    int density = std::max(
+        count_criminals_near(dispatch_pos, 40.0f),
+        dispatch_threat::count_active_threats(*crime));
+    CVector target_pos = get_spawn_target(dispatch_pos);
     crime->dispatch_sent = true;
     crime->spawn_time_ms = cur_time;
     crime->on_scene_start = cur_time;
@@ -231,7 +236,7 @@ void dispatch_tick_state_timing(const std::shared_ptr<CrimeEvent>& crime) {
 
     bool swat_already = false;
     if (density >= 6) {
-        swat_already = is_swat_van_nearby(crime->location, 150.0f);
+        swat_already = is_swat_van_nearby(dispatch_pos, 150.0f);
         if (swat_already) {
             LOGI("SWAT density check for case %llu: SWAT vehicle already active nearby. Downgrading to 2 Police Cars.", (unsigned long long)crime->case_id);
         }

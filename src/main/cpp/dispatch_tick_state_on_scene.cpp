@@ -42,7 +42,7 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
         for (void* veh : crime->case_vehicles) {
             if (veh && is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
                 CVector veh_pos = get_entity_pos(veh);
-                CVector crime_pos = crime->location;
+                CVector crime_pos = get_crime_dispatch_position(*crime);
                 float dx = veh_pos.x - crime_pos.x;
                 float dy = veh_pos.y - crime_pos.y;
                 float dz = veh_pos.z - crime_pos.z;
@@ -72,9 +72,10 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
     float dist_to_player = 9999.0f;
     if (g_FindPlayerCoors) {
         CVector player_pos = g_FindPlayerCoors(0);
-        float dx = player_pos.x - crime->location.x;
-        float dy = player_pos.y - crime->location.y;
-        float dz = player_pos.z - crime->location.z;
+        CVector dispatch_pos = get_crime_dispatch_position(*crime);
+        float dx = player_pos.x - dispatch_pos.x;
+        float dy = player_pos.y - dispatch_pos.y;
+        float dz = player_pos.z - dispatch_pos.z;
         dist_to_player = sqrtf(dx * dx + dy * dy + dz * dz);
     }
     if (dist_to_player > 150.0f) {
@@ -152,7 +153,7 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
                         }
 
                         CPed* criminal = crime->criminal;
-                        CVector loc = crime->location;
+                        CVector loc = get_crime_dispatch_position(*crime);
                         CVector target_pos = get_spawn_target(loc);
 
                         int density = count_criminals_near(loc, 40.0f);

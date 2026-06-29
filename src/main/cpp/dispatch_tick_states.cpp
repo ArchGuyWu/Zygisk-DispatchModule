@@ -32,18 +32,23 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
+#include "dispatch_threat.hpp"
 
 
 void dispatch_tick_process_crime(
     const std::shared_ptr<CrimeEvent>& crime,
     int64_t cur_time,
     bool do_siren_refresh) {
+    if (crime && !crime->cancelled) {
+        dispatch_threat::refresh_crime_dispatch_anchor(*crime);
+    }
+
     // 刷新各个案件独立拥有的警车驾驶路径与警笛
     if (do_siren_refresh) {
         std::lock_guard<std::mutex> lock_sc(g_vehicles_mutex);
         for (void* veh : crime->case_vehicles) {
             if (is_vehicle_pointer_valid(veh) && !is_vehicle_emptied(veh)) {
-                command_cop_vehicle_to_scene(veh, crime->location);
+                command_cop_vehicle_to_scene(veh, get_crime_dispatch_position(*crime));
             }
         }
     }

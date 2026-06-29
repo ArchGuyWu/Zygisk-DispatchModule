@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
+#include "dispatch_threat.hpp"
 
 
 void CopAttackContext::reset() {
@@ -245,54 +246,10 @@ void cop_attack_compute_quotas(CopAttackContext& ctx) {
     ctx.max_foot_cops = 2;
 
     if (ctx.crime_case && !ctx.crime_case->cancelled) {
-        auto& list = ctx.crime_case->consolidated_criminals;
-        auto& is_fire_list = ctx.crime_case->criminal_is_firearm;
-        
-        int total_criminals = list.size();
-        int armed_criminals = 0;
-        for (size_t idx = 0; idx < list.size(); ++idx) {
-            if (idx < is_fire_list.size() && is_fire_list[idx]) {
-                armed_criminals++;
-            }
-        }
-        
-        int cops_killed = ctx.crime_case->cops_killed;
-        
-        if (cops_killed > 0) {
-            ctx.max_vehicles = 3;
-            ctx.max_foot_cops = 4;
-            LOGI("📊 [dispatchCenter - Quota] Escalated to Max quota (Vehicles=%d, FootCops=%d) due to cop casualties (%d)", 
-                 ctx.max_vehicles, ctx.max_foot_cops, cops_killed);
-        } else if (armed_criminals == 0) {
-            if (total_criminals <= 1) {
-                ctx.max_vehicles = 1;
-                ctx.max_foot_cops = 1;
-            } else {
-                ctx.max_vehicles = 2;
-                ctx.max_foot_cops = 2;
-            }
-            LOGI("📊 [dispatchCenter - Quota] Melee-only crime. Quota set to (Vehicles=%d, FootCops=%d) for %d criminals", 
-                 ctx.max_vehicles, ctx.max_foot_cops, total_criminals);
-        } else {
-            float armed_ratio = (float)armed_criminals / (float)total_criminals;
-            if (armed_ratio < 0.5f) {
-                ctx.max_vehicles = 2;
-                ctx.max_foot_cops = 2;
-            } else {
-                if (total_criminals <= 2) {
-                    ctx.max_vehicles = 2;
-                    ctx.max_foot_cops = 3;
-                } else {
-                    ctx.max_vehicles = 3;
-                    ctx.max_foot_cops = 4;
-                }
-            }
-            LOGI("📊 [dispatchCenter - Quota] Firearm crime (Armed: %d/%d, Ratio: %.1f%%). Quota set to (Vehicles=%d, FootCops=%d)", 
-                 armed_criminals, total_criminals, armed_ratio * 100.0f, ctx.max_vehicles, ctx.max_foot_cops);
-        }
-    } else {
-        ctx.max_vehicles = 2;
-        ctx.max_foot_cops = 2;
+        dispatch_threat::ResponseQuota quota = dispatch_threat::compute_response_quota(
+            *ctx.crime_case, ctx.crime_case->cops_killed);
+        ctx.max_vehicles = quota.max_vehicles;
+        ctx.max_foot_cops = quota.max_foot_cops;
     }
 
 }

@@ -90,7 +90,7 @@ void init_ecs_systems() {
         }
 
         // 尝试并案
-        bool merged = try_consolidate_crime(criminal, ev.location, ev.is_firearm);
+        bool merged = try_consolidate_crime(criminal, ev.location, ev.is_firearm, ev.weapon_category);
         if (!merged) {
             // 如果未能并案，且符合激活条件，则激活为全新犯罪现场或顶替旧案
             if (should_activate_or_hijack_crime(ev.location, ev.is_firearm)) {
@@ -100,6 +100,7 @@ void init_ecs_systems() {
                 auto new_crime = std::make_shared<CrimeEvent>();
                 new_crime->case_id = g_next_case_id++;
                 new_crime->location = ev.location;
+                new_crime->dispatch_anchor = ev.location;
                 new_crime->criminal = criminal;
                 new_crime->is_firearm = ev.is_firearm;
                 new_crime->consolidated_criminals.push_back(criminal);

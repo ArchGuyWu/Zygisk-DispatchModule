@@ -12,6 +12,7 @@
 struct CrimeEvent {
     CPed* criminal = nullptr;
     CVector location;
+    CVector dispatch_anchor;
     bool is_firearm = false;
     int64_t detect_time_ms = 0;
     bool dispatch_sent = false;

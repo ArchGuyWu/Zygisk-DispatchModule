@@ -31,6 +31,7 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_threat.hpp"
 
 // =====================================================================
 // 犯罪事件追踪系统
@@ -309,7 +310,11 @@ bool should_activate_or_hijack_crime(CVector crime_pos, bool firearm) {
 // Case consolidation: merge crimes in the same area
 // =====================================================================
 
-bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
+CVector get_crime_dispatch_position(const CrimeEvent& crime) {
+    return crime.dispatch_anchor;
+}
+
+bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm, int weapon_category) {
     if (!perpetrator || !is_ped_pointer_valid_safe(perpetrator)) return false;
     if (!g_FindPlayerCoors) return false;
     
@@ -332,6 +337,10 @@ bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
     }
     
     if (best_crime) {
+        if (!dispatch_threat::should_merge_into_case(*best_crime, perpetrator, firearm, weapon_category)) {
+            return false;
+        }
+
         bool found = false;
         for (size_t i = 0; i < best_crime->consolidated_criminals.size(); ++i) {
             if (best_crime->consolidated_criminals[i] == perpetrator) {
@@ -358,7 +367,7 @@ bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
             
             // 初始化嫌疑人详细状态
             CrimeEvent::CriminalState c_state;
-            c_state.first_threat_category = firearm ? 2 : 1;
+            c_state.first_threat_category = firearm ? 2 : (weapon_category == 1 ? 1 : 0);
             c_state.current_threat_category = c_state.first_threat_category;
             c_state.is_active = true;
             c_state.shooting_air = false;
@@ -375,6 +384,8 @@ bool try_consolidate_crime(CPed* perpetrator, CVector crime_pos, bool firearm) {
             LOGI("📡 [dispatchCenter - CaseMerge] Case %llu escalated to FIREARM due to consolidated criminal %p", (unsigned long long)best_crime->case_id, perpetrator);
         }
         
+        dispatch_threat::refresh_crime_dispatch_anchor(*best_crime);
+
         // 立即让周边警员也攻击这个新罪犯
         make_cops_attack_criminal(perpetrator);
         return true; // 成功并案

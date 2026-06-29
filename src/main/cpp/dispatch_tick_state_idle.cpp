@@ -56,7 +56,7 @@ void dispatch_tick_state_idle(const std::shared_ptr<CrimeEvent>& crime) {
     if (!crime->dispatch_sent) {
         float dist_to_cop = 9999.0f;
         if (g_FindDistToNearestCop) {
-            dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
+            dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, get_crime_dispatch_position(*crime));
         }
 
         float av_range = dispatch_timing::get_av_range_for_crime(*crime);

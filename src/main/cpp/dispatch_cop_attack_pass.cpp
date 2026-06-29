@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
+#include "dispatch_threat.hpp"
 
 
 void cop_attack_pass2_dispatch(CopAttackContext& ctx) {
@@ -64,22 +65,12 @@ void cop_attack_pass2_dispatch(CopAttackContext& ctx) {
                     CVector target_crime_pos = ctx.crime_pos;
                     CPed* target_criminal = ctx.criminal;
 
-                    // 🚀 【黑科技 1】动态目标重定向：多犯罪NPC并案下，就近选择攻击对象，极速消灭威胁
+                    // 并案下按威胁优先、距离次之选择攻击对象
                     if (ctx.crime_case && !ctx.crime_case->cancelled) {
-                        float best_d = 999999.0f;
-                        for (CPed* c : ctx.crime_case->consolidated_criminals) {
-                            if (c && is_ped_pointer_valid_safe(c)) {
-                                CVector c_pos = get_entity_pos(c);
-                                float dx_c = cop_pos.x - c_pos.x;
-                                float dy_c = cop_pos.y - c_pos.y;
-                                float dz_c = cop_pos.z - c_pos.z;
-                                float dist_c = dx_c * dx_c + dy_c * dy_c + dz_c * dz_c;
-                                if (dist_c < best_d) {
-                                    best_d = dist_c;
-                                    target_crime_pos = c_pos;
-                                    target_criminal = c;
-                                }
-                            }
+                        CPed* picked = dispatch_threat::pick_criminal_target_for_cop(ped, *ctx.crime_case);
+                        if (picked) {
+                            target_criminal = picked;
+                            target_crime_pos = get_entity_pos(picked);
                         }
                     }
 

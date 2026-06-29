@@ -156,6 +156,7 @@ set(CMAKE_C_VISIBILITY_PRESET hidden)
 enable_language(ASM)
 
 # Zygisk 与项目头文件
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/zygisk)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -206,6 +207,7 @@ add_library(policemod SHARED
     module.cpp
     hook_install.cpp
     dispatch_logic.cpp
+    dispatch_threat.cpp
     dispatch_timing.cpp
     dispatch_hooks.cpp
     dispatch_cop_response.cpp

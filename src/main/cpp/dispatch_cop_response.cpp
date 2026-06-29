@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_timing.hpp"
+#include "dispatch_threat.hpp"
 
 // =====================================================================
 // 获取 Ped 的 CTaskManager
@@ -578,10 +579,7 @@ eWeaponType determine_weapon_for_cop(CPed* cop, CPed* criminal, bool is_firearm_
 
 int compute_nearby_cop_quota_for_crime(const std::shared_ptr<CrimeEvent>& crime) {
     if (!crime) return 1;
-    int density = count_criminals_near(crime->location, 40.0f);
-    if (density >= 6) return 4;
-    if (density >= 3) return 2;
-    return 1;
+    return dispatch_threat::compute_nearby_dispatch_quota(*crime);
 }
 
 float compute_nearby_cop_search_radius(const std::shared_ptr<CrimeEvent>& crime) {
@@ -608,7 +606,7 @@ int dispatch_nearby_available_cops_to_crime(
     int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
     if (!byte_map) return 0;
 
-    CVector crime_pos = crime->location;
+    CVector crime_pos = get_crime_dispatch_position(*crime);
     float radius_sq = search_radius * search_radius;
     int64_t cur_time = now_ms();
 
@@ -1000,6 +998,8 @@ static void update_primary_criminal_for_case(CrimeEvent& crime) {
             }
         }
     }
+
+    dispatch_threat::refresh_crime_dispatch_anchor(crime);
 
     if (best_criminal && best_criminal != crime.criminal) {
         CPed* old_criminal = crime.criminal;
