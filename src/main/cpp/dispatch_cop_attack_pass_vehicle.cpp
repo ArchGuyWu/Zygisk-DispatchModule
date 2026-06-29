@@ -33,6 +33,7 @@
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
 #include "dispatch_cop_attack_vehicle_internal.hpp"
+#include "dispatch_timing.hpp"
 
 
 void cop_attack_dispatch_vehicle_cop(
@@ -113,9 +114,9 @@ void cop_attack_dispatch_vehicle_cop(
                             bool is_bike = (get_entity_model_index(veh) == MODEL_POLICE_BIKE);
                             float exit_dist = is_bike ? 12.0f : 16.0f;
                             // 复合下车判定：距离接近 (摩托车12米/轿车16米内)，或接近且可能卡死 (行驶超6秒且在60米内)，或超时过久 (行驶超12秒)
-                            bool should_exit = (session.v_dist < exit_dist) || 
-                                               (session.elapsed > 6000 && session.v_dist < 60.0f) || 
-                                               (session.elapsed > 12000);
+                            bool should_exit = (session.v_dist < exit_dist) ||
+                                               (session.elapsed > dispatch_timing::VEHICLE_STUCK_EXIT_MS && session.v_dist < 60.0f) ||
+                                               (session.elapsed > dispatch_timing::VEHICLE_MAX_APPROACH_MS);
 
                             if (should_exit) {
                                 if (!ctx.vector_contains(ctx.vehicles_emptied_snapshot, veh)) {

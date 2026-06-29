@@ -47,6 +47,7 @@ struct CrimeEvent {
 
     int dispatch_state = 0;
     int64_t timer_start = 0;
+    int64_t last_nearby_dispatch_attempt_ms = 0;
     int dispatch_delay_ms = 0;
     int last_cops_killed = 0;
     int64_t on_scene_start = 0;

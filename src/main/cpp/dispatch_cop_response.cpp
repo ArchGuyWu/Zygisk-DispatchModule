@@ -31,6 +31,7 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_timing.hpp"
 
 // =====================================================================
 // 获取 Ped 的 CTaskManager
@@ -583,9 +584,9 @@ int compute_nearby_cop_quota_for_crime(const std::shared_ptr<CrimeEvent>& crime)
 }
 
 float compute_nearby_cop_search_radius(const std::shared_ptr<CrimeEvent>& crime) {
-    if (!crime) return 100.0f;
-    // 超出视听自动响应范围，但仍属「附近」可调度半径
-    return crime->is_firearm ? 150.0f : 80.0f;
+    if (!crime) return dispatch_timing::NEARBY_SEARCH_FIREARM_M;
+    return crime->is_firearm ? dispatch_timing::NEARBY_SEARCH_FIREARM_M
+                             : dispatch_timing::NEARBY_SEARCH_MELEE_M;
 }
 
 int dispatch_nearby_available_cops_to_crime(
@@ -654,7 +655,8 @@ int dispatch_nearby_available_cops_to_crime(
         {
             std::lock_guard<std::mutex> lock(g_cop_attack_assign_mutex);
             auto it = g_cop_attack_assign_time.find({ped, criminal});
-            if (it != g_cop_attack_assign_time.end() && (cur_time - it->second < 5000)) {
+            if (it != g_cop_attack_assign_time.end() &&
+                (cur_time - it->second < dispatch_timing::NEARBY_ASSIGN_DEDUP_MS)) {
                 continue;
             }
         }

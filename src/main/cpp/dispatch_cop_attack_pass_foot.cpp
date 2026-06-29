@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
+#include "dispatch_timing.hpp"
 
 
 void cop_attack_dispatch_foot_cop(
@@ -71,7 +72,8 @@ void cop_attack_dispatch_foot_cop(
                     // =====================================================================
                     // 🚀 【核心修复】动态战术武器切换逻辑（针对已锁定目标/已处于响应的警员）
                     // =====================================================================
-                    bool is_assigned_or_targeting = already_targeting || (now_ms() - last_assign < 15000);
+                    bool is_assigned_or_targeting = already_targeting ||
+                        (now_ms() - last_assign < dispatch_timing::FOOT_ASSIGN_ACTIVE_WINDOW_MS);
                     if (is_assigned_or_targeting) {
                         int64_t last_armed = 0;
                         for (const auto& item : ctx.armed_cops_time_snapshot) {
@@ -142,12 +144,14 @@ void cop_attack_dispatch_foot_cop(
                     // 【核心近战防抖限流控制】：由于近战没有 LockOnTarget 瞄准状态，already_targeting 始终为 false。
                     // 因而，对近战警员采用 15 秒（在场存留时限）长限流拦截；枪械警员继续保持 3 秒心跳唤醒。这可确保近战挥舞不被 0 伤物理受击打断！
                     if (!just_exited_vehicle &&
-                        (already_targeting || (now_ms() - last_assign < (is_melee ? 15000 : 3000)))) {
+                        (already_targeting || (now_ms() - last_assign < (is_melee ?
+                            dispatch_timing::FOOT_ASSIGN_MELEE_MS : dispatch_timing::FOOT_ASSIGN_FIREARM_MS)))) {
                         return; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
                     }
 
                     // 判定是否是已经响应过的地面警员（使用 15 秒内分派或正在瞄准）
-                    bool already_assigned_foot_cop = already_targeting || (now_ms() - last_assign < 15000);
+                    bool already_assigned_foot_cop = already_targeting ||
+                        (now_ms() - last_assign < dispatch_timing::FOOT_ASSIGN_ACTIVE_WINDOW_MS);
                     if (!already_assigned_foot_cop && ctx.active_foot_cops_count >= ctx.max_foot_cops) {
                         // 超过地面警员配额上限且在现场目击范围 (30m) 之外，直接跳过，使其优雅走过
                         return;

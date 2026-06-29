@@ -206,6 +206,7 @@ add_library(policemod SHARED
     module.cpp
     hook_install.cpp
     dispatch_logic.cpp
+    dispatch_timing.cpp
     dispatch_hooks.cpp
     dispatch_cop_response.cpp
     dispatch_cop_attack.cpp

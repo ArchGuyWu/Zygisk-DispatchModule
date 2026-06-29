@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
+#include "dispatch_timing.hpp"
 
 
 void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
@@ -91,26 +92,62 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
                 crime->reinforcements_sent++;
                 int r = crime->reinforcements_sent;
 
-                int delay = 10000;
+                int spawn_delay = 0;
                 if (new_deaths >= 2) {
-                    delay = get_random_range(2500, 3500);
-                    LOGI("⚠️ Heavy casualties detected (%d dead) for case %llu! Activating emergency reinforcement delay: %d ms", new_deaths, (unsigned long long)crime->case_id, delay);
+                    spawn_delay = get_random_range(
+                        dispatch_timing::REINFORCE_SPAWN_HEAVY_MIN_MS,
+                        dispatch_timing::REINFORCE_SPAWN_HEAVY_MAX_MS);
+                    LOGI("⚠️ Heavy casualties (%d dead) case %llu: nearby@%lldms spawn@%dms",
+                         new_deaths, (unsigned long long)crime->case_id,
+                         (long long)dispatch_timing::REINFORCE_NEARBY_ATTEMPT_MS, spawn_delay);
                 } else {
                     switch (r) {
-                        case 1: delay = get_random_range(8500, 11500); break;
-                        case 2: delay = get_random_range(7000, 9000); break;
-                        case 3: delay = get_random_range(8500, 11500); break;
-                        default: delay = get_random_range(8500, 11500); break;
+                        case 1:
+                            spawn_delay = get_random_range(
+                                dispatch_timing::REINFORCE_SPAWN_LIGHT_MIN_MS,
+                                dispatch_timing::REINFORCE_SPAWN_LIGHT_MAX_MS);
+                            break;
+                        case 2:
+                            spawn_delay = get_random_range(
+                                dispatch_timing::REINFORCE_SPAWN_MEDIUM_MIN_MS,
+                                dispatch_timing::REINFORCE_SPAWN_MEDIUM_MAX_MS);
+                            break;
+                        default:
+                            spawn_delay = get_random_range(
+                                dispatch_timing::REINFORCE_SPAWN_LIGHT_MIN_MS,
+                                dispatch_timing::REINFORCE_SPAWN_LIGHT_MAX_MS);
+                            break;
                     }
                 }
 
-                LOGI("Cop casualty -> reinforcement #%d scheduled in %d ms for case %llu", r, delay, (unsigned long long)crime->case_id);
+                LOGI("Cop casualty -> reinforcement #%d for case %llu (nearby@%lldms, spawn_fallback@%dms)",
+                     r, (unsigned long long)crime->case_id,
+                     (long long)dispatch_timing::REINFORCE_NEARBY_ATTEMPT_MS, spawn_delay);
 
                 crime->pending_tasks.push_back({
-                    now_ms() + delay,
+                    now_ms() + dispatch_timing::REINFORCE_NEARBY_ATTEMPT_MS,
+                    [r, crime]() {
+                        if (crime->cancelled) return;
+                        int mobilized = dispatch_nearby_available_cops_for_crime_auto(crime);
+                        if (mobilized > 0) {
+                            LOGI("Reinforcement #%d: mobilized %d nearby cops for case %llu (skipped vehicle spawn)",
+                                 r, mobilized, (unsigned long long)crime->case_id);
+                        }
+                    }
+                });
+
+                crime->pending_tasks.push_back({
+                    now_ms() + spawn_delay,
                     [r, crime]() {
                         if (crime->cancelled) {
                             LOGI("Reinforcement #%d cancelled because crime event is no longer active for case %llu", r, (unsigned long long)crime->case_id);
+                            return;
+                        }
+
+                        int mobilized = dispatch_nearby_available_cops_for_crime_auto(crime);
+                        if (mobilized > 0) {
+                            LOGI("Reinforcement #%d: late nearby mobilized %d for case %llu (skipped spawn)",
+                                 r, mobilized, (unsigned long long)crime->case_id);
                             return;
                         }
 
@@ -120,13 +157,15 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
 
                         int density = count_criminals_near(loc, 40.0f);
                         bool swat_already = is_swat_van_nearby(loc, 150.0f);
+                        int64_t identify_delay = dispatch_timing::VEHICLE_IDENTIFY_DELAY_MS;
+                        int64_t stagger = dispatch_timing::VEHICLE_IDENTIFY_STAGGER_MS;
 
                         if (r == 3 && density >= 5 && !swat_already) {
                             LOGI("Reinforcement #%d (Heavy SWAT) for case %llu: Dispatching SWAT Enforcer. (density=%d)", r, (unsigned long long)crime->case_id, density);
                             dispatch_spawn_emergency_car(MODEL_SWAT_VAN, target_pos);
 
                             crime->pending_tasks.push_back({
-                                now_ms() + 250,
+                                now_ms() + identify_delay,
                                 [target_pos, loc, criminal, r, crime]() {
                                     if (crime->cancelled) return;
                                     void* veh = find_closest_vehicle_to(target_pos, 25.0f);
@@ -145,8 +184,8 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
                             dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                             crime->pending_tasks.push_back({
-                                now_ms() + 250,
-                                [target_pos, loc, criminal, r, crime]() {
+                                now_ms() + identify_delay,
+                                [target_pos, loc, criminal, r, stagger, crime]() {
                                     if (crime->cancelled) return;
                                     void* veh1 = find_closest_vehicle_to(target_pos, 25.0f);
                                     if (veh1) {
@@ -158,7 +197,7 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
                                     dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                                     crime->pending_tasks.push_back({
-                                        now_ms() + 250,
+                                        now_ms() + stagger,
                                         [target_pos, veh1, loc, criminal, r, crime]() {
                                             if (crime->cancelled) return;
                                             void* veh2 = find_closest_vehicle_to(target_pos, 25.0f, veh1);
@@ -178,7 +217,7 @@ void dispatch_tick_state_on_scene(const std::shared_ptr<CrimeEvent>& crime) {
                             dispatch_spawn_emergency_car(MODEL_POLICE_CAR, target_pos);
 
                             crime->pending_tasks.push_back({
-                                now_ms() + 250,
+                                now_ms() + identify_delay,
                                 [target_pos, loc, criminal, r, crime]() {
                                     if (crime->cancelled) return;
                                     void* veh = find_closest_vehicle_to(target_pos, 25.0f);

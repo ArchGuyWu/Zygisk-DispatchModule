@@ -32,6 +32,7 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
+#include "dispatch_timing.hpp"
 
 
 void dispatch_tick_state_idle(const std::shared_ptr<CrimeEvent>& crime) {
@@ -58,32 +59,25 @@ void dispatch_tick_state_idle(const std::shared_ptr<CrimeEvent>& crime) {
             dist_to_cop = g_FindDistToNearestCop(PED_TYPE_COP, crime->location);
         }
 
-        if (dist_to_cop < 50.0f) {
+        if (dist_to_cop < dispatch_timing::COP_ON_SCENE_IMMEDIATE_M) {
             LOGI("Cops nearby (dist=%.1f) for case %llu, transition to STATE_ON_SCENE directly", dist_to_cop, (unsigned long long)crime->case_id);
             crime->dispatch_sent = true;
             crime->on_scene_start = now_ms();
             crime->dispatch_state = STATE_ON_SCENE;
             crime->last_cops_killed = 0;
         } else {
-            float search_radius = compute_nearby_cop_search_radius(crime);
-            int mobilized = dispatch_nearby_available_cops_for_crime_auto(crime);
-            if (mobilized > 0) {
-                LOGI("Nearby cop dispatch for case %llu mobilized %d officers (dist_to_nearest=%.1f) -> STATE_ON_SCENE",
-                     (unsigned long long)crime->case_id, mobilized, dist_to_cop);
-                crime->dispatch_sent = true;
-                crime->on_scene_start = now_ms();
-                crime->dispatch_state = STATE_ON_SCENE;
-                crime->last_cops_killed = 0;
-            } else {
-                // 附近无可调度警员，回退计时后刷增援车
-                crime->dispatch_delay_ms = crime->is_firearm ?
-                    get_random_range(4000, 7000) : get_random_range(8000, 12000);
-                crime->timer_start = now_ms();
-                crime->dispatch_state = STATE_TIMING;
-                crime->last_cops_killed = 0;
-                LOGI("No mobilizable cops within %.0fm for case %llu, starting spawn timer: %d ms",
-                     search_radius, (unsigned long long)crime->case_id, crime->dispatch_delay_ms);
-            }
+            // 进入统一计时状态：先留自然响应窗口，再轮询附近警员，最后才刷增援车
+            int64_t cur_time = now_ms();
+            crime->timer_start = cur_time;
+            crime->last_nearby_dispatch_attempt_ms = 0;
+            crime->dispatch_delay_ms = dispatch_timing::compute_spawn_fallback_delay_ms(crime->is_firearm);
+            crime->dispatch_state = STATE_TIMING;
+            crime->last_cops_killed = 0;
+            LOGI("Case %llu: nearest cop %.1fm away -> TIMING (grace=%lldms, nearby_retry=%lldms, spawn_fallback=%dms)",
+                 (unsigned long long)crime->case_id, dist_to_cop,
+                 (long long)dispatch_timing::NATURAL_RESPONSE_GRACE_MS,
+                 (long long)dispatch_timing::NEARBY_RETRY_INTERVAL_MS,
+                 crime->dispatch_delay_ms);
         }
     }
 }
