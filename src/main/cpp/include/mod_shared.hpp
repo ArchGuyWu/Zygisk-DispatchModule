@@ -281,6 +281,7 @@ void make_cops_attack_criminal(CPed* criminal);
 void make_cops_attack_criminal_immediate(CPed* criminal);
 void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime);
 void emergency_vehicles_tick();
+void on_main_thread_tick();
 void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update);
 void update_cops_targeting_criminal_event_driven(CPed* criminal);
 bool is_specific_criminal_armed_with_firearm(CPed* criminal);

@@ -62,7 +62,10 @@ add_library(policemod SHARED
     dispatch_hooks.cpp
     dispatch_cop_response.cpp
     dispatch_cop_attack.cpp
+    dispatch_cop_attack_state.cpp
+    dispatch_cop_attack_pass.cpp
     dispatch_tick.cpp
+    dispatch_tick_main.cpp
     dispatch_emergency.cpp
     dispatch_spawn_hooks.cpp
     hooks_stability.cpp
