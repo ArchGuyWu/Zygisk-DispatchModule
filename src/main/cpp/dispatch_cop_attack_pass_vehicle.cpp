@@ -38,7 +38,7 @@ void cop_attack_dispatch_vehicle_cop(
     CopAttackContext& ctx,
     CPed* ped,
     CPed* target_criminal,
-    const CVector& target_crime_pos,
+    CVector target_crime_pos,
     void* veh) {
                         if (is_vehicle_pointer_valid(veh)) {
                             CVector veh_pos = get_entity_pos(veh);
@@ -754,7 +754,7 @@ void cop_attack_dispatch_vehicle_cop(
                                 }
 
                                 if (!already_dispatched && ctx.active_vehicles_count >= ctx.max_vehicles) {
-                                    continue;
+                                    return;
                                 }
 
                                 // 1. 命令车辆驶向现场（仅触发一次）

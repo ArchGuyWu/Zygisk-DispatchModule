@@ -53,13 +53,13 @@ void cop_attack_dispatch_vehicle_cop(
     CopAttackContext& ctx,
     CPed* ped,
     CPed* target_criminal,
-    const CVector& target_crime_pos,
+    CVector target_crime_pos,
     void* veh);
 void cop_attack_dispatch_foot_cop(
     CopAttackContext& ctx,
     CPed* ped,
     CPed* target_criminal,
-    const CVector& target_crime_pos,
+    CVector target_crime_pos,
     float dist_sq);
 void cop_attack_pass2_dispatch(CopAttackContext& ctx);
 void cop_attack_commit_pending(CopAttackContext& ctx);

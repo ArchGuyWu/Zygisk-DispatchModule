@@ -38,11 +38,12 @@ void cop_attack_dispatch_foot_cop(
     CopAttackContext& ctx,
     CPed* ped,
     CPed* target_criminal,
-    const CVector& target_crime_pos,
+    CVector target_crime_pos,
     float dist_sq) {
+    CVector cop_pos = get_entity_pos(ped);
                     // 地面警员只在 70m 内响应（保持最高效追杀半径）
                     if (dist_sq > 70.0f * 70.0f) {
-                        continue;
+                        return;
                     }
 
                     // =====================================================================
@@ -133,7 +134,7 @@ void cop_attack_dispatch_foot_cop(
                     // 【核心近战防抖限流控制】：由于近战没有 LockOnTarget 瞄准状态，already_targeting 始终为 false。
                     // 因而，对近战警员采用 15 秒（在场存留时限）长限流拦截；枪械警员继续保持 3 秒心跳唤醒。这可确保近战挥舞不被 0 伤物理受击打断！
                     if (already_targeting || (now_ms() - last_assign < (is_melee ? 15000 : 3000))) {
-                        continue; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
+                        return; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
                     }
 
                     // 40m 内的野生巡警纳入响应
@@ -157,7 +158,7 @@ void cop_attack_dispatch_foot_cop(
                     bool already_assigned_foot_cop = already_targeting || (now_ms() - last_assign < 15000);
                     if (!already_assigned_foot_cop && ctx.active_foot_cops_count >= ctx.max_foot_cops) {
                         // 超过地面警员配额上限且在现场目击范围 (30m) 之外，直接跳过，使其优雅走过
-                        continue;
+                        return;
                     }
 
                     // 避免穿帮音效：如果当前活跃案件是枪击案 (is_firearm == true)，听觉自然唤醒。但极近距离强行唤醒。
@@ -169,7 +170,7 @@ void cop_attack_dispatch_foot_cop(
                             float p_dz = cop_pos.z - player_pos.z;
                             float p_dist = sqrtf(p_dx * p_dx + p_dy * p_dy + p_dz * p_dz);
                             if (p_dist < 45.0f) {
-                                continue;
+                                return;
                             }
                         }
                     }
@@ -337,6 +338,4 @@ void cop_attack_dispatch_foot_cop(
                         LOGI("⚠️ [Fallback 0-Damage] Inflicted 0 damage (Weapon=%d) to cop %p by criminal %p (active_foot_cops=%d/%d)", 
                              chosen_weapon, ped, target_criminal, ctx.active_foot_cops_count, ctx.max_foot_cops);
                     }
-                }
-
 }
