@@ -1,0 +1,293 @@
+Loading symbols...
+Loaded 274728 symbols.
+
+Found 50 GTA SA DE crashes.
+================================================================================
+File: tombstone_00 | Time: 2026-06-28 19:43:57.966438666+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x7d98  split_config.arm64_v8a.apk | ELF_vaddr: 0x55dbd98 -> _ZN13CEventScanner13ScanForEventsER4CPed (Exact)
+================================================================================
+File: tombstone_01 | Time: 2026-06-28 20:07:11.064464518+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000150e10d0
+Backtrace:
+  #00 pc 0xd6a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_02 | Time: 2026-06-28 20:07:17.043822015+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000130910d0
+Backtrace:
+  #00 pc 0xd6a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_03 | Time: 2026-06-28 20:11:13.678872550+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000120010d0
+Backtrace:
+  #00 pc 0xd6a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_04 | Time: 2026-06-28 20:13:35.581196808+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000fef010d0
+Backtrace:
+  #00 pc 0xa7a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_05 | Time: 2026-06-28 20:21:02.801017106+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x15530  split_config.arm64_v8a.apk | ELF_vaddr: 0x5784530 -> _ZN26CTaskComplexWanderStandard19LookForChatPartnersEP4CPed (Exact)
+================================================================================
+File: tombstone_06 | Time: 2026-06-28 20:32:01.640095608+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x000000004d9c10d0
+Backtrace:
+  #00 pc 0xa7a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_07 | Time: 2026-06-28 20:38:18.158324475+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x000000005aa310d0
+Backtrace:
+  #00 pc 0xa7a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_08 | Time: 2026-06-28 20:49:55.152364492+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x000000004c3d10d0
+Backtrace:
+  #00 pc 0xa7a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_09 | Time: 2026-06-28 20:50:57.454732645+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000059c710d0
+Backtrace:
+  #00 pc 0xa7a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_10 | Time: 2026-06-28 21:34:02.441352281+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000526e10d0
+Backtrace:
+  #00 pc 0xa7a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_11 | Time: 2026-06-28 21:35:52.595553801+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_12 | Time: 2026-06-28 22:03:54.820304811+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_13 | Time: 2026-06-28 22:21:12.917353529+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_14 | Time: 2026-06-28 22:23:15.619206764+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xc90  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aac90 -> _ZNK12CTaskManager20FindActiveTaskByTypeEi (Exact)
+================================================================================
+File: tombstone_15 | Time: 2026-06-28 22:26:00.732931961+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x15530  split_config.arm64_v8a.apk | ELF_vaddr: 0x5784530 -> _ZN26CTaskComplexWanderStandard19LookForChatPartnersEP4CPed (Exact)
+================================================================================
+File: tombstone_16 | Time: 2026-06-28 22:27:14.210245319+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000000
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x171f4  split_config.arm64_v8a.apk | ELF_vaddr: 0x57c81f4 -> _ZN18CTaskComplexFacial14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_17 | Time: 2026-06-28 22:28:30.532893102+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_18 | Time: 2026-06-28 22:31:00.482923670+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x5f4  split_config.arm64_v8a.apk | ELF_vaddr: 0x55de5f4 -> _ZN16CPedIntelligence20ProcessStaticCounterEv (Exact)
+================================================================================
+File: tombstone_19 | Time: 2026-06-28 22:53:27.677269540+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_20 | Time: 2026-06-28 23:03:14.734874066+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xa8  split_config.arm64_v8a.apk | ELF_vaddr: 0x576b0a8 -> _ZN24CTaskComplexGangFollower14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_21 | Time: 2026-06-28 23:09:15.290229032+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_22 | Time: 2026-06-28 23:09:56.156874694+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_23 | Time: 2026-06-28 23:10:49.563928996+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x2ba34  split_config.arm64_v8a.apk | ELF_vaddr: 0x55c6a34 -> _ZNK16CPedIntelligence14FindTaskByTypeEi (Exact)
+================================================================================
+File: tombstone_24 | Time: 2026-06-28 23:12:07.423550269+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x134874  split_config.arm64_v8a.apk | ELF_vaddr: 0x5708874 -> _ZN21CTaskComplexBeInGroup14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_25 | Time: 2026-06-28 23:13:06.910491131+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xa8  split_config.arm64_v8a.apk | ELF_vaddr: 0x576b0a8 -> _ZN24CTaskComplexGangFollower14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_26 | Time: 2026-06-28 23:14:02.995638454+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x134874  split_config.arm64_v8a.apk | ELF_vaddr: 0x5708874 -> _ZN21CTaskComplexBeInGroup14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_27 | Time: 2026-06-28 23:15:45.307449769+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_28 | Time: 2026-06-28 23:38:31.319790732+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xa5f4  split_config.arm64_v8a.apk | ELF_vaddr: 0x55de5f4 -> _ZN16CPedIntelligence20ProcessStaticCounterEv (Exact)
+================================================================================
+File: tombstone_29 | Time: 2026-06-28 23:39:42.913325913+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_30 | Time: 2026-06-28 23:40:39.497009693+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_31 | Time: 2026-06-28 23:58:02.813564705+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000044
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x8dd4  split_config.arm64_v8a.apk | ELF_vaddr: 0x55e7dd4 -> _ZN10CPlayerPed14ProcessControlEv (Exact)
+================================================================================
+File: tombstone_32 | Time: 2026-06-28 23:59:29.603531391+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xac4  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aaac4 -> _ZNK12CTaskManager21GetSimplestActiveTaskEv (Exact)
+================================================================================
+File: tombstone_33 | Time: 2026-06-29 00:13:14.669411116+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xc90  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aac90 -> _ZNK12CTaskManager20FindActiveTaskByTypeEi (Exact)
+================================================================================
+File: tombstone_34 | Time: 2026-06-29 00:14:30.359839004+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xac4  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aaac4 -> _ZNK12CTaskManager21GetSimplestActiveTaskEv (Exact)
+================================================================================
+File: tombstone_35 | Time: 2026-06-29 00:16:26.039484793+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x000000000000001c
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x103c3a4  split_config.arm64_v8a.apk | ELF_vaddr: 0x52c13a4 -> _ZN23CAEPedSpeechAudioEntity15PlayLoadedSoundEv (Exact)
+================================================================================
+File: tombstone_36 | Time: 2026-06-29 00:19:38.743857949+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000084
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x13984  split_config.arm64_v8a.apk | ELF_vaddr: 0x5813984 -> _ZN13CCarGenerator30CheckIfWithinRangeOfAnyPlayersEv (Exact)
+================================================================================
+File: tombstone_37 | Time: 2026-06-29 00:20:23.588257307+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x17e34  split_config.arm64_v8a.apk | ELF_vaddr: 0x5782e34 -> _ZN39CTaskComplexAvoidOtherPedWhileWandering14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_38 | Time: 2026-06-29 00:22:19.292851794+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000008
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x1cd94  split_config.arm64_v8a.apk | ELF_vaddr: 0x57c7d94 -> _ZN18CTaskComplexFacialD0Ev (Exact)
+================================================================================
+File: tombstone_39 | Time: 2026-06-29 01:02:38.910534231+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xe34  split_config.arm64_v8a.apk | ELF_vaddr: 0x5782e34 -> _ZN39CTaskComplexAvoidOtherPedWhileWandering14ControlSubTaskEP4CPed (Exact)
+================================================================================
+File: tombstone_40 | Time: 2026-06-29 01:04:00.468289981+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0xac4  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aaac4 -> _ZNK12CTaskManager21GetSimplestActiveTaskEv (Exact)
+================================================================================
+File: tombstone_41 | Time: 2026-06-29 01:14:45.363329683+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000008
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x77c  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aa77c -> _ZN12CTaskManagerD2Ev (Exact)
+================================================================================
+File: tombstone_42 | Time: 2026-06-29 01:30:17.842688852+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000046
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x3fb04  split_config.arm64_v8a.apk | ELF_vaddr: 0x5749b04 -> _ZN22CTaskSimpleEvasiveStep23FinishAnimEvasiveStepCBEP21CAnimBlendAssociationPv (Exact)
+================================================================================
+File: tombstone_43 | Time: 2026-06-29 01:42:49.691885493+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000008
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x127f08  split_config.arm64_v8a.apk | ELF_vaddr: 0x5706f08 -> _ZN20CTaskComplexSequence5FlushEv (Exact)
+================================================================================
+File: tombstone_44 | Time: 2026-06-28 18:29:18.029845255+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_45 | Time: 2026-06-28 18:50:04.880751834+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x7d98  split_config.arm64_v8a.apk | ELF_vaddr: 0x55dbd98 -> _ZN13CEventScanner13ScanForEventsER4CPed (Exact)
+================================================================================
+File: tombstone_46 | Time: 2026-06-28 19:01:09.179818304+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000018
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x498  split_config.arm64_v8a.apk | ELF_vaddr: 0x559a498 -> _ZN4CPed15ProcessBuoyancyEv (Exact)
+================================================================================
+File: tombstone_47 | Time: 2026-06-28 19:28:05.548418553+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x0000000000000028
+Cause: null pointer dereference
+Backtrace:
+  #00 pc 0x215c90  split_config.arm64_v8a.apk | ELF_vaddr: 0x57aac90 -> _ZNK12CTaskManager20FindActiveTaskByTypeEi (Exact)
+================================================================================
+File: tombstone_48 | Time: 2026-06-28 19:38:40.918966287+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000005510d0
+Backtrace:
+  #00 pc 0xd6a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)
+================================================================================
+File: tombstone_49 | Time: 2026-06-28 19:39:08.950192058+0800
+Signal: Signal 11 (SIGSEGV), FaultAddr 0x00000000012410d0
+Backtrace:
+  #00 pc 0xd6a64  split_config.arm64_v8a.apk | ELF_vaddr: 0x4284a64 -> u_strlen_64 (Exact)

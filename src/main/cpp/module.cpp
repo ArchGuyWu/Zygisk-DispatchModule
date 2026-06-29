@@ -354,60 +354,6 @@ static fn_SetCurrentWeapon_t g_orig_SetCurrentWeapon = nullptr;
 // =====================================================================
 // 辅助函数
 // =====================================================================
-// 验证 Ped 指针在 Ped Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
-static bool is_ped_pointer_valid_safe(void* target_ped) {
-    if (!target_ped) return false;
-
-    // 优先通过 FindPlayerPed 判定玩家 Ped 的有效性，防止转场/淡入淡出期间玩家 Ped 临时不在 Pool 中而被误判
-    if (g_FindPlayerPed) {
-        if (target_ped == g_FindPlayerPed(-1) || target_ped == g_FindPlayerPed(0)) {
-            return true;
-        }
-    }
-
-    if (!g_ms_pPedPool || !g_GetPoolPed) return false;
-    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
-    if (!pool) return false;
-
-    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
-    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
-    if (!byte_map) return false;
-
-    for (int i = 0; i < size; i++) {
-        signed char flag = byte_map[i];
-        if (flag >= 0) {
-            int handle = (i << 8) | flag;
-            CPed* ped = g_GetPoolPed(handle);
-            if (ped == target_ped) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-static bool is_vehicle_pointer_valid_safe(void* target_veh) {
-    if (!target_veh || !g_ms_pVehiclePool || !g_GetPoolVehicle) return false;
-    void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
-    if (!pool) return false;
-
-    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
-    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
-    if (!byte_map) return false;
-
-    for (int i = 0; i < size; i++) {
-        signed char flag = byte_map[i];
-        if (flag >= 0) {
-            int handle = (i << 8) | flag;
-            void* veh = g_GetPoolVehicle(handle);
-            if (veh == target_veh) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 struct ThreadLocalPipe {
     int fds[2] = {-1, -1};
     ThreadLocalPipe() {
@@ -440,6 +386,43 @@ static inline bool is_pointer_readable(const void* ptr) {
     }
     if (errno == EFAULT) {
         return false;
+    }
+    return false;
+}
+
+// 验证 Ped 指针在 Ped Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
+static bool is_ped_pointer_valid_safe(void* target_ped) {
+    if (!target_ped) return false;
+
+    // 优先通过 FindPlayerPed 判定玩家 Ped 的有效性，防止转场/淡入淡出期间玩家 Ped 临时不在 Pool 中而被误判
+    if (g_FindPlayerPed) {
+        if (target_ped == g_FindPlayerPed(-1) || target_ped == g_FindPlayerPed(0)) {
+            return true;
+        }
+    }
+
+    if (!g_ms_pPedPool || !is_pointer_readable(g_ms_pPedPool) || !g_GetPoolPed) return false;
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool || !is_pointer_readable(pool)) return false;
+
+    char** p_byte_map = reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    if (!is_pointer_readable(p_byte_map)) return false;
+    char* byte_map = *p_byte_map;
+    if (!byte_map || !is_pointer_readable(byte_map)) return false;
+
+    int* p_size = reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!is_pointer_readable(p_size)) return false;
+    int size = *p_size;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag >= 0) {
+            int handle = (i << 8) | flag;
+            CPed* ped = g_GetPoolPed(handle);
+            if (ped == target_ped) {
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -511,13 +494,18 @@ static bool get_fire_position(void* fire, CVector& out_pos) {
 
 // 验证载具指针在 Vehicle Pool 中是否依然有效，杜绝野指针崩溃 (前向声明所需)
 static bool is_vehicle_pointer_valid(void* target_veh) {
-    if (!target_veh || !g_ms_pVehiclePool || !g_GetPoolVehicle) return false;
+    if (!target_veh || !g_ms_pVehiclePool || !is_pointer_readable(g_ms_pVehiclePool) || !g_GetPoolVehicle) return false;
     void* pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
-    if (!pool) return false;
+    if (!pool || !is_pointer_readable(pool)) return false;
 
-    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
-    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
-    if (!byte_map) return false;
+    char** p_byte_map = reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    if (!is_pointer_readable(p_byte_map)) return false;
+    char* byte_map = *p_byte_map;
+    if (!byte_map || !is_pointer_readable(byte_map)) return false;
+
+    int* p_size = reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!is_pointer_readable(p_size)) return false;
+    int size = *p_size;
 
     for (int i = 0; i < size; i++) {
         signed char flag = byte_map[i];
@@ -780,15 +768,16 @@ static CVector get_spawn_target(CVector crime_pos) {
         LOGI("Selected best spawn target (score=%.1f): (%.1f, %.1f, %.1f)", 
              max_score, spawn_target.x, spawn_target.y, spawn_target.z);
     } else {
-        // 退化备份：若无有效点或全在视线内，则在玩家侧后方强制偏移 32 米
+        // 退化备份：若无有效点或全在视线内，则在玩家侧后方（相反视角）强制偏移 32 米，以确保完全不在玩家视线内
         float fallback_angle = 0.0f;
         if (has_cam) {
             // 取相机方向的相反方向 (后方)
             fallback_angle = atan2f(-cam_dir.y, -cam_dir.x);
         }
-        spawn_target.x = crime_pos.x + cosf(fallback_angle) * 32.0f;
-        spawn_target.y = crime_pos.y + sinf(fallback_angle) * 32.0f;
-        spawn_target.z = base_z;
+        CVector base_pos = g_FindPlayerCoors ? g_FindPlayerCoors(0) : crime_pos;
+        spawn_target.x = base_pos.x + cosf(fallback_angle) * 32.0f;
+        spawn_target.y = base_pos.y + sinf(fallback_angle) * 32.0f;
+        spawn_target.z = base_pos.z;
 
         // [Workaround] 移动端安全备份：确保退化备份也在 70m 视距范围内
         if (g_FindPlayerCoors) {
@@ -1835,7 +1824,7 @@ static bool is_vehicle_occupied_by_driver(void* veh);
 
 // 指派 CTaskComplexEnterCar 任务，让其上车
 static void make_cop_enter_vehicle(CPed* cop, void* vehicle, bool as_driver) {
-    if (!cop || !is_ped_pointer_valid_safe(cop) || !vehicle || !is_vehicle_pointer_valid_safe(vehicle) || !g_TaskNew || !g_TaskEnterCar_ctor || !g_SetTask) return;
+    if (!cop || !is_ped_pointer_valid_safe(cop) || !vehicle || !is_vehicle_pointer_valid(vehicle) || !g_TaskNew || !g_TaskEnterCar_ctor || !g_SetTask) return;
     if (g_IsAlive && !g_IsAlive(cop)) return;
 
     void* intelligence = get_ped_intelligence(cop);
@@ -5169,6 +5158,12 @@ static void on_main_thread_tick() {
                                                 setup_dispatched_cops(veh, criminal);
                                             } else {
                                                 LOGW("⚠️ Failed to identify spawned vehicle near (%.1f, %.1f, %.1f) for case %llu", target_pos.x, target_pos.y, target_pos.z, (unsigned long long)crime->case_id);
+                                                // Fallback 清理层：如果当前没有任何活跃案件存在，则统一恢复/释放全局所有的向下兼容级 and 未分组表映射
+                                                if (g_active_crimes.empty()) {
+                                                    g_crime_active.store(false);
+                                                    g_tracked_criminal.store(nullptr);
+                                                    ecs::EntityManager::get().clear();
+                                                }
                                             }
                                         }
                                     });
@@ -5489,25 +5484,27 @@ static void* g_stub_set_ped_pos = nullptr;
 static fn_SetPedPosition_t g_orig_set_ped_pos = nullptr;
 static void proxy_set_ped_pos(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) {
         LOGW("⚠️ [SetPedPosition] unsafe self! Skipping.");
         return;
     }
-    if (!ped || !is_pointer_readable(ped)) {
-        LOGW("⚠️ [SetPedPosition] null or unsafe ped! Skipping.");
+    if (ped && !is_pointer_readable(ped)) {
+        LOGW("⚠️ [SetPedPosition] unsafe ped! Skipping.");
         return;
     }
-    // Check if the pointer at ped + 0x648 is null or unreadable
-    char* ped_bytes = reinterpret_cast<char*>(ped);
-    void** clump_slot = reinterpret_cast<void**>(ped_bytes + 0x648);
-    if (!is_pointer_readable(clump_slot)) {
-        LOGW("⚠️ [SetPedPosition] ped + 0x648 slot unreadable! Skipping to prevent crash.");
-        return;
-    }
-    void* clump = *clump_slot;
-    if (clump && !is_pointer_readable(clump)) {
-        LOGW("⚠️ [SetPedPosition] ped->clump (%p) is invalid/unreadable! Skipping original to prevent crash.", clump);
-        return;
+    if (self && ped) {
+        // Check if the pointer at ped + 0x648 is null or unreadable
+        char* ped_bytes = reinterpret_cast<char*>(ped);
+        void** clump_slot = reinterpret_cast<void**>(ped_bytes + 0x648);
+        if (!is_pointer_readable(clump_slot)) {
+            LOGW("⚠️ [SetPedPosition] ped + 0x648 slot unreadable! Skipping to prevent crash.");
+            return;
+        }
+        void* clump = *clump_slot;
+        if (clump && !is_pointer_readable(clump)) {
+            LOGW("⚠️ [SetPedPosition] ped->clump (%p) is invalid/unreadable! Skipping original to prevent crash.", clump);
+            return;
+        }
     }
     SHADOWHOOK_CALL_PREV(proxy_set_ped_pos, self, ped);
 }
@@ -5606,15 +5603,17 @@ static fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullp
 
 static void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!ped || !is_ped_pointer_valid_safe(ped)) return;
-    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-    if (intel) {
-        for (int offset = 0x8; offset <= 0x28; offset += 8) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + offset);
-            void* task = *task_slot;
-            if (task && !is_task_vtable_safe(task)) {
-                LOGW("⚠️ [ScanForAttractorsInRange] Intercepted unsafe/destructing task %p at offset 0x%X in CPedIntelligence %p. Clearing it to prevent crash.", task, offset, intel);
-                *task_slot = nullptr;
+    if (ped && !is_ped_pointer_valid_safe(ped)) return;
+    if (ped) {
+        void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+        if (intel) {
+            for (int offset = 0x8; offset <= 0x28; offset += 8) {
+                void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + offset);
+                void* task = *task_slot;
+                if (task && !is_task_vtable_safe(task)) {
+                    LOGW("⚠️ [ScanForAttractorsInRange] Intercepted unsafe/destructing task %p at offset 0x%X in CPedIntelligence %p. Clearing it to prevent crash.", task, offset, intel);
+                    *task_slot = nullptr;
+                }
             }
         }
     }
@@ -5673,27 +5672,31 @@ static void* g_stub_ccgf_control = nullptr;
 static fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 static void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) {
+    if (self && !is_pointer_readable(self)) {
         LOGW("⚠️ [GangFollower::ControlSubTask] unsafe self!");
         return nullptr;
     }
-    if (!ped || !is_pointer_readable(ped)) {
+    if (ped && !is_pointer_readable(ped)) {
         LOGW("⚠️ [GangFollower::ControlSubTask] unsafe ped!");
         return nullptr;
     }
 
-    // Sanitize follower ped
-    sanitize_ped_tasks(ped);
-
-    // Sanitize leader and partner peds
-    char* self_bytes = reinterpret_cast<char*>(self);
-    void** p_leader = reinterpret_cast<void**>(self_bytes + 0x18);
-    if (is_pointer_readable(p_leader)) {
-        sanitize_ped_tasks(*p_leader);
+    if (ped) {
+        // Sanitize follower ped
+        sanitize_ped_tasks(ped);
     }
-    void** p_partner = reinterpret_cast<void**>(self_bytes + 0x20);
-    if (is_pointer_readable(p_partner)) {
-        sanitize_ped_tasks(*p_partner);
+
+    if (self) {
+        // Sanitize leader and partner peds
+        char* self_bytes = reinterpret_cast<char*>(self);
+        void** p_leader = reinterpret_cast<void**>(self_bytes + 0x18);
+        if (is_pointer_readable(p_leader)) {
+            sanitize_ped_tasks(*p_leader);
+        }
+        void** p_partner = reinterpret_cast<void**>(self_bytes + 0x20);
+        if (is_pointer_readable(p_partner)) {
+            sanitize_ped_tasks(*p_partner);
+        }
     }
 
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
@@ -5707,43 +5710,45 @@ static fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next
 
 static void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!ped || !is_pointer_readable(ped)) {
+    if (ped && !is_pointer_readable(ped)) {
         return nullptr;
     }
     
-    // Sanitize the ped's task manager
-    sanitize_ped_tasks(ped);
+    if (ped) {
+        // Sanitize the ped's task manager
+        sanitize_ped_tasks(ped);
 
-    // 校验 Ped 是否真的拥有活动的 TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246 / 0xf6)
-    // 防止 FindActiveTaskByType 返回 nullptr 后官方引擎因缺少空指针校验而在 0x5709844 处解引用崩溃
-    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-    if (is_pointer_readable(intel_slot)) {
-        void* intel = *intel_slot;
-        if (intel && is_pointer_readable(intel)) {
-            void* task_mgr = reinterpret_cast<char*>(intel) + 8;
-            bool has_paired_attractor = false;
-            if (is_pointer_readable(task_mgr)) {
-                for (int i = 0; i < 11; ++i) {
-                    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-                    if (is_pointer_readable(task_slot)) {
-                        void* task = *task_slot;
-                        if (task && is_task_vtable_safe(task)) {
-                            typedef int (*fn_GetTaskType_t)(void* t);
-                            void** vtable = *reinterpret_cast<void***>(task);
-                            if (is_pointer_readable(vtable + 5)) {
-                                fn_GetTaskType_t get_type = reinterpret_cast<fn_GetTaskType_t>(vtable[5]);
-                                if (get_type(task) == 246) {
-                                    has_paired_attractor = true;
-                                    break;
+        // 校验 Ped 是否真的拥有活动的 TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246 / 0xf6)
+        // 防止 FindActiveTaskByType 返回 nullptr 后官方引擎因缺少空指针校验而在 0x5709844 处解引用崩溃
+        void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+        if (is_pointer_readable(intel_slot)) {
+            void* intel = *intel_slot;
+            if (intel && is_pointer_readable(intel)) {
+                void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+                bool has_paired_attractor = false;
+                if (is_pointer_readable(task_mgr)) {
+                    for (int i = 0; i < 11; ++i) {
+                        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+                        if (is_pointer_readable(task_slot)) {
+                            void* task = *task_slot;
+                            if (task && is_task_vtable_safe(task)) {
+                                typedef int (*fn_GetTaskType_t)(void* t);
+                                void** vtable = *reinterpret_cast<void***>(task);
+                                if (is_pointer_readable(vtable + 5)) {
+                                    fn_GetTaskType_t get_type = reinterpret_cast<fn_GetTaskType_t>(vtable[5]);
+                                    if (get_type(task) == 246) {
+                                        has_paired_attractor = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            if (!has_paired_attractor) {
-                LOGW("⚠️ [PairedAttractor Sanitizer] Ped %p does not have active TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246), intercepting CreateNextSubTask to prevent crash!", ped);
-                return nullptr;
+                if (!has_paired_attractor) {
+                    LOGW("⚠️ [PairedAttractor Sanitizer] Ped %p does not have active TASK_COMPLEX_USE_PAIRED_ATTRACTOR (246), intercepting CreateNextSubTask to prevent crash!", ped);
+                    return nullptr;
+                }
             }
         }
     }
@@ -5877,23 +5882,16 @@ static void*** g_p_ms_pPedPool = nullptr;
 
 static bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) return false;
+    if (self && !is_pointer_readable(self)) return false;
     
-    short index = *reinterpret_cast<short*>(reinterpret_cast<char*>(self) + 0x0);
-    if (index >= 0 && g_p_ms_pPedPool && is_pointer_readable(g_p_ms_pPedPool)) {
-        void** ped_array = *g_p_ms_pPedPool;
-        if (ped_array && is_pointer_readable(ped_array)) {
-            if (index < 8) {
-                void** ped_slot = ped_array + index;
-                if (is_pointer_readable(ped_slot)) {
-                    void* ped = *ped_slot;
-                    if (!ped || !is_pointer_readable(ped)) {
-                        return false;
-                    }
-                } else {
-                    return false;
-                }
-            }
+    if (g_FindPlayerPed) {
+        void* player = g_FindPlayerPed(0);
+        if (!player || !is_ped_pointer_valid_safe(player)) {
+            return false;
+        }
+        void* player1 = g_FindPlayerPed(1);
+        if (player1 && !is_ped_pointer_valid_safe(player1)) {
+            return false;
         }
     }
     return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
@@ -5930,25 +5928,27 @@ static fn_CalcTargetOffset_t g_orig_CalcTargetOffset = nullptr;
 
 static void proxy_CalcTargetOffset(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self) return;
+    if (self && !is_pointer_readable(self)) return;
     
-    // Check offset 0x18 (target vehicle)
-    void** pVehicle = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
-    if (is_pointer_readable(pVehicle)) {
-        void* vehicle = *pVehicle;
-        if (vehicle && !is_pointer_readable(vehicle)) {
-            LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
-            return;
+    if (self) {
+        // Check offset 0x18 (target vehicle)
+        void** pVehicle = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+        if (is_pointer_readable(pVehicle)) {
+            void* vehicle = *pVehicle;
+            if (vehicle && !is_pointer_readable(vehicle)) {
+                LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target vehicle is invalid (%p) at offset 0x18! Skipping calculation to prevent SIGSEGV.", vehicle);
+                return;
+            }
         }
-    }
-    
-    // Check offset 0x10 (target entity)
-    void** pEntity = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-    if (is_pointer_readable(pEntity)) {
-        void* entity = *pEntity;
-        if (entity && !is_pointer_readable(entity)) {
-            LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target entity is invalid (%p) at offset 0x10! Skipping calculation to prevent SIGSEGV.", entity);
-            return;
+        
+        // Check offset 0x10 (target entity)
+        void** pEntity = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (is_pointer_readable(pEntity)) {
+            void* entity = *pEntity;
+            if (entity && !is_pointer_readable(entity)) {
+                LOGW("⚠️ [CTaskGangHassleVehicle::CalcTargetOffset] Target entity is invalid (%p) at offset 0x10! Skipping calculation to prevent SIGSEGV.", entity);
+                return;
+            }
         }
     }
     
@@ -5962,7 +5962,7 @@ static fn_DoFootLanded_t g_orig_do_foot_landed = nullptr;
 
 static void proxy_do_foot_landed(void* ped, bool left_foot, unsigned char surface_type) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!ped || !is_ped_pointer_valid_safe(ped) || !*reinterpret_cast<void**>(ped)) {
+    if (ped && (!is_ped_pointer_valid_safe(ped) || !*reinterpret_cast<void**>(ped))) {
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_do_foot_landed, ped, left_foot, surface_type);
@@ -6161,32 +6161,34 @@ static fn_PlayFootSteps_t g_orig_play_footsteps = nullptr;
 
 static void proxy_play_footsteps(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) return;
+    if (self && !is_pointer_readable(self)) return;
 
-    // 1. 检查 m_pRwObject (offset 0x20) 是否有效
-    void** rw_obj_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
-    if (!is_pointer_readable(rw_obj_slot) || *rw_obj_slot == nullptr) {
-        return;
-    }
-    void* rw_obj = *rw_obj_slot;
+    if (self) {
+        // 1. 检查 m_pRwObject (offset 0x20) 是否有效
+        void** rw_obj_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
+        if (!is_pointer_readable(rw_obj_slot) || *rw_obj_slot == nullptr) {
+            return;
+        }
+        void* rw_obj = *rw_obj_slot;
 
-    // 2. 检查 rw_obj->field_308 (offset 0x308) 是否有效
-    void** field_308_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(rw_obj) + 0x308);
-    if (!is_pointer_readable(field_308_slot) || *field_308_slot == nullptr) {
-        return;
-    }
-    void* field_308 = *field_308_slot;
+        // 2. 检查 rw_obj->field_308 (offset 0x308) 是否有效
+        void** field_308_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(rw_obj) + 0x308);
+        if (!is_pointer_readable(field_308_slot) || *field_308_slot == nullptr) {
+            return;
+        }
+        void* field_308 = *field_308_slot;
 
-    // 3. 检查 field_308->field_10 (offset 0x10) 是否非零
-    int* field_10_ptr = reinterpret_cast<int*>(reinterpret_cast<char*>(field_308) + 0x10);
-    if (!is_pointer_readable(field_10_ptr) || *field_10_ptr == 0) {
-        return;
-    }
+        // 3. 检查 field_308->field_10 (offset 0x10) 是否非零
+        int* field_10_ptr = reinterpret_cast<int*>(reinterpret_cast<char*>(field_308) + 0x10);
+        if (!is_pointer_readable(field_10_ptr) || *field_10_ptr == 0) {
+            return;
+        }
 
-    // 4. 检查 *field_308 是否有效
-    void** field_308_deref_slot = reinterpret_cast<void**>(field_308);
-    if (!is_pointer_readable(field_308_deref_slot) || *field_308_deref_slot == nullptr) {
-        return;
+        // 4. 检查 *field_308 是否有效
+        void** field_308_deref_slot = reinterpret_cast<void**>(field_308);
+        if (!is_pointer_readable(field_308_deref_slot) || *field_308_deref_slot == nullptr) {
+            return;
+        }
     }
 
     SHADOWHOOK_CALL_PREV(proxy_play_footsteps, self);
@@ -6250,8 +6252,8 @@ static fn_u_strlen_t g_orig_u_strlen = nullptr;
 
 static int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!s || !is_pointer_readable(s)) {
-        LOGW("⚠️ [u_strlen_64 Hook] null/wild pointer detected! Returning 0.");
+    if (s && !is_pointer_readable(s)) {
+        LOGW("⚠️ [u_strlen_64 Hook] wild pointer detected! Returning 0.");
         return 0;
     }
     return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
@@ -6983,6 +6985,7 @@ void init_ecs_systems() {
         for (auto crim_ent : criminals) {
             auto* ped = static_cast<CPed*>(crim_ent);
             if (!ped || !is_ped_pointer_valid_safe(ped) || (g_IsAlive && !g_IsAlive(ped))) {
+                ecs::EntityManager::get().destroy_entity(crim_ent);
                 continue;
             }
 
@@ -7015,6 +7018,7 @@ void init_ecs_systems() {
         for (auto cop_ent : cops) {
             auto* cop = static_cast<CPed*>(cop_ent);
             if (!cop || !is_ped_pointer_valid_safe(cop) || (g_IsAlive && !g_IsAlive(cop))) {
+                ecs::EntityManager::get().destroy_entity(cop_ent);
                 continue;
             }
 
