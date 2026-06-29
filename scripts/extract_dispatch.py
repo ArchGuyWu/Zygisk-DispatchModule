@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Extract dispatch_logic.cpp from module.cpp."""
+"""One-shot extractor used during the 2026-06 dispatch_logic.cpp split.
+
+dispatch_logic.cpp already exists in the tree. Re-running without --force will
+refuse to overwrite it.
+"""
 from __future__ import annotations
 
+import argparse
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +68,7 @@ PROXY_NAMES = [
     "proxy_tell_occupants_leave_car",
 ]
 
+# Historical line range from the pre-split monolith.
 START, END = 670, 5379
 
 
@@ -73,7 +80,31 @@ def strip_static_proxy(line: str) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite dispatch_logic.cpp from module.cpp line ranges",
+    )
+    args = parser.parse_args()
+
+    if DISPATCH.exists() and not args.force:
+        print(
+            "Refusing to run: dispatch_logic.cpp already exists. "
+            "Use --force only with a monolithic module.cpp backup.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     lines = MODULE.read_text(encoding="utf-8").splitlines(keepends=True)
+    if len(lines) < END:
+        print(
+            f"Refusing to run: module.cpp has {len(lines)} lines; "
+            f"expected at least {END} for historical range.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     chunk = lines[START - 1 : END]
 
     out: list[str] = []

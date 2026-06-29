@@ -58,15 +58,8 @@ fn_GiveWeapon_t               g_GiveWeapon = nullptr;
 fn_SetCurrentWeapon_t         g_SetCurrentWeapon = nullptr;
 fn_GiveWeaponAtStartOfFight_t g_GiveWeaponAtStartOfFight = nullptr;
 
-// 火源检测与避让系统全局变量与类型定义
 void* g_FireManager = nullptr;
-typedef void* (*fn_FindNearestFire_t)(void* fire_manager_this, const CVector& pos, bool bCheckScriptFires, bool bCheckNormalFires);
 fn_FindNearestFire_t g_FindNearestFire = nullptr;
-
-// 假枪声所需函数指针与类型定义
-typedef void (*fn_CEventGunShot_ctor_t)(void*, CEntity*, CVector, CVector, bool);
-typedef void (*fn_CEventGunShot_dtor_t)(void*);
-typedef void (*fn_CEventGroup_Add_t)(void*, void*, bool);
 
 fn_CEventGunShot_ctor_t g_CEventGunShot_ctor = nullptr;
 fn_CEventGunShot_dtor_t g_CEventGunShot_dtor = nullptr;
@@ -74,7 +67,8 @@ fn_CEventGroup_Add_t    g_CEventGroup_Add = nullptr;
 
 FMalloc** g_p_GMalloc = nullptr;
 
-fn_RegisterKill_t             g_RegisterKill = nullptr;
+fn_RegisterKill_t             g_orig_register_kill = nullptr;
+fn_SetWantedLevel_orig_t      g_orig_set_wanted = nullptr;
 fn_GetWeaponLockOnTarget_t    g_GetWeaponLockOnTarget = nullptr;
 fn_IsAlive_t                  g_IsAlive = nullptr;
 fn_VehicleInflictDamage_t     g_VehicleInflictDamage = nullptr;
@@ -83,49 +77,29 @@ void*                         g_ms_pPedPool = nullptr;
 void**                        g_CSequenceManager_ms_instance = nullptr;
 void*                         g_ms_pVehiclePool = nullptr;
 
-// 摄像机/视野判定相关符号
 void*                         g_TheCamera = nullptr;
-typedef CVector (*fn_GetGameCamPosition_t)(void*);
-typedef CVector (*fn_GetLookDirection_t)(void*);
-
 fn_GetGameCamPosition_t       g_GetGameCamPosition = nullptr;
 fn_GetLookDirection_t         g_GetLookDirection = nullptr;
-
-// 任务与载具交互相关符号
-typedef bool (*fn_IsDriver_t)(const void* vehicle_this, const CPed* ped);
-typedef bool (*fn_IsPassenger_t)(const void* vehicle_this, const CPed* ped);
-typedef void (*fn_TellOccupantsToLeaveCar_t)(void* vehicle);
-typedef void* (*fn_GetPoolVehicle_t)(int);
 
 fn_IsDriver_t                g_IsDriver = nullptr;
 fn_IsPassenger_t             g_IsPassenger = nullptr;
 fn_TellOccupantsToLeaveCar_t g_TellOccupantsToLeaveCar = nullptr;
 fn_GetPoolVehicle_t          g_GetPoolVehicle = nullptr;
-
-typedef void (*fn_GetCarToGoToCoors_t)(void* vehicle, CVector* coors, int drivingMode, bool flag);
 fn_GetCarToGoToCoors_t        g_GetCarToGoToCoors = nullptr;
-
-typedef void (*fn_SwitchRoadsOffInArea_t)(void* instance, float minX, float minY, float minZ, float maxX, float maxY, float maxZ, bool bSwitchOff, bool bKeepVehicles, bool bAllowBoats);
 fn_SwitchRoadsOffInArea_t     g_SwitchRoadsOffInArea = nullptr;
 void*                         g_ThePaths = nullptr;
 
-typedef void* (*fn_TaskNew_t)(unsigned long);
 fn_TaskNew_t                  g_TaskNew = nullptr;
 fn_TaskKillCriminal_ctor_t    g_TaskKillCriminal_ctor = nullptr;
 fn_SetTask_t                  g_SetTask = nullptr;
 fn_TaskEnterCar_ctor_t        g_TaskEnterCar_ctor = nullptr;
 void*                         g_vtable_KillCriminal = nullptr;
 void*                         g_vtable_EnterCar = nullptr;
-
 void*                         g_vtable_CTask = nullptr;
 void*                         g_vtable_CTaskSimple = nullptr;
 void*                         g_vtable_CTaskComplex = nullptr;
 void*                         g_vtable_CEvent = nullptr;
-
-typedef void (*fn_AddTaskPrimaryMaybeInGroup_t)(void* ped_intel_this, CTask* task, bool writeToEventLog);
 fn_AddTaskPrimaryMaybeInGroup_t g_AddTaskPrimaryMaybeInGroup = nullptr;
-
-typedef void* (*fn_FindTaskByType_t)(const void* ped_intel_this, int task_type);
 fn_FindTaskByType_t g_FindTaskByType = nullptr;
 
 
@@ -140,12 +114,10 @@ void* g_stub_generate_damage_event = nullptr;
 fn_GenerateDamageEvent_orig_t g_orig_generate_damage_event = nullptr;
 
 void* g_stub_the_scripts_process = nullptr;
-typedef void (*fn_TheScriptsProcess_t)();
 fn_TheScriptsProcess_t g_orig_the_scripts_process = nullptr;
 
 void* g_stub_event_damage_ctor_c1 = nullptr;
 void* g_stub_event_damage_ctor_c2 = nullptr;
-typedef void (*fn_EventDamage_ctor_t)(void* event_this, CEntity* damageSource, unsigned int startTime, eWeaponType weaponType, int pieceType, unsigned char damageSeverity, bool b1, bool b2);
 fn_EventDamage_ctor_t g_orig_event_damage_ctor_c1 = nullptr;
 fn_EventDamage_ctor_t g_orig_event_damage_ctor_c2 = nullptr;
 
@@ -828,7 +800,7 @@ void hook_thread_func() {
         TARGET_LIB,
         "_ZN13CEventHandler12RegisterKillEPK4CPedPK7CEntity11eWeaponTypeb",
         reinterpret_cast<void*>(proxy_register_kill),
-        nullptr);
+        reinterpret_cast<void**>(&g_orig_register_kill));
     if (g_stub_register_kill) LOGI("✅ Hooked CEventHandler::RegisterKill");
     else LOGE("❌ Failed to hook RegisterKill: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
@@ -838,7 +810,7 @@ void hook_thread_func() {
         TARGET_LIB,
         "_ZN7CWanted14SetWantedLevelEi",
         reinterpret_cast<void*>(proxy_set_wanted_level),
-        nullptr);
+        reinterpret_cast<void**>(&g_orig_set_wanted));
     if (g_stub_set_wanted) LOGI("✅ Hooked CWanted::SetWantedLevel");
     else LOGE("❌ Failed to hook SetWantedLevel: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
