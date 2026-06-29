@@ -897,6 +897,32 @@ void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, fl
     SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
 }
 
+// --- MakeAbortable shared guards (CEventHandler::HandleEvents hot path) ---
+inline bool make_abortable_event_unsafe(void* event) {
+    if (!event) return false;
+    if (!is_userspace_address(event) || !is_pointer_readable(event)) return true;
+    void** vtable_slot = reinterpret_cast<void**>(event);
+    return !is_pointer_readable(vtable_slot) || !*vtable_slot;
+}
+
+inline bool make_abortable_ped_field_unsafe(void* ped, size_t field_offset) {
+    if (!ped) return false;
+    if (!is_pointer_readable(ped)) return true;
+    if (!is_ped_pointer_valid_safe(ped)) return true;
+    return !is_pointer_readable(reinterpret_cast<char*>(ped) + field_offset);
+}
+
+inline bool task_subtask_vtable_fn_unsafe(void* self, size_t subtask_offset, size_t vtable_offset) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + subtask_offset);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) return false;
+    void* sub = *sub_slot;
+    if (!is_task_vtable_safe(sub)) return true;
+    void** fn_slot = reinterpret_cast<void**>(
+        reinterpret_cast<char*>(*reinterpret_cast<void**>(sub)) + vtable_offset);
+    return !is_pointer_readable(fn_slot) || !*fn_slot || !is_pointer_readable(*fn_slot);
+}
+
 // --- CTaskComplexLeaveCar::MakeAbortable Hook ---
 void* g_stub_leave_car_make_abortable = nullptr;
 fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
@@ -905,6 +931,7 @@ bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* e
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
 
     if (self) {
         sanitize_unsafe_subtask_at(self, 0x10);
@@ -920,6 +947,7 @@ bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* 
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
@@ -938,6 +966,7 @@ bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, v
     SHADOWHOOK_STACK_SCOPE();
     if (self && !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
@@ -950,6 +979,68 @@ bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, v
         return false;
     }
     return SHADOWHOOK_CALL_PREV(proxy_achieve_heading_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexFollowPointRoute::MakeAbortable Hook ---
+void* g_stub_follow_point_route_make_abortable = nullptr;
+fn_FollowPointRouteMakeAbortable_t g_orig_follow_point_route_make_abortable = nullptr;
+
+bool proxy_follow_point_route_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) {
+        LOGW("⚠️ [FollowPointRoute::MakeAbortable] stale event %p — return false", event);
+        return false;
+    }
+    if (self) {
+        void** route_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x30);
+        if (is_pointer_readable(route_slot) && *route_slot && !is_pointer_readable(*route_slot)) {
+            return false;
+        }
+        sanitize_unsafe_subtask_at(self, 0x10);
+        if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_follow_point_route_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexKillPedOnFoot::MakeAbortable Hook ---
+void* g_stub_kill_ped_on_foot_make_abortable = nullptr;
+fn_KillPedOnFootMakeAbortable_t g_orig_kill_ped_on_foot_make_abortable = nullptr;
+
+bool proxy_kill_ped_on_foot_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    if (ped && make_abortable_ped_field_unsafe(ped, 0x63c)) {
+        LOGW("⚠️ [KillPedOnFoot::MakeAbortable] stale ped %p +0x63c — return true", ped);
+        return true;
+    }
+    if (self) {
+        sanitize_unsafe_subtask_at(self, 0x10);
+        if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x38)) return true;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_kill_ped_on_foot_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskSimpleAnim::MakeAbortable Hook ---
+void* g_stub_simple_anim_make_abortable = nullptr;
+fn_SimpleAnimMakeAbortable_t g_orig_simple_anim_make_abortable = nullptr;
+
+bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) {
+        LOGW("⚠️ [SimpleAnim::MakeAbortable] stale event %p — return false", event);
+        return false;
+    }
+    if (self) {
+        sanitize_unsafe_subtask_at(self, 0x18);
+        if (task_subtask_vtable_fn_unsafe(self, 0x18, 0x28)) return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_simple_anim_make_abortable, self, ped, priority, event);
 }
 
 // --- CCarAI::UpdateCarAI Hook ---

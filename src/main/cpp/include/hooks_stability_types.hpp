@@ -40,6 +40,9 @@ typedef void (*fn_ProcessFollowPedSA_t)(void* self, const CVector& target, float
 typedef bool (*fn_LeaveCarMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef bool (*fn_GoToPointMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef bool (*fn_AchieveHeadingMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_FollowPointRouteMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_KillPedOnFootMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_SimpleAnimMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void (*fn_UpdateCarAI_t)(void* vehicle);
 typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
 typedef void* (*fn_GetTaskMain_t)(void* self, void* ped);
@@ -84,6 +87,9 @@ extern fn_IKChainIsFacingTarget_t g_orig_ik_chain_is_facing_target;
 extern fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task;
 extern fn_GoToPointMakeAbortable_t g_orig_goto_point_make_abortable;
 extern fn_AchieveHeadingMakeAbortable_t g_orig_achieve_heading_make_abortable;
+extern fn_FollowPointRouteMakeAbortable_t g_orig_follow_point_route_make_abortable;
+extern fn_KillPedOnFootMakeAbortable_t g_orig_kill_ped_on_foot_make_abortable;
+extern fn_SimpleAnimMakeAbortable_t g_orig_simple_anim_make_abortable;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -125,3 +131,6 @@ bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index);
 void* proxy_get_simplest_active_task(void* self);
 bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* event);
 bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_follow_point_route_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_kill_ped_on_foot_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void* event);

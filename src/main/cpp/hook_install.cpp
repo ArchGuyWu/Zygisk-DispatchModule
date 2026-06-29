@@ -617,6 +617,33 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskSimpleAchieveHeading::MakeAbortable: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_follow_point_route_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN28CTaskComplexFollowPointRoute13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_follow_point_route_make_abortable),
+        reinterpret_cast<void**>(&g_orig_follow_point_route_make_abortable));
+    if (g_stub_follow_point_route_make_abortable) LOGI("✅ Hooked CTaskComplexFollowPointRoute::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexFollowPointRoute::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_kill_ped_on_foot_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN25CTaskComplexKillPedOnFoot13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_kill_ped_on_foot_make_abortable),
+        reinterpret_cast<void**>(&g_orig_kill_ped_on_foot_make_abortable));
+    if (g_stub_kill_ped_on_foot_make_abortable) LOGI("✅ Hooked CTaskComplexKillPedOnFoot::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexKillPedOnFoot::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_simple_anim_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN15CTaskSimpleAnim13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_simple_anim_make_abortable),
+        reinterpret_cast<void**>(&g_orig_simple_anim_make_abortable));
+    if (g_stub_simple_anim_make_abortable) LOGI("✅ Hooked CTaskSimpleAnim::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskSimpleAnim::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CCarAI::UpdateCarAI
     g_stub_update_car_ai = shadowhook_hook_sym_name(
         TARGET_LIB,
