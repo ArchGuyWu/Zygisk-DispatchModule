@@ -4,7 +4,7 @@
 
 #include "game_types.hpp"
 
-// Stability-hook callback typedefs (shared by hooks_stability.cpp and module.cpp hook installer)
+// Stability-hook callback typedefs (shared by hooks_stability.cpp and hook_install.cpp)
 typedef void (*fn_SetPedPosition_t)(void* self, void* ped);
 typedef void (*fn_ManageTasks_t)(void* self);
 typedef bool (*fn_IsSimple_t)(void* self);
@@ -59,7 +59,7 @@ extern fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable;
 extern fn_UpdateCarAI_t g_orig_update_car_ai;
 extern fn_FacialControlSubTask_t g_orig_facial_control_sub_task;
 
-// Stability hook proxies (defined in hooks_stability.cpp, installed from module.cpp)
+// Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
 void proxy_manage_tasks(void* self);
 void proxy_scan_for_attractors_in_range(void* self, void* ped);

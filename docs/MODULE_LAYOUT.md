@@ -14,7 +14,8 @@ mod-workspace/
 │   │   └── mod_shared.hpp       # 跨文件 extern 全局量与共享 API
 │   ├── zygisk/
 │   ├── ecs_engine.hpp
-│   ├── module.cpp               # 全局符号、辅助函数、Hook 安装、Zygisk (~1.3k 行)
+│   ├── module.cpp               # 全局符号、辅助函数、Zygisk (~750 行)
+│   ├── hook_install.cpp         # dlsym 解析、33-Hook 安装、vtable 修补 (~630 行)
 │   ├── dispatch_logic.cpp       # 案件状态、决策引擎、并案 (~400 行)
 │   ├── dispatch_hooks.cpp       # 犯罪/伤害/通缉 Hook 代理 (~540 行)
 │   ├── dispatch_cop_response.cpp # 警车绑定、武器判定、cop 入场 (~800 行)

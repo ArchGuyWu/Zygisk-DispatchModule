@@ -57,6 +57,7 @@ add_library(shadowhook_nothing SHARED ${SHADOWHOOK_CPP_DIR}/nothing/sh_nothing.c
 # 编译我们的模块并静态链接 shadowhook
 add_library(policemod SHARED
     module.cpp
+    hook_install.cpp
     dispatch_logic.cpp
     dispatch_hooks.cpp
     dispatch_cop_response.cpp
