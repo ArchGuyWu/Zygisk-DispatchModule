@@ -5990,6 +5990,37 @@ static void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm) {
 }
 
 // =====================================================================
+// 👮‍♂️ [Wanted-System Spawning Protection]
+// =====================================================================
+static std::atomic<bool> g_in_wanted_update{false};
+
+static void* g_stub_wanted_update = nullptr;
+typedef void (*fn_WantedUpdate_t)(void*);
+static fn_WantedUpdate_t g_orig_wanted_update = nullptr;
+
+static void proxy_wanted_update(void* this_wanted) {
+    SHADOWHOOK_STACK_SCOPE();
+    g_in_wanted_update.store(true);
+    SHADOWHOOK_CALL_PREV(proxy_wanted_update, this_wanted);
+    g_in_wanted_update.store(false);
+}
+
+static void* g_stub_add_ped = nullptr;
+typedef CPed* (*fn_AddPed_t)(int, unsigned int, const CVector&, bool);
+static fn_AddPed_t g_orig_add_ped = nullptr;
+
+static CPed* proxy_add_ped(int pedType, unsigned int modelIndex, const CVector& pos, bool bUnknown) {
+    SHADOWHOOK_STACK_SCOPE();
+
+    if (pedType == 6 && g_in_wanted_update.load()) { // PED_TYPE_COP = 6
+        LOGI("🚫 [trueDispatch] Intercepted and blocked wanted-system forced cop spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", modelIndex, pos.x, pos.y, pos.z);
+        return nullptr;
+    }
+
+    return SHADOWHOOK_CALL_PREV(proxy_add_ped, pedType, modelIndex, pos, bUnknown);
+}
+
+// =====================================================================
 // =====================================================================
 // 🚑🚒 [Emergency Workaround]：移动端救护车与消防车因超长视距生成即秒删 Bug 的修复
 // =====================================================================
@@ -6771,6 +6802,24 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_be_in_group_control_sub_task));
     if (g_stub_be_in_group_control_sub_task) LOGI("✅ Hooked CTaskComplexBeInGroup::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexBeInGroup::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CWanted::Update (通缉系统更新)
+    g_stub_wanted_update = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN7CWanted6UpdateEv",
+        reinterpret_cast<void*>(proxy_wanted_update),
+        reinterpret_cast<void**>(&g_orig_wanted_update));
+    if (g_stub_wanted_update) LOGI("✅ Hooked CWanted::Update");
+    else LOGE("❌ Failed to hook CWanted::Update: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CPopulation::AddPed (行人生成)
+    g_stub_add_ped = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN11CPopulation6AddPedE8ePedTypejRK7CVectorb",
+        reinterpret_cast<void*>(proxy_add_ped),
+        reinterpret_cast<void**>(&g_orig_add_ped));
+    if (g_stub_add_ped) LOGI("✅ Hooked CPopulation::AddPed");
+    else LOGE("❌ Failed to hook CPopulation::AddPed: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
     void* pure_virtual_target = nullptr;
