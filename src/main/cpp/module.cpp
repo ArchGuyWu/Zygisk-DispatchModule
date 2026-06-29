@@ -6498,6 +6498,50 @@ static void proxy_process_follow_ped_sa(void* self, const CVector& target, float
     SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
 }
 
+// --- CTaskComplexLeaveCar::MakeAbortable Hook ---
+static void* g_stub_leave_car_make_abortable = nullptr;
+typedef bool (*fn_LeaveCarMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+static fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
+
+static bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (!self) return false; // Protect against nullptr task
+    return SHADOWHOOK_CALL_PREV(proxy_leave_car_make_abortable, self, ped, priority, event);
+}
+
+// --- CCarAI::UpdateCarAI Hook ---
+static void* g_stub_update_car_ai = nullptr;
+typedef void (*fn_UpdateCarAI_t)(void* vehicle);
+static fn_UpdateCarAI_t g_orig_update_car_ai = nullptr;
+
+static void proxy_update_car_ai(void* vehicle) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (vehicle && !is_pointer_readable(vehicle)) return;
+    if (vehicle) {
+        void** vtable_ptr = reinterpret_cast<void**>(vehicle);
+        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
+            LOGW("⚠️ [UpdateCarAI] vehicle (%p) is zero-filled! Intercepting to prevent crash.", vehicle);
+            return;
+        }
+    }
+    SHADOWHOOK_CALL_PREV(proxy_update_car_ai, vehicle);
+}
+
+// --- CTaskComplexFacial::ControlSubTask Hook ---
+static void* g_stub_facial_control_sub_task = nullptr;
+typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
+static fn_FacialControlSubTask_t g_orig_facial_control_sub_task = nullptr;
+
+static void* proxy_facial_control_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
+    if (!self) return nullptr; // Protect against nullptr task
+    return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
+}
+
 
 
 // =====================================================================
@@ -6951,6 +6995,33 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_process_follow_ped_sa));
     if (g_stub_process_follow_ped_sa) LOGI("✅ Hooked CCam::Process_FollowPed_SA");
     else LOGE("❌ Failed to hook CCam::Process_FollowPed_SA: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexLeaveCar::MakeAbortable
+    g_stub_leave_car_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN20CTaskComplexLeaveCar13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_leave_car_make_abortable),
+        reinterpret_cast<void**>(&g_orig_leave_car_make_abortable));
+    if (g_stub_leave_car_make_abortable) LOGI("✅ Hooked CTaskComplexLeaveCar::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexLeaveCar::MakeAbortable: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CCarAI::UpdateCarAI
+    g_stub_update_car_ai = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN6CCarAI11UpdateCarAIEP8CVehicle",
+        reinterpret_cast<void*>(proxy_update_car_ai),
+        reinterpret_cast<void**>(&g_orig_update_car_ai));
+    if (g_stub_update_car_ai) LOGI("✅ Hooked CCarAI::UpdateCarAI");
+    else LOGE("❌ Failed to hook CCarAI::UpdateCarAI: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexFacial::ControlSubTask
+    g_stub_facial_control_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN18CTaskComplexFacial14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_facial_control_sub_task),
+        reinterpret_cast<void**>(&g_orig_facial_control_sub_task));
+    if (g_stub_facial_control_sub_task) LOGI("✅ Hooked CTaskComplexFacial::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexFacial::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CWanted::Update (通缉系统更新)
     g_stub_wanted_update = shadowhook_hook_sym_name(
