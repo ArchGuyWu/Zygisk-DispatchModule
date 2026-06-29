@@ -19,7 +19,9 @@ mod-workspace/
 │   ├── dispatch_hooks.cpp       # 犯罪/伤害/通缉 Hook 代理 (~540 行)
 │   ├── dispatch_cop_response.cpp # 警车绑定、武器判定、cop 入场 (~800 行)
 │   ├── dispatch_cop_attack.cpp   # make_cops_attack_criminal 编排 (~1476 行)
-│   ├── dispatch_tick.cpp        # 主线程 tick、刷车拦截、急救车 (~1.7k 行)
+│   ├── dispatch_tick.cpp        # 主线程 tick、平民避让、案件 GC (~1k 行)
+│   ├── dispatch_emergency.cpp   # 急救/消防脱困导航 (~500 行)
+│   ├── dispatch_spawn_hooks.cpp # 通缉刷车拦截、应急车距离修正 (~250 行)
 │   ├── hooks_stability.cpp      # 稳定性防御 Hook (~810 行)
 │   ├── ecs_systems.cpp          # init_ecs_systems() (~530 行)
 │   └── CMakeLists.txt
