@@ -34,7 +34,7 @@
 
 ## 🛡️ 官方引擎漏洞修复与防闪退深层剖析
 
-在游戏原版（GTA SA DE Android）中，玩家在与警方、行人、帮派或伴随任务交互时，可能遇到随机 SIGSEGV。本模组通过逆向定位部分高频崩溃路径，并以 **39 处 ShadowHook 挂钩 + 指针可读性校验** 降低（而非保证消除）相关闪退概率。详见 [`docs/CRASH_STATUS.md`](docs/CRASH_STATUS.md)。
+在游戏原版（GTA SA DE Android）中，玩家在与警方、行人、帮派或伴随任务交互时，可能遇到随机 SIGSEGV。本模组通过逆向定位部分高频崩溃路径，并以 **41 处 ShadowHook 挂钩 + 指针可读性校验** 降低（而非保证消除）相关闪退概率。详见 [`docs/CRASH_STATUS.md`](docs/CRASH_STATUS.md)。
 
 ### 1. 缺陷深度分析与定位
 以最频发的伴随/打招呼任务闪退（RVA `0x57ae40c`，对应 `CTaskComplexPartnerGreet::GetPartnerSequence`）为例，崩溃时的底层汇编指令流如下：
@@ -92,9 +92,9 @@ static inline bool is_pointer_readable(const void* ptr) {
 // 当前策略：在 Hook 入口做 is_pointer_readable / vtable 校验，而非全对象内存扫描。
 ```
 
-### 3. Hook 网络概览（39 处，2026-06-29 统计）
+### 3. Hook 网络概览（41 处，2026-06-29 统计）
 
-模组挂钩了与通缉、犯罪上报、应急载具、任务管理、脚步声、浮力、ICU 字符串等相关的多处符号。完整列表见 `rg shadowhook_hook_sym_name src/main/cpp/module.cpp`。按职责大致分为：
+模组挂钩了与通缉、犯罪上报、应急载具、任务管理、脚步声、浮力、ICU 字符串等相关的多处符号。完整列表见 `rg shadowhook_hook_sym_name src/main/cpp/hook_install.cpp`。按职责大致分为：
 
 1.  **玩法功能与自定义警力调度** (共 12 个 Hook)：
     *   `report_crime` (拦截并接管原版的犯罪上报逻辑)
@@ -106,7 +106,7 @@ static inline bool is_pointer_readable(const void* ptr) {
     *   `add_police_occupants` (在警车刷出时绑定乘员)
     *   `tell_occupants_leave_car` (控制警车乘员的下车战术)
     *   `generate_one_emergency_car` / `script_generate_one_emergency_car` (移动端特有的救护车与消防车加载视距缩放 Workaround)
-2.  **稳定性防御 Hook**（约 27 处，与玩法 Hook 有重叠统计）：
+2.  **稳定性防御 Hook**（约 29 处，与玩法 Hook 有重叠统计）：
     *   `u_strlen_64` (防止 ICU 字符串长度计算函数在接收到野指针时发生 SIGSEGV 闪退，在访问前进行指针有效性过滤)
     *   `CPed::ProcessBuoyancy` / `cBuoyancy::ProcessBuoyancy` (防止在行人计算涉水浮力时，由于任务管理器中残留零填充或无效的任务指针而导致解引用虚表闪退。其中 `cBuoyancy::ProcessBuoyancy` 挂钩在物理计算完成后立即净化任务槽，解决了物理 tick 途中任务被销毁/空指针的竞态问题)
     *   `CPed::PlayFootSteps` (防止转场或传送期间由于行人的 `RwClump` 骨骼暂时脱离导致播放脚步声时解引用空指针闪退)
@@ -123,12 +123,13 @@ static inline bool is_pointer_readable(const void* ptr) {
     *   `CTaskComplexAvoidOtherPedWhileWandering::ControlSubTask` (在行人避让决策中，净化目标 Ped 的所有主任务链，防止在避让动作中读取他人野指针任务闪退)
     *   `CTaskComplexSequence::Flush` (防止清除任务序列时，由于序列中包含已被释放填零的任务而导致解引用虚表闪退)
     *   `CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB` (防止闪避动作回调执行时，其关联的任务上下文指针已被提前析构填零导致解引用闪退)
-    *   `CTaskComplexBeInGroup::ControlSubTask` (防止在组任务已被析构填零时，调用子任务控制导致虚表解引用闪退)
+    *   `CTaskComplexBeInGroup::ControlSubTask` / `CPedGroupIntelligence::GetTaskMain` (组任务控制时，若 `GetTaskMain` 返回已析构填零的组任务，原版会在 `vtable+0x28` 处解引用闪退；模组在入口净化任务槽，并对 `GetTaskMain` 返回值做虚表校验，不安全时返回 `nullptr` 走原版空值分支)
     *   `IKChainManager_c::Update` (防止反向动力学链管理器在场景过渡置空时，解引用更新导致的空指针闪退)
     *   `CCam::Process_FollowPed_SA` (防止相机在过渡期失效置空时，解引用跟随角色导致的空指针闪退)
     *   `CTaskComplexLeaveCar::MakeAbortable` (防止强行中断下车动作时，其内部的子任务指针 `m_pSubTask` 为空导致虚表解引用闪退)
     *   `CCarAI::UpdateCarAI` (防止车辆 AI 路线决策更新时，传入已被析构填零的车辆对象引发的解引用闪退)
-    *   `CTaskComplexFacial::ControlSubTask` (防止面部动画任务更新时，其内部的子任务指针 `m_pSubTask` 为空导致虚表解引用闪退)
+    *   `CTaskComplexFacial::ControlSubTask` (防止面部动画任务更新时，其内部的子任务指针 `m_pSubTask` 为空导致虚表解引用闪退；子任务槽净化后为空则跳过原版调用)
+    *   `CCarEnterExit::GetNearestCarDoor` (上车门检测遍历行人任务槽并调用 `vtable+0x28` 时，若任务已被填零会触发 `Pure virtual function called!`；入口净化行人任务槽)
 
 ---
 

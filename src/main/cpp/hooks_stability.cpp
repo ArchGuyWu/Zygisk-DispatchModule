@@ -258,6 +258,17 @@ inline void sanitize_optional_ped_at_slot(void** slot, const char* label) {
 // GangFollower leader/partner: only clear unreadable or zero-filled peds (AGENTS.md).
 // Do not clear merely because the ped is absent from the pool — that can false-positive
 // and leave nullptr at task+0x18, which the original reads at +0x498 without a null check.
+inline void sanitize_unsafe_task_slot_at(void* obj, size_t offset, const char* label) {
+    if (!obj || !is_pointer_readable(obj)) return;
+    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(obj) + offset);
+    if (!is_pointer_readable(slot)) return;
+    void* task = *slot;
+    if (task && !is_task_vtable_safe(task)) {
+        LOGW("⚠️ [%s] Clearing unsafe task %p at +0x%zx", label, task, offset);
+        *slot = nullptr;
+    }
+}
+
 inline void sanitize_gang_follower_ped_slot(void** slot, const char* label) {
     if (!slot || !is_pointer_readable(slot)) return;
     void* ped = *slot;
@@ -652,8 +663,42 @@ void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
             LOGW("⚠️ [BeInGroup] self (%p) is zero-filled! Intercepting ControlSubTask to prevent crash.", self);
             return nullptr;
         }
+        sanitize_unsafe_subtask_at(self, 0x10);
+        sanitize_unsafe_task_slot_at(self, 0x28, "BeInGroup secondary");
+    }
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
     }
     return SHADOWHOOK_CALL_PREV(proxy_be_in_group_control_sub_task, self, ped);
+}
+
+// --- CPedGroupIntelligence::GetTaskMain Hook ---
+// BeInGroup::ControlSubTask calls GetTaskMain then dereferences task+vtable+0x28 without
+// a null-vtable guard (tombstone_05, fault 0x28 on zero-filled group task).
+void* g_stub_get_task_main = nullptr;
+fn_GetTaskMain_t g_orig_get_task_main = nullptr;
+
+void* proxy_get_task_main(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    void* result = SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
+    if (result && !is_task_vtable_safe(result)) {
+        LOGW("⚠️ [GetTaskMain] unsafe task %p — returning nullptr", result);
+        return nullptr;
+    }
+    return result;
+}
+
+// --- CCarEnterExit::GetNearestCarDoor Hook ---
+// Iterates ped task slots and calls vtable+0x28; zero-filled tasks trigger pure virtual (tombstone_06).
+void* g_stub_get_nearest_car_door = nullptr;
+fn_GetNearestCarDoor_t g_orig_get_nearest_car_door = nullptr;
+
+bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* door_index) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_get_nearest_car_door, ped, vehicle, out_vec, door_index);
 }
 
 // --- IKChainManager_c::Update Hook ---
@@ -719,6 +764,12 @@ void* proxy_facial_control_sub_task(void* self, void* ped) {
 
     if (self) {
         sanitize_unsafe_subtask_at(self, 0x10);
+        // Original dereferences [self+0x10] without null check (tombstone_07, fault 0x0).
+        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+            LOGW("⚠️ [Facial::ControlSubTask] no subtask after sanitize — skip original");
+            return nullptr;
+        }
     }
     return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
 }

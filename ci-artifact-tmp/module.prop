@@ -1,0 +1,7 @@
+id=zygisk-policedispatch
+name=GTA SA DE Dispatch Module
+version=v1.2.0
+versionCode=3
+author=Grok
+description=Advanced Dispatch Module for GTA SA DE based on Zygisk and ShadowHook, integrating regional consolidation, dynamic quotas, anti-stuck routing, and automated ambient cleanup mechanisms.
+zygisk=true

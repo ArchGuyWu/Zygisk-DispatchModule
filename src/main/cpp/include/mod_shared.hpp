@@ -183,6 +183,8 @@ extern void* g_stub_process_follow_ped_sa;
 extern void* g_stub_leave_car_make_abortable;
 extern void* g_stub_update_car_ai;
 extern void* g_stub_facial_control_sub_task;
+extern void* g_stub_get_task_main;
+extern void* g_stub_get_nearest_car_door;
 
 // Dispatch state (defined in dispatch_logic.cpp)
 extern std::recursive_mutex g_crime_mutex;

@@ -516,6 +516,15 @@ void hook_thread_func() {
     if (g_stub_be_in_group_control_sub_task) LOGI("✅ Hooked CTaskComplexBeInGroup::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexBeInGroup::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CPedGroupIntelligence::GetTaskMain (BeInGroup 在组任务虚表为 null 时解引用 vtable+0x28 闪退)
+    g_stub_get_task_main = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK21CPedGroupIntelligence11GetTaskMainEP4CPed",
+        reinterpret_cast<void*>(proxy_get_task_main),
+        reinterpret_cast<void**>(&g_orig_get_task_main));
+    if (g_stub_get_task_main) LOGI("✅ Hooked CPedGroupIntelligence::GetTaskMain");
+    else LOGE("❌ Failed to hook CPedGroupIntelligence::GetTaskMain: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook IKChainManager_c::Update
     g_stub_ik_chain_update = shadowhook_hook_sym_name(
         TARGET_LIB,
@@ -560,6 +569,15 @@ void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_facial_control_sub_task));
     if (g_stub_facial_control_sub_task) LOGI("✅ Hooked CTaskComplexFacial::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexFacial::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CCarEnterExit::GetNearestCarDoor (上车门检测遍历任务槽时零填充任务触发纯虚函数)
+    g_stub_get_nearest_car_door = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN13CCarEnterExit17GetNearestCarDoorERK4CPedRK8CVehicleR7CVectorRi",
+        reinterpret_cast<void*>(proxy_get_nearest_car_door),
+        reinterpret_cast<void**>(&g_orig_get_nearest_car_door));
+    if (g_stub_get_nearest_car_door) LOGI("✅ Hooked CCarEnterExit::GetNearestCarDoor");
+    else LOGE("❌ Failed to hook CCarEnterExit::GetNearestCarDoor: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CWanted::Update (通缉系统更新)
     g_stub_wanted_update = shadowhook_hook_sym_name(

@@ -31,6 +31,8 @@ typedef void (*fn_ProcessFollowPedSA_t)(void* self, const CVector& target, float
 typedef bool (*fn_LeaveCarMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void (*fn_UpdateCarAI_t)(void* vehicle);
 typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
+typedef void* (*fn_GetTaskMain_t)(void* self, void* ped);
+typedef bool (*fn_GetNearestCarDoor_t)(void* ped, void* vehicle, void* out_vec, int* door_index);
 
 extern fn_SetPedPosition_t g_orig_set_ped_pos;
 extern fn_ManageTasks_t g_orig_manage_tasks;
@@ -58,6 +60,8 @@ extern fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa;
 extern fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable;
 extern fn_UpdateCarAI_t g_orig_update_car_ai;
 extern fn_FacialControlSubTask_t g_orig_facial_control_sub_task;
+extern fn_GetTaskMain_t g_orig_get_task_main;
+extern fn_GetNearestCarDoor_t g_orig_get_nearest_car_door;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -86,3 +90,5 @@ void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, fl
 bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* event);
 void proxy_update_car_ai(void* vehicle);
 void* proxy_facial_control_sub_task(void* self, void* ped);
+void* proxy_get_task_main(void* self, void* ped);
+bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* door_index);
