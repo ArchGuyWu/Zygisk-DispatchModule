@@ -6274,6 +6274,48 @@ static int32_t proxy_u_strlen(const void* s) {
     return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
 }
 
+// --- CTaskComplexSequence::Flush Hook ---
+static void* g_stub_sequence_flush = nullptr;
+typedef void (*fn_SequenceFlush_t)(void* self);
+static fn_SequenceFlush_t g_orig_sequence_flush = nullptr;
+
+static void proxy_sequence_flush(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+
+    if (self) {
+        // Sanitize any zero-filled task pointers inside the sequence
+        sanitize_task_pointers(self, 128);
+    }
+    SHADOWHOOK_CALL_PREV(proxy_sequence_flush, self);
+}
+
+// --- CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB Hook ---
+static void* g_stub_finish_anim_evasive_step_cb = nullptr;
+typedef void (*fn_FinishAnimEvasiveStepCB_t)(void* anim, void* context);
+static fn_FinishAnimEvasiveStepCB_t g_orig_finish_anim_evasive_step_cb = nullptr;
+
+static void proxy_finish_anim_evasive_step_cb(void* anim, void* context) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (context && !is_pointer_readable(context)) {
+        LOGW("⚠️ [EvasiveStep CB] context (%p) is invalid/unreadable! Intercepting callback to prevent crash.", context);
+        return;
+    }
+    if (context) {
+        // Check if the context object (the task) is zero-filled
+        void** vtable_ptr = reinterpret_cast<void**>(context);
+        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
+            LOGW("⚠️ [EvasiveStep CB] context (%p) is zero-filled! Intercepting callback to prevent crash.", context);
+            return;
+        }
+    }
+    if (anim && !is_pointer_readable(anim)) {
+        LOGW("⚠️ [EvasiveStep CB] anim (%p) is invalid/unreadable! Intercepting callback to prevent crash.", anim);
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_finish_anim_evasive_step_cb, anim, context);
+}
+
 
 
 // =====================================================================
@@ -6682,6 +6724,24 @@ static void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_u_strlen));
     if (g_stub_u_strlen) LOGI("✅ Hooked u_strlen_64");
     else LOGE("❌ Failed to hook u_strlen_64: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskComplexSequence::Flush (防止删除/清空序列时因序列中残留零填充任务导致闪退)
+    g_stub_sequence_flush = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN20CTaskComplexSequence5FlushEv",
+        reinterpret_cast<void*>(proxy_sequence_flush),
+        reinterpret_cast<void**>(&g_orig_sequence_flush));
+    if (g_stub_sequence_flush) LOGI("✅ Hooked CTaskComplexSequence::Flush");
+    else LOGE("❌ Failed to hook CTaskComplexSequence::Flush: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB (解决躲避动作结束回调时任务已被零填充析构的崩溃问题)
+    g_stub_finish_anim_evasive_step_cb = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN22CTaskSimpleEvasiveStep23FinishAnimEvasiveStepCBEP21CAnimBlendAssociationPv",
+        reinterpret_cast<void*>(proxy_finish_anim_evasive_step_cb),
+        reinterpret_cast<void**>(&g_orig_finish_anim_evasive_step_cb));
+    if (g_stub_finish_anim_evasive_step_cb) LOGI("✅ Hooked CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB");
+    else LOGE("❌ Failed to hook CTaskSimpleEvasiveStep::FinishAnimEvasiveStepCB: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Patch base class pure virtual slots to neutral stubs
     void* pure_virtual_target = nullptr;
