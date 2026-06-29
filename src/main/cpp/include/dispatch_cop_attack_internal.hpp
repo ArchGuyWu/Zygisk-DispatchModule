@@ -49,5 +49,17 @@ void cop_attack_snapshot_globals(CopAttackContext& ctx);
 void cop_attack_detect_firearm_threat(CopAttackContext& ctx);
 void cop_attack_pass1_count_active(CopAttackContext& ctx);
 void cop_attack_compute_quotas(CopAttackContext& ctx);
+void cop_attack_dispatch_vehicle_cop(
+    CopAttackContext& ctx,
+    CPed* ped,
+    CPed* target_criminal,
+    const CVector& target_crime_pos,
+    void* veh);
+void cop_attack_dispatch_foot_cop(
+    CopAttackContext& ctx,
+    CPed* ped,
+    CPed* target_criminal,
+    const CVector& target_crime_pos,
+    float dist_sq);
 void cop_attack_pass2_dispatch(CopAttackContext& ctx);
 void cop_attack_commit_pending(CopAttackContext& ctx);
