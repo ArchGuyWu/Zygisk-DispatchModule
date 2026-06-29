@@ -6089,7 +6089,7 @@ static int count_active_police_vehicles_near_player(float range) {
 static bool relocate_police_car_spawn(unsigned int model, CVector& pos) {
     int wanted_level = g_player_wanted_level.load();
     if (wanted_level <= 0) {
-        return false;
+        return true; // Allow ambient/parked police cars to spawn normally without relocation or blocking
     }
 
     int max_cars = 0;
@@ -6183,13 +6183,7 @@ static fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nul
 static void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (is_police_vehicle_model(model)) {
-        if (!g_is_generating_custom_dispatch.load()) {
-            if (!relocate_police_car_spawn(model, pos)) {
-                return; // Intercept and block
-            }
-        }
-    }
+    // We do NOT block or relocate scripted police cars to ensure 100% mission compatibility
 
     if ((model == 416 || model == 407) && g_FindPlayerCoors) { // MODEL_AMBULANCE = 416, MODEL_FIRETRUCK = 407
         CVector player_pos = g_FindPlayerCoors(0);
