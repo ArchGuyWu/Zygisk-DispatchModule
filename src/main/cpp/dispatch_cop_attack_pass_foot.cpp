@@ -146,23 +146,6 @@ void cop_attack_dispatch_foot_cop(
                         return; // 3 秒（枪械）或 15 秒（近战）内已指派过，或者已在瞄准，跳过
                     }
 
-                    // 40m 内的野生巡警纳入响应
-                    bool is_extremely_nearby = false;
-                    {
-                        float p_dist = 99999.0f;
-                        if (g_FindPlayerCoors) {
-                            CVector player_pos = g_FindPlayerCoors(0);
-                            float p_dx = cop_pos.x - player_pos.x;
-                            float p_dy = cop_pos.y - player_pos.y;
-                            float p_dz = cop_pos.z - player_pos.z;
-                            p_dist = sqrtf(p_dx * p_dx + p_dy * p_dy + p_dz * p_dz);
-                        }
-                        float c_dist = sqrtf(dist_sq);
-                        if (c_dist < 40.0f || p_dist < 40.0f) {
-                            is_extremely_nearby = true;
-                        }
-                    }
-
                     // 判定是否是已经响应过的地面警员（使用 15 秒内分派或正在瞄准）
                     bool already_assigned_foot_cop = already_targeting || (now_ms() - last_assign < 15000);
                     if (!already_assigned_foot_cop && ctx.active_foot_cops_count >= ctx.max_foot_cops) {
@@ -170,21 +153,7 @@ void cop_attack_dispatch_foot_cop(
                         return;
                     }
 
-                    // 避免穿帮音效：如果当前活跃案件是枪击案 (is_firearm == true)，听觉自然唤醒。但极近距离强行唤醒。
-                    if (!is_extremely_nearby && g_crime_active.load() && ctx.crime_case->is_firearm && !ctx.crime_case->cancelled) {
-                        if (g_FindPlayerCoors) {
-                            CVector player_pos = g_FindPlayerCoors(0);
-                            float p_dx = cop_pos.x - player_pos.x;
-                            float p_dy = cop_pos.y - player_pos.y;
-                            float p_dz = cop_pos.z - player_pos.z;
-                            float p_dist = sqrtf(p_dx * p_dx + p_dy * p_dy + p_dz * p_dz);
-                            if (p_dist < 45.0f) {
-                                return;
-                            }
-                        }
-                    }
-
-                    // 原生任务阶梯（AddCriminalToKill / KillCriminal Task）优先，事件注入仅作兜底
+                    // 原生 + 事件混合唤醒（地面警以事件兜底保证响应，不再因枪击案+玩家近场而跳过）
                     make_single_cop_attack_criminal(ped, target_criminal, false);
 
                     int64_t assign_time = now_ms();

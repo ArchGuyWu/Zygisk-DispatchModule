@@ -693,26 +693,32 @@ static CopCombatDispatchMethod dispatch_cop_combat_ladder(
     }
 
     bool in_vehicle = find_vehicle_of_cop(cop) != nullptr;
+    bool used_kill_task = false;
+    bool used_add_criminal = false;
 
-    if (!in_vehicle && try_dispatch_via_kill_task(cop, criminal)) {
-        return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
-    }
+    if (!in_vehicle) {
+        // 地面警：原生 API 对普通巡逻警常无效，先尝试但不以其返回值作为终止条件
+        used_kill_task = try_dispatch_via_kill_task(cop, criminal);
+        used_add_criminal = try_dispatch_via_add_criminal(cop, criminal);
 
-    if (try_dispatch_via_add_criminal(cop, criminal)) {
-        if (!in_vehicle && !cop_has_lock_on_target(cop, criminal)) {
-            if (try_dispatch_via_kill_task(cop, criminal)) {
-                return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
-            }
+        // 事件唤醒是地面警最可靠路径（358aecc 之前即如此）；无 LockOn 时始终补发
+        if (!cop_has_lock_on_target(cop, criminal)) {
             CopCombatDispatchMethod event_method = try_dispatch_via_events(cop, criminal, weapon);
             if (event_method != CopCombatDispatchMethod::NONE) {
+                LOGI("🎯 [Foot Dispatch] Event wake supplement for cop %p -> criminal %p (native_kill=%d, native_add=%d)",
+                     cop, criminal, used_kill_task ? 1 : 0, used_add_criminal ? 1 : 0);
                 return event_method;
             }
         }
-        return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
+
+        if (used_kill_task) return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
+        if (used_add_criminal) return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
+        return CopCombatDispatchMethod::NONE;
     }
 
-    if (!in_vehicle && try_dispatch_via_kill_task(cop, criminal)) {
-        return CopCombatDispatchMethod::KILL_CRIMINAL_TASK;
+    // 载具内：原生优先，事件仅兜底
+    if (try_dispatch_via_add_criminal(cop, criminal)) {
+        return CopCombatDispatchMethod::ADD_CRIMINAL_TO_KILL;
     }
 
     return try_dispatch_via_events(cop, criminal, weapon);
