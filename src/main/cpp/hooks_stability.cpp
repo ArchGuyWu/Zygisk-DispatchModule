@@ -1177,6 +1177,7 @@ bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority,
 }
 
 // --- CTaskComplexArrestPed::MakeAbortable Hook ---
+// RE: ctor stores ped at task+0x20 (57bf210); subtask at +0x10 tailcalled (57bf3b8).
 void* g_stub_complex_arrest_ped_make_abortable = nullptr;
 fn_ComplexArrestPedMakeAbortable_t g_orig_complex_arrest_ped_make_abortable = nullptr;
 
@@ -1188,8 +1189,8 @@ bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
-    if (task_ped_target_unsafe_at(self, 0x18)) {
-        clear_task_ped_target_at(self, 0x18, "ComplexArrestPed::MakeAbortable");
+    if (task_ped_target_unsafe_at(self, 0x20)) {
+        clear_task_ped_target_at(self, 0x20, "ComplexArrestPed::MakeAbortable");
     }
     sanitize_unsafe_subtask_at(self, 0x10);
     // RE: Complex MakeAbortable tailcalls [self+0x10] with no null cbz (57bf3b8) — short-circuit only here.
