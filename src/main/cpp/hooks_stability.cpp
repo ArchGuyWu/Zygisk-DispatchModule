@@ -897,7 +897,7 @@ void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, fl
 
 // --- MakeAbortable shared guards (CEventHandler::HandleEvents hot path) ---
 inline bool make_abortable_event_unsafe(void* event) {
-    if (!event) return false;
+    if (!event) return false; // cbz-first: null event → caller must CALL_PREV
     if (!is_userspace_address(event) || !is_pointer_readable(event)) return true;
     void** vtable_slot = reinterpret_cast<void**>(event);
     return !is_pointer_readable(vtable_slot) || !*vtable_slot;
@@ -1115,45 +1115,60 @@ bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void*
     return SHADOWHOOK_CALL_PREV(proxy_simple_anim_make_abortable, self, ped, priority, event);
 }
 
-inline bool task_ped_target_unsafe_at(void* self, size_t offset) {
-    if (!self || !is_pointer_readable(self)) return true;
-    void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
-    if (!is_pointer_readable(target_slot)) return false;
-    void* target = *target_slot;
-    if (!target) return false;
-    return !is_ped_pointer_valid_safe(target);
-}
+// cbz-first policy (.agents/AGENTS.md): nullptr → CALL_PREV only when RE shows cbz/cbnz;
+// no cbz → mod may skip/short-circuit. Sanitize/clear only non-null stale slots.
 
-inline void clear_task_ped_target_at(void* self, size_t offset, const char* label) {
-    void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
-    if (!is_pointer_readable(target_slot) || !*target_slot) return;
-    LOGW("⚠️ [%s] stale target %p at +0x%zx — clear, delegate to engine",
-         label, *target_slot, offset);
-    *target_slot = nullptr;
-}
-
-// Zero-filled CPedIntelligence (vtable == null). Task slots null are engine-safe (cbnz chain).
-inline bool intelligence_zero_filled(void* self) {
-    if (!self || !is_pointer_readable(self)) return true;
-    void** vtable_slot = reinterpret_cast<void**>(self);
-    return !is_pointer_readable(vtable_slot) || !*vtable_slot;
-}
-
-inline bool collision_event_ped_at_unsafe(void* event, size_t offset) {
-    if (!event || !is_pointer_readable(event)) return true;
-    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(event) + offset);
+inline bool ped_slot_stale_nonnull(void* owner, size_t offset) {
+    if (!owner || !is_pointer_readable(owner)) return false;
+    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(owner) + offset);
     if (!is_pointer_readable(slot)) return false;
     void* ped = *slot;
     if (!ped) return false;
     return !is_ped_pointer_valid_safe(ped);
 }
 
-inline void clear_collision_event_ped_at(void* event, size_t offset) {
-    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(event) + offset);
-    if (!is_pointer_readable(slot) || !*slot) return;
-    LOGW("⚠️ [ComputePedCollision] stale event+%#zx ped %p — clear, delegate to engine",
-         offset, *slot);
+inline void clear_ped_slot_if_stale(void* owner, size_t offset, const char* label) {
+    if (!ped_slot_stale_nonnull(owner, offset)) return;
+    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(owner) + offset);
+    LOGW("⚠️ [%s] stale ped %p at +0x%zx — clear, delegate to engine (cbz path)",
+         label, *slot, offset);
     *slot = nullptr;
+}
+
+inline bool task_slot_stale_nonnull(void* self, size_t offset) {
+    if (!self || !is_pointer_readable(self)) return false;
+    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
+    if (!is_pointer_readable(slot)) return false;
+    void* target = *slot;
+    if (!target) return false;
+    return !is_ped_pointer_valid_safe(target);
+}
+
+inline void clear_task_ped_slot_if_stale(void* self, size_t offset, const char* label) {
+    if (!task_slot_stale_nonnull(self, offset)) return;
+    void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
+    LOGW("⚠️ [%s] stale target %p at +0x%zx — clear, delegate to engine (cbz path)",
+         label, *slot, offset);
+    *slot = nullptr;
+}
+
+// Non-null pointer to zero-filled CPedIntelligence (vtable == null).
+inline bool intelligence_zero_filled(void* self) {
+    if (!self || !is_pointer_readable(self)) return false;
+    void** vtable_slot = reinterpret_cast<void**>(self);
+    return is_pointer_readable(vtable_slot) && !*vtable_slot;
+}
+
+inline void sanitize_intel_tasks_if_present(void* ped, const char* tag) {
+    if (!ped || !is_ped_pointer_valid_safe(ped)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (!intel || intelligence_zero_filled(intel)) return;
+    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, tag);
+}
+
+// RE: ComputePedCollision — no cbz on event* before 54d6fd0.
+inline bool compute_collision_event_unreadable(void* event) {
+    return !event || !is_pointer_readable(event) || make_abortable_event_unsafe(event);
 }
 
 // --- CTaskSimpleArrestPed::MakeAbortable Hook ---
@@ -1170,9 +1185,7 @@ bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority,
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
-    if (task_ped_target_unsafe_at(self, 0x10)) {
-        clear_task_ped_target_at(self, 0x10, "SimpleArrestPed::MakeAbortable");
-    }
+    clear_task_ped_slot_if_stale(self, 0x10, "SimpleArrestPed::MakeAbortable");
     return SHADOWHOOK_CALL_PREV(proxy_simple_arrest_ped_make_abortable, self, ped, priority, event);
 }
 
@@ -1189,14 +1202,16 @@ bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
-    if (task_ped_target_unsafe_at(self, 0x20)) {
-        clear_task_ped_target_at(self, 0x20, "ComplexArrestPed::MakeAbortable");
-    }
+    clear_task_ped_slot_if_stale(self, 0x20, "ComplexArrestPed::MakeAbortable");
     sanitize_unsafe_subtask_at(self, 0x10);
-    // RE: Complex MakeAbortable tailcalls [self+0x10] with no null cbz (57bf3b8) — short-circuit only here.
+    // RE: subtask at +0x10 null → no cbz 57bf3b8 — mod short-circuit.
     void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-    if (!is_pointer_readable(sub_slot) || !*sub_slot || !is_task_vtable_safe(*sub_slot)) {
-        LOGW("⚠️ [ComplexArrestPed::MakeAbortable] missing/unsafe subtask — return false");
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [ComplexArrestPed::MakeAbortable] null subtask (no cbz) — return false");
+        return false;
+    }
+    if (!is_task_vtable_safe(*sub_slot)) {
+        LOGW("⚠️ [ComplexArrestPed::MakeAbortable] stale subtask — return false");
         return false;
     }
     if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return true;
@@ -1210,7 +1225,8 @@ fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
 
 void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (intelligence_zero_filled(self)) return;
+    // RE: self null → no cbz 55debf4; zero-filled vtable → no cbz.
+    if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
     sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessAfterProcCol");
     SHADOWHOOK_CALL_PREV(proxy_process_after_proc_col, self);
 }
@@ -1222,11 +1238,10 @@ fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events = nullptr;
 
 void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!ped || !is_pointer_readable(ped)) return;
-    if (!is_ped_pointer_valid_safe(ped)) return;
+    // RE: ped null → no cbz before 55da968; ped+0x5e8 intel null → no cbz 55da968.
+    if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-    // ped+0x5e8 == nullptr: engine has no cbz before 55da970.
-    if (!intel || intelligence_zero_filled(intel)) return;
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
     sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForCollisionEvents");
     SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
 }
@@ -1239,19 +1254,13 @@ fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with_ped_re
 void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (!event || !is_pointer_readable(event) || make_abortable_event_unsafe(event)) return nullptr;
-    if (collision_event_ped_at_unsafe(event, 0x18)) {
-        clear_collision_event_ped_at(event, 0x18);
-    } else {
-        void** ped_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(event) + 0x18);
-        if (is_pointer_readable(ped_slot) && *ped_slot && is_ped_pointer_valid_safe(*ped_slot)) {
-            void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(*ped_slot));
-            if (intel && !intelligence_zero_filled(intel)) {
-                sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8,
-                                            "ComputePedCollisionWithPedResponse");
-            }
-        }
+    if (compute_collision_event_unreadable(event)) return nullptr;
+    clear_ped_slot_if_stale(event, 0x18, "ComputePedCollision");
+    void** ped_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(event) + 0x18);
+    if (is_pointer_readable(ped_slot) && *ped_slot) {
+        sanitize_intel_tasks_if_present(*ped_slot, "ComputePedCollisionWithPedResponse");
     }
+    // task/task2 null → cbz 54d70ec on x3; non-null stale vtable → no cbz.
     if (task && !is_task_vtable_safe(task)) return nullptr;
     if (task2 && !is_task_vtable_safe(task2)) return nullptr;
     return SHADOWHOOK_CALL_PREV(proxy_compute_ped_collision_with_ped_response, self, event, task, task2);

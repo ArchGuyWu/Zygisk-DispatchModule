@@ -1,0 +1,23 @@
+- **执行铁律**：
+  - **技术栈/组件**：涉及任何技术栈或组件时，必须使用联网工具查阅其最新/准确信息，不能凭记忆操作。
+  - **命令行工具**：涉及执行具体命令前，必须先在本地查阅帮助文档或在线手册验证参数。
+  - **沙箱命令执行**：分析与调试命令（如 `llvm-objdump`, `readelf` 等编译/反汇编工具）优先通过 `scripts/enter_sandbox.sh` 在 proot-distro 沙箱环境中执行，避免宿主机环境污染或依赖缺失。若包含管道或重定向，必须使用 `sh -c` 将整条命令进行包裹（wrap），避免在宿主机直接执行。
+  - **路径验证**：在操作任何文件或路径前，必须先在本地终端环境验证其真实存在和正确性。
+  - **新会话初始化**：新会话启动后，必须首先读取项目的核心文件（如 `src/main/cpp/module.cpp` 等）以建立完整的项目上下文，严禁在未读取核心源码的情况下进行任何推断或修改。
+  - **APK与墓碑日志分析**：解析 `split_config.arm64_v8a.apk` 中的内存绝对地址时，由于 `.so` 文件在 APK 内有 `0x4000` 字节的物理起头偏移，必须使用公式 `ELF_vaddr = PC_relative_to_mapping + mapping_offset - 0x3000`（若没有 mapping 则使用 `Absolute_Addr - Base_Addr`，其中 `Base_Addr` 为大小为 `0x4146000` 的 `r--` 映射起始地址）计算出正确的 ELF 虚拟地址，再对照项目根目录下的 `libUE4.so` 进行反汇编与符号检索。
+  - **README同步更新**：应用重要的针对官方修复时，同步更新 README 文件。
+  - **多轮测试日志分析**：当用户进行多轮测试后，必须主动收集并分析所有新产生的相关墓碑日志（例如通过 `ls -lt /data/tombstones/` 检索），对每一个相关的闪退日志进行逐一提取和符号/汇编定位分析，严禁漏掉任何一个。
+  - **防闪退与防御性拦截（cbz-first）**：
+    - 每个墓碑修复前，必须对 `libUE4.so` 中崩溃 PC 附近反汇编，逐条确认该解引用路径是否存在 **`cbz` / `cbnz` / `cmp … b.eq` 等等价 null 分支**（用 `llvm-objdump -d` 对照 `ELF_vaddr`）。
+    - **引擎有 null 分支（cbz-first）**：槽位为 `nullptr` 时，模组**不得**提前 `return` / `skip` / 短路；仅允许对**同一路径上非空但 wild / zero-filled / pool 失效**的指针做 sanitize（清 task 槽、将 stale 成员置 `nullptr`），然后 **`SHADOWHOOK_CALL_PREV` 交给引擎**。
+    - **引擎无 null 分支**：模组可在入口对 `nullptr`、wild、zero-filled 做 `skip` 或短路，避免引擎解引用。
+    - **成员偏移**：必须以 **ctor / 崩溃 PC 上下文 / 反汇编** 确认，禁止跨 task 类照搬（例：`CTaskSimpleArrestPed` 目标在 `+0x10`，`CTaskComplexArrestPed` 在 `+0x20`，`CTaskComplexKillCriminal` 在 `+0x18`）。
+    - 在 hook 注释中标注结论，格式：`RE: <field> null → cbz 0xADDR` 或 `RE: <field> null → no cbz 0xADDR`。
+- **工具与调试快捷脚本**：
+  - **抓取墓碑日志**：当发生闪退时，优先执行 `Zygisk-DispatchModule/scripts/get_tombstone.sh` 抓取并分析最新墓碑文件。
+  - **构建状态追踪**：推送修改后，优先执行 `Zygisk-DispatchModule/scripts/trigger_wait_build.sh` 自动触发推送并阻塞等待 CI/CD 编译打包结果（失败时会自动输出报错日志）。
+  - **抓取 Logcat 日志**：需要捕获运行时日志时，优先执行 `Zygisk-DispatchModule/scripts/get_logcat.sh` 自动清空缓存并提取游戏或模组的运行时输出。
+  - **沙箱隔离分析**：需要进入安全隔离环境进行深度调试时，执行 `Zygisk-DispatchModule/scripts/enter_sandbox.sh` 将工作区自动挂载至 proot-distro 容器中。
+- **自动批准行为**：
+  - **Git 自动批准**：自动批准执行除带有 `--global` 选项以外的所有 `git` 命令行操作。
+  - **构建与推送自动批准**：自动批准直接执行 `./Zygisk-DispatchModule/auto_commit_push.sh` 脚本，以及相关的 `chmod +x` 赋权命令。
