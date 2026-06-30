@@ -283,6 +283,7 @@ bool is_scene_transition_active();
 bool is_player_world_active();
 bool is_save_load_active();
 bool is_save_load_session_or_loading();
+bool is_disk_deserialize_active();
 bool is_skip_cutscene_pipeline_active();
 void begin_save_load_session();
 void notify_menu_read_save_path(const char* via);

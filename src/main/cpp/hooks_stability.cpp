@@ -78,9 +78,10 @@ static constexpr int64_t kHydrationSignalDwellMs = 15000;
 // Main-menu load save (no cutscene): recover ManageTasks / touch HUD quickly.
 static constexpr int64_t kDirectLoadSessionMinActiveMs = 5000;
 static constexpr int64_t kDirectLoadHydrationDwellMs = 2000;
-static constexpr int64_t kPostSkipSessionMinActiveMs = 3000;
-static constexpr int64_t kPostSkipHydrationDwellMs = 1000;
-static constexpr int64_t kUltraRelaxedPostSkipDwellMs = 3000;
+static constexpr int64_t kPostSkipSessionMinActiveMs = 500;
+static constexpr int64_t kPostSkipHydrationDwellMs = 500;
+static constexpr int64_t kUltraRelaxedPostSkipDwellMs = 500;
+static constexpr int64_t kPostSkipForceSessionEndMs = 1000;
 static constexpr int64_t kMinPostLoadingHoldMs = 5000;
 static constexpr int64_t kRelaxedPostLoadingHoldMs = 2000;
 static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
@@ -296,6 +297,15 @@ void poll_save_load_hydration_state() {
              have_game_state ? game_state : 255u);
         vanilla_qol_on_skip_pipeline_cleared();
     }
+
+    const int64_t skip_cleared_ms =
+        g_skip_pipeline_cleared_ms.load(std::memory_order_acquire);
+    if (g_save_load_session.load(std::memory_order_acquire) &&
+        skip_cleared_ms > 0 &&
+        now_ms() - skip_cleared_ms >= kPostSkipForceSessionEndMs &&
+        !skip_active && is_player_world_active()) {
+        end_save_load_session("post-skip fast recovery");
+    }
     g_skip_pipeline_was_active.store(skip_active, std::memory_order_release);
 
     if (have_game_state &&
@@ -405,6 +415,10 @@ bool is_scene_transition_active() {
         return g_we_are_in_interior_transition();
     }
     return false;
+}
+
+bool is_disk_deserialize_active() {
+    return read_ms_b_loading();
 }
 
 bool is_save_load_session_or_loading() {
@@ -718,7 +732,9 @@ void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return;
+        // ms_bLoading only: hard-stop (tombstone ManageTasks @ deserialize).
+        // Active session after load/skip: CALL_PREV so scripts re-enable touch HUD.
+        if (read_ms_b_loading()) return;
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
     }
@@ -896,10 +912,9 @@ void proxy_cgame_logic_init_at_start_of_game() {
              "(defer new-game mark, gameState=%u)",
              have_game_state ? game_state : 255u);
     } else {
-        g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::NewGameBootstrap),
-                               std::memory_order_release);
-        begin_save_load_session();
-        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — new game bootstrap (intro may follow)");
+        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — kind deferred "
+             "(await load/new-game hooks, gameState=%u)",
+             have_game_state ? game_state : 255u);
     }
     SHADOWHOOK_CALL_PREV(proxy_cgame_logic_init_at_start_of_game);
 }

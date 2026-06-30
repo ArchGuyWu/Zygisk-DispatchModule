@@ -21,8 +21,10 @@ typedef void (*fn_RemoveWidgetFlag_t)(int widget_id, int flag);
 typedef void (*fn_ProcessLatentWidget_t)(int widget_id, bool);
 typedef bool (*fn_IsWidgetEnabled_t)(int widget_id);
 typedef bool (*fn_LoadDataInSlot_t)(void* self, int slot);
+typedef void (*fn_LoadDataInSlotThunk_t)(void* self, int slot);
+typedef void (*fn_LoadDataInSlotEvent_t)(void* self, bool success, int slot);
 typedef void (*fn_StartNewGameFromMenu_t)(void* self);
-typedef void (*fn_MobileMenuVoid_t)(void* self);
+typedef void (*fn_CutsceneMgrVoid_t)();
 typedef void* (*fn_LoadGameFromSlot_t)(const void* slot_name, int user_index);
 
 static fn_TouchVoid_t g_touch_load_defaults = nullptr;
@@ -36,6 +38,8 @@ static fn_RemoveWidgetFlag_t g_touch_remove_widget_flag = nullptr;
 static fn_RemoveWidgetFlag_t g_touch_remove_button_flag = nullptr;
 static fn_ProcessLatentWidget_t g_touch_process_latent_widget = nullptr;
 static bool (*g_touch_is_widget_enabled)(int) = nullptr;
+static fn_CutsceneMgrVoid_t g_cutscene_resume_cutscene_and_game = nullptr;
+static fn_CutsceneMgrVoid_t g_cutscene_finish_cutscene = nullptr;
 
 static std::atomic<bool> g_touch_rehydrate_pending{false};
 static std::atomic<int64_t> g_touch_rehydrate_not_before_ms{0};
@@ -45,15 +49,8 @@ static constexpr int64_t kTouchRehydrateDeferMs = 500;
 static constexpr int kTouchRehydrateMaxAttempts = 30;
 static constexpr int64_t kTouchRehydrateRetryMs = 500;
 
-// On-foot HUD: right-side action cluster (DE mobile widget IDs).
 static constexpr int kGameplayWidgetIds[] = {
-    0,   // enter/exit vehicle
-    1,   // punch/fire
-    22,  // aim
-    154, // weapon icon
-    161, // sprint
-    150, // look
-    160, // move joystick border
+    0, 1, 22, 154, 161, 150, 160,
 };
 
 static void schedule_touch_rehydrate(const char* reason) {
@@ -64,11 +61,21 @@ static void schedule_touch_rehydrate(const char* reason) {
     LOGI("🛠️ [VanillaQoL] Touch rehydrate scheduled — %s", reason);
 }
 
+static void try_restore_hud_after_skip_cutscene() {
+    if (g_cutscene_resume_cutscene_and_game) {
+        g_cutscene_resume_cutscene_and_game();
+        LOGI("🛠️ [VanillaQoL] Called CCutsceneMgr::ResumeCutsceneAndGame");
+    } else if (g_cutscene_finish_cutscene) {
+        g_cutscene_finish_cutscene();
+        LOGI("🛠️ [VanillaQoL] Called CCutsceneMgr::FinishCutscene");
+    }
+}
+
 static bool touch_rehydrate_world_ready() {
     if (is_scene_transition_active()) return false;
     if (!is_player_world_active()) return false;
     if (is_skip_cutscene_pipeline_active()) return false;
-    if (is_save_load_session_or_loading()) return false;
+    if (is_disk_deserialize_active()) return false;
     return true;
 }
 
@@ -102,6 +109,7 @@ static bool core_action_widgets_enabled() {
 }
 
 static void run_touch_rehydrate_chain() {
+    try_restore_hud_after_skip_cutscene();
     if (g_touch_load_defaults) {
         g_touch_load_defaults();
     }
@@ -170,20 +178,44 @@ static void try_rehydrate_touch_controls() {
          g_touch_is_widget_enabled ? (g_touch_is_widget_enabled(161) ? 1 : 0) : -1);
 }
 
-// --- Menu read-save / new-game entry hooks (DE actual paths) ---
+// --- Menu read-save / new-game entry hooks ---
 static fn_LoadDataInSlot_t g_orig_san_andreas_load_data_in_slot = nullptr;
 static void* g_stub_san_andreas_load_data_in_slot = nullptr;
+static fn_LoadDataInSlotThunk_t g_orig_gameterface_load_data_in_slot = nullptr;
+static void* g_stub_gameterface_load_data_in_slot = nullptr;
+static fn_LoadDataInSlotEvent_t g_orig_ui_menu_load_data_in_slot_event = nullptr;
+static void* g_stub_ui_menu_load_data_in_slot_event = nullptr;
 
 static fn_StartNewGameFromMenu_t g_orig_gameterface_start_new_game = nullptr;
 static void* g_stub_gameterface_start_new_game = nullptr;
 static fn_StartNewGameFromMenu_t g_orig_san_andreas_start_new_game = nullptr;
 static void* g_stub_san_andreas_start_new_game = nullptr;
+static fn_CutsceneMgrVoid_t g_orig_skip_cutscene = nullptr;
+static void* g_stub_skip_cutscene = nullptr;
+static fn_CutsceneMgrVoid_t g_orig_jump_to_new_game = nullptr;
+static void* g_stub_jump_to_new_game = nullptr;
 
 bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
     SHADOWHOOK_STACK_SCOPE();
     notify_menu_read_save_path("USanAndreasInterface::LoadDataInSlot");
     LOGI("💾 [SaveLoad] USanAndreasInterface::LoadDataInSlot(slot=%d)", slot);
     return SHADOWHOOK_CALL_PREV(proxy_san_andreas_load_data_in_slot, self, slot);
+}
+
+void proxy_gameterface_load_data_in_slot(void* self, int slot) {
+    SHADOWHOOK_STACK_SCOPE();
+    notify_menu_read_save_path("UGameterface::LoadDataInSlot");
+    LOGI("💾 [SaveLoad] UGameterface::LoadDataInSlot(slot=%d)", slot);
+    SHADOWHOOK_CALL_PREV(proxy_gameterface_load_data_in_slot, self, slot);
+}
+
+void proxy_ui_menu_load_data_in_slot_event(void* self, bool success, int slot) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (success) {
+        notify_menu_read_save_path("UUI_Menu_Base::LoadDataInSlotEvent");
+        LOGI("💾 [SaveLoad] UUI_Menu_Base::LoadDataInSlotEvent(slot=%d)", slot);
+    }
+    SHADOWHOOK_CALL_PREV(proxy_ui_menu_load_data_in_slot_event, self, success, slot);
 }
 
 void proxy_gameterface_start_new_game_from_menu(void* self) {
@@ -198,13 +230,17 @@ void proxy_san_andreas_start_new_game_from_menu(void* self) {
     SHADOWHOOK_CALL_PREV(proxy_san_andreas_start_new_game_from_menu, self);
 }
 
-static fn_MobileMenuVoid_t g_orig_mobile_menu_load = nullptr;
-static void* g_stub_mobile_menu_load = nullptr;
-
-void proxy_mobile_menu_load(void* self) {
+void proxy_jump_to_new_game(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    notify_menu_read_save_path("MobileMenu::Load");
-    SHADOWHOOK_CALL_PREV(proxy_mobile_menu_load, self);
+    notify_explicit_new_game_bootstrap("UGameterface::JumpToNewGame");
+    SHADOWHOOK_CALL_PREV(proxy_jump_to_new_game, self);
+}
+
+void proxy_skip_cutscene() {
+    SHADOWHOOK_STACK_SCOPE();
+    SHADOWHOOK_CALL_PREV(proxy_skip_cutscene);
+    try_restore_hud_after_skip_cutscene();
+    schedule_touch_rehydrate("CCutsceneMgr::SkipCutscene");
 }
 
 static fn_LoadGameFromSlot_t g_orig_load_game_from_slot = nullptr;
@@ -217,14 +253,6 @@ void* proxy_load_game_from_slot(const void* slot_name, int user_index) {
     return SHADOWHOOK_CALL_PREV(proxy_load_game_from_slot, slot_name, user_index);
 }
 
-// ---------------------------------------------------------------------
-// TODO(qol-001): Interior save-load — shop clerk / ambient ped missing
-// ---------------------------------------------------------------------
-
-// ---------------------------------------------------------------------
-// TODO(qol-002): Vehicle ground sink — body partially buried, cannot drive out
-// ---------------------------------------------------------------------
-
 static bool g_vanilla_qol_installed = false;
 
 } // namespace
@@ -234,6 +262,7 @@ void vanilla_qol_on_save_load_session_ended() {
 }
 
 void vanilla_qol_on_skip_pipeline_cleared() {
+    try_restore_hud_after_skip_cutscene();
     schedule_touch_rehydrate("skip pipeline cleared");
 }
 
@@ -268,6 +297,10 @@ void install_vanilla_qol_fixes(void* lib_handle) {
             nullptr));
         g_touch_is_widget_enabled = reinterpret_cast<fn_IsWidgetEnabled_t>(xdl_sym(
             lib_handle, "_ZN15CTouchInterface15IsWidgetEnabledENS_9WidgetIDsE", nullptr));
+        g_cutscene_resume_cutscene_and_game = reinterpret_cast<fn_CutsceneMgrVoid_t>(xdl_sym(
+            lib_handle, "_ZN12CCutsceneMgr21ResumeCutsceneAndGameEv", nullptr));
+        g_cutscene_finish_cutscene = reinterpret_cast<fn_CutsceneMgrVoid_t>(xdl_sym(
+            lib_handle, "_ZN12CCutsceneMgr14FinishCutsceneEv", nullptr));
 
         if (g_touch_create_all && g_touch_setup_layout && g_touch_visualize_all) {
             LOGI("🛠️ [VanillaQoL] Resolved CTouchInterface rehydrate chain");
@@ -284,7 +317,16 @@ void install_vanilla_qol_fixes(void* lib_handle) {
                      shadowhook_to_errmsg(shadowhook_get_errno())); \
         } while (0)
 
-        // USanAndreasInterface does the real load; UGameterface is a thin thunk.
+        HOOK_QOL_SYM("_ZN13UUI_Menu_Base19LoadDataInSlotEventEbi",
+                     proxy_ui_menu_load_data_in_slot_event,
+                     g_stub_ui_menu_load_data_in_slot_event,
+                     g_orig_ui_menu_load_data_in_slot_event,
+                     "UUI_Menu_Base::LoadDataInSlotEvent");
+        HOOK_QOL_SYM("_ZN12UGameterface14LoadDataInSlotEi",
+                     proxy_gameterface_load_data_in_slot,
+                     g_stub_gameterface_load_data_in_slot,
+                     g_orig_gameterface_load_data_in_slot,
+                     "UGameterface::LoadDataInSlot");
         HOOK_QOL_SYM("_ZN20USanAndreasInterface14LoadDataInSlotEi",
                      proxy_san_andreas_load_data_in_slot,
                      g_stub_san_andreas_load_data_in_slot,
@@ -300,11 +342,16 @@ void install_vanilla_qol_fixes(void* lib_handle) {
                      g_stub_san_andreas_start_new_game,
                      g_orig_san_andreas_start_new_game,
                      "USanAndreasInterface::StartNewGameFromMenu");
-        HOOK_QOL_SYM("_ZN10MobileMenu4LoadEv",
-                     proxy_mobile_menu_load,
-                     g_stub_mobile_menu_load,
-                     g_orig_mobile_menu_load,
-                     "MobileMenu::Load");
+        HOOK_QOL_SYM("_ZN12UGameterface13JumpToNewGameEv",
+                     proxy_jump_to_new_game,
+                     g_stub_jump_to_new_game,
+                     g_orig_jump_to_new_game,
+                     "UGameterface::JumpToNewGame");
+        HOOK_QOL_SYM("_ZN12CCutsceneMgr12SkipCutsceneEv",
+                     proxy_skip_cutscene,
+                     g_stub_skip_cutscene,
+                     g_orig_skip_cutscene,
+                     "CCutsceneMgr::SkipCutscene");
         HOOK_QOL_SYM("_ZN16UGameplayStatics16LoadGameFromSlotERK7FStringi",
                      proxy_load_game_from_slot,
                      g_stub_load_game_from_slot,
