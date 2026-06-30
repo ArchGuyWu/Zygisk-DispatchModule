@@ -242,7 +242,7 @@ void mark_save_load_quiesce(int64_t /*duration_ms*/) {
 static void end_save_load_session(const char* reason) {
     if (!g_save_load_session.exchange(false, std::memory_order_acq_rel)) return;
     g_session_started_ms.store(0, std::memory_order_release);
-    g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
+    // Keep g_ms_b_loading_cleared_ms for post-session task-query hold (#39–40).
     g_hydration_ready_since_ms.store(0, std::memory_order_release);
     g_skip_pipeline_was_active.store(false, std::memory_order_release);
     g_skip_pipeline_cleared_ms.store(0, std::memory_order_release);
@@ -474,14 +474,21 @@ static inline bool is_manage_tasks_execution_paused() {
     return true;
 }
 
-// Task-manager queries (GetSimplestActiveTask, FindActiveTaskByType, …): pause for the full
-// save-load lifecycle. CALL_PREV on half-hydrated slots crashes (#32–34).
+// Task-manager queries / ControlSubTask reads: pause for full save-load + post-load tail.
+// CALL_PREV on half-hydrated slots crashes (#32–34, #39–40).
 static inline bool is_task_manager_query_paused() {
     if (read_ms_b_loading()) return true;
     if (g_save_load_session.load(std::memory_order_acquire)) return true;
     const int64_t quiesce_until =
         g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
-    return quiesce_until > 0 && now_ms() < quiesce_until;
+    if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kMinPostLoadingHoldMs) {
+        return true;
+    }
+    return false;
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
@@ -1284,21 +1291,39 @@ fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
 
 void* proxy_avoid_ped_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    if (is_task_manager_query_paused()) return nullptr;
+
     CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_avoid_ped_control, self, ped);
-    if (self && is_pointer_readable(self) && !is_stability_sanitize_paused()) {
-        void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(subtask_ptr)) {
-            void* subtask = *subtask_ptr;
-            if (subtask && !is_task_vtable_safe(subtask)) {
-                LOGW("⚠️ [ControlSubTask Sanitizer] Sanitizing unsafe subtask %p inside CTaskComplexAvoidOtherPedWhileWandering %p", subtask, self);
-                *subtask_ptr = nullptr;
+
+    void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (is_pointer_readable(subtask_ptr)) {
+        void* subtask = *subtask_ptr;
+        if (subtask && !is_task_vtable_safe(subtask)) {
+            LOGW("⚠️ [AvoidOtherPed] Clearing unsafe subtask %p in task %p", subtask, self);
+            *subtask_ptr = nullptr;
+        }
+    }
+    if (!is_pointer_readable(subtask_ptr) || !*subtask_ptr) return nullptr;
+
+    // Other ped at +0x18: engine walks intel task slots → vtable+0x18 (tombstone_37/39).
+    void** other_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (is_pointer_readable(other_slot) && *other_slot) {
+        void* other = *other_slot;
+        if (!is_ped_pointer_valid_safe(other)) {
+            LOGW("⚠️ [AvoidOtherPed] Clearing stale other-ped %p at +0x18", other);
+            *other_slot = nullptr;
+        } else {
+            sanitize_ped_tasks(other);
+            void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(other));
+            if (intel && is_pointer_readable(intel) &&
+                task_manager_has_unsafe_slot(reinterpret_cast<char*>(intel) + 8, 11, 0x18)) {
+                LOGW("⚠️ [AvoidOtherPed] unsafe other-ped %p task chain — skip", other);
+                return nullptr;
             }
         }
-        // Other ped at +0x18: engine walks its intel task slots → vtable+0x18 (tombstone_23).
-        sanitize_optional_ped_at_slot(
-            reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18),
-            "AvoidOtherPed other");
     }
+
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
@@ -1645,8 +1670,9 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
+    if (is_task_manager_query_paused()) return nullptr;
+
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_query_paused()) return nullptr;
         for (int i = 0; i < 5; ++i) {
             void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
             if (!is_pointer_readable(task_slot)) continue;
@@ -1679,8 +1705,8 @@ fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
 void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
+    if (is_task_manager_query_paused()) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_query_paused()) return nullptr;
         if (index < 0 || index > 10) return nullptr;
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
         if (!is_pointer_readable(task_slot)) return nullptr;
