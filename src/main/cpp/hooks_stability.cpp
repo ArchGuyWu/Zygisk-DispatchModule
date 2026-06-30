@@ -37,7 +37,9 @@ inline bool intelligence_zero_filled(void* self);
 inline bool intelligence_process_hotpath_unsafe(void* intel, size_t vtable_fn_offset);
 inline bool ped_intel_ik_node_target_unsafe(void* ped);
 inline bool ped_intel_physical_tick_unsafe(void* ped);
-inline bool gang_follower_control_unsafe(void* self);
+inline bool gang_follower_control_unsafe(void* self, void* ped = nullptr);
+inline bool ped_intel_slot_unsafe(void* ped);
+inline bool be_in_group_control_unsafe(void* self, void* ped);
 
 // =====================================================================
 // Scene transition / interior entry state (yellow marker warp UX)
@@ -1129,8 +1131,8 @@ void* proxy_ccgf_control(void* self, void* ped) {
         sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x20), "partner");
     }
 
-    if (gang_follower_control_unsafe(self)) {
-        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe leader/partner — skip (tombstone_20)");
+    if (gang_follower_control_unsafe(self, ped)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe leader/partner — skip (tombstone_25)");
         return nullptr;
     }
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
@@ -1230,7 +1232,14 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_task_manager_query_paused()) return nullptr;
-    sanitize_intel_for_task_lookup(self);
+    if (intelligence_zero_filled(self) ||
+        intelligence_process_hotpath_unsafe(self, 0x28)) {
+        LOGW("⚠️ [Intel::FindTaskByType] unsafe intel %p — skip (tombstone_23)", self);
+        return nullptr;
+    }
+    if (!is_stability_sanitize_paused()) {
+        sanitize_intel_for_task_lookup(self);
+    }
     for (size_t off : {0x20u, 0x28u}) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + off);
         if (!is_pointer_readable(task_slot)) continue;
@@ -1609,21 +1618,20 @@ fn_BeInGroupControlSubTask_t g_orig_be_in_group_control_sub_task = nullptr;
 
 void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_be_in_group_control_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
-
-    if (self) {
-        void** vtable_ptr = reinterpret_cast<void**>(self);
-        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
-            LOGW("⚠️ [BeInGroup] self (%p) is zero-filled! Intercepting ControlSubTask to prevent crash.", self);
-            return nullptr;
-        }
+    if (is_task_manager_query_paused()) return nullptr;
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_be_in_group_control_sub_task, self, ped);
+    if (be_in_group_control_unsafe(self, ped)) {
+        LOGW("⚠️ [BeInGroup::ControlSubTask] unsafe group/ped tasks — skip (tombstone_24)");
+        return nullptr;
+    }
+    if (!is_stability_sanitize_paused()) {
         sanitize_unsafe_subtask_at(self, 0x10);
         sanitize_unsafe_task_slot_at(self, 0x28, "BeInGroup secondary");
-    }
-    if (ped && is_ped_pointer_valid_safe(ped)) {
-        sanitize_ped_tasks(ped);
+        if (ped && is_ped_pointer_valid_safe(ped)) {
+            sanitize_ped_tasks(ped);
+        }
     }
     return SHADOWHOOK_CALL_PREV(proxy_be_in_group_control_sub_task, self, ped);
 }
@@ -1636,9 +1644,19 @@ fn_GetTaskMain_t g_orig_get_task_main = nullptr;
 
 void* proxy_get_task_main(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
+    if (is_task_manager_query_paused()) return nullptr;
     void* result = SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
-    if (result && !is_task_vtable_safe(result)) {
-        LOGW("⚠️ [GetTaskMain] unsafe task %p — returning nullptr", result);
+    if (!result || !is_task_vtable_safe(result)) {
+        if (result) {
+            LOGW("⚠️ [GetTaskMain] unsafe task %p — returning nullptr", result);
+        }
+        return nullptr;
+    }
+    if (task_slot_unsafe_for_vtable_call(result, 0x28) ||
+        task_chain_walk_unsafe(result, 0x28)) {
+        LOGW("⚠️ [GetTaskMain] unsafe task chain %p — returning nullptr (tombstone_24)", result);
         return nullptr;
     }
     return result;
@@ -2318,8 +2336,8 @@ inline bool ped_intel_physical_tick_unsafe(void* ped) {
     return intelligence_ik_node_target_unsafe(get_ped_intelligence_safe(ped));
 }
 
-// leader+0x18 null → engine loads [leader+0x18] without guard (tombstone_20).
-inline bool gang_follower_control_unsafe(void* self) {
+// leader+0x18 null → engine loads [leader+0x18] without guard (tombstone_20/25).
+inline bool gang_follower_control_unsafe(void* self, void* ped) {
     if (!self || !is_pointer_readable(self)) return true;
     void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
     if (!is_pointer_readable(sub_slot) || !*sub_slot) return true;
@@ -2329,16 +2347,44 @@ inline bool gang_follower_control_unsafe(void* self) {
     if (!is_pointer_readable(leader_slot) || !*leader_slot) return true;
     void* leader = *leader_slot;
     if (!is_pointer_readable(leader) || !is_ped_pointer_valid_safe(leader)) return true;
+    if (!ped_field_range_readable(leader, 0x18, 8)) return true;
     if (ped_intel_slot_unsafe(leader)) return true;
     if (ped_intel_physical_tick_unsafe(leader)) return true;
 
     void** partner_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
-    if (!is_pointer_readable(partner_slot)) return false;
-    void* partner = *partner_slot;
-    if (!partner) return false;
-    if (!is_pointer_readable(partner) || !is_ped_pointer_valid_safe(partner)) return true;
-    if (ped_intel_slot_unsafe(partner)) return true;
-    return ped_intel_physical_tick_unsafe(partner);
+    if (is_pointer_readable(partner_slot) && *partner_slot) {
+        void* partner = *partner_slot;
+        if (!is_pointer_readable(partner) || !is_ped_pointer_valid_safe(partner)) return true;
+        if (!ped_field_range_readable(partner, 0x18, 8)) return true;
+        if (ped_intel_slot_unsafe(partner)) return true;
+        if (ped_intel_physical_tick_unsafe(partner)) return true;
+    }
+
+    if (ped) {
+        if (!is_ped_pointer_valid_safe(ped) || ped_intel_slot_unsafe(ped)) return true;
+        if (ped_intel_physical_tick_unsafe(ped)) return true;
+    }
+    return false;
+}
+
+inline bool be_in_group_control_unsafe(void* self, void* ped) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** vtable_ptr = reinterpret_cast<void**>(self);
+    if (!is_pointer_readable(vtable_ptr) || !*vtable_ptr) return true;
+
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) return true;
+    if (task_slot_unsafe_for_vtable_call(*sub_slot, 0x28)) return true;
+
+    void** sec_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x28);
+    if (is_pointer_readable(sec_slot) && *sec_slot) {
+        if (task_slot_unsafe_for_vtable_call(*sec_slot, 0x28)) return true;
+        if (task_chain_walk_unsafe(*sec_slot, 0x28)) return true;
+    }
+
+    if (ped && (!is_ped_pointer_valid_safe(ped) || ped_intel_slot_unsafe(ped))) return true;
+    if (ped && ped_intel_physical_tick_unsafe(ped)) return true;
+    return false;
 }
 
 // --- CTaskComplexWanderCop::LookForCriminals Hook ---
