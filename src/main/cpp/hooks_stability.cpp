@@ -162,7 +162,7 @@ void sanitize_task_chain(void* task, int depth = 0) {
 
 void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
 
     if (self) {
         // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
@@ -834,10 +834,8 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
-    if (self) {
-        sanitize_task_manager_slots(self, "GetSimplestActiveTask");
-    }
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    sanitize_task_manager_slots(self, "GetSimplestActiveTask");
     return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
 }
 
@@ -1002,6 +1000,77 @@ bool proxy_follow_point_route_make_abortable(void* self, void* ped, int priority
         if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return false;
     }
     return SHADOWHOOK_CALL_PREV(proxy_follow_point_route_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexKillCriminal::MakeAbortable Hook ---
+// Mod injects KillCriminal tasks; stale m_pTarget (typically +0x18) → fault 0x0 (tombstone_33).
+void* g_stub_kill_criminal_make_abortable = nullptr;
+fn_KillCriminalMakeAbortable_t g_orig_kill_criminal_make_abortable = nullptr;
+
+inline bool kill_criminal_task_target_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (!is_pointer_readable(target_slot)) return false;
+    void* target = *target_slot;
+    if (!target) return false;
+    return !is_ped_pointer_valid_safe(reinterpret_cast<CPed*>(target));
+}
+
+bool proxy_kill_criminal_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    if (kill_criminal_task_target_unsafe(self)) {
+        void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+        if (is_pointer_readable(target_slot) && *target_slot) {
+            LOGW("⚠️ [KillCriminal::MakeAbortable] stale target %p — clear and abort", *target_slot);
+            *target_slot = nullptr;
+        }
+        sanitize_unsafe_subtask_at(self, 0x10);
+        return true;
+    }
+    sanitize_unsafe_subtask_at(self, 0x10);
+    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return true;
+    return SHADOWHOOK_CALL_PREV(proxy_kill_criminal_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexFallAndGetUp::MakeAbortable Hook ---
+void* g_stub_fall_and_get_up_make_abortable = nullptr;
+fn_FallAndGetUpMakeAbortable_t g_orig_fall_and_get_up_make_abortable = nullptr;
+
+bool proxy_fall_and_get_up_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    sanitize_unsafe_subtask_at(self, 0x10);
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [FallAndGetUp::MakeAbortable] missing subtask — return true");
+        return true;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_fall_and_get_up_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexPlayHandSignalAnim::ControlSubTask Hook ---
+void* g_stub_play_hand_signal_control_sub_task = nullptr;
+fn_PlayHandSignalControlSubTask_t g_orig_play_hand_signal_control_sub_task = nullptr;
+
+void* proxy_play_hand_signal_control_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
+    sanitize_unsafe_subtask_at(self, 0x10);
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [PlayHandSignalAnim::ControlSubTask] no subtask — skip original");
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_play_hand_signal_control_sub_task, self, ped);
 }
 
 // --- CTaskComplexKillPedOnFoot::MakeAbortable Hook ---

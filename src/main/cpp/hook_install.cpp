@@ -641,6 +641,33 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskComplexKillPedOnFoot::MakeAbortable: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_kill_criminal_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexKillCriminal13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_kill_criminal_make_abortable),
+        reinterpret_cast<void**>(&g_orig_kill_criminal_make_abortable));
+    if (g_stub_kill_criminal_make_abortable) LOGI("✅ Hooked CTaskComplexKillCriminal::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexKillCriminal::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_fall_and_get_up_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexFallAndGetUp13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_fall_and_get_up_make_abortable),
+        reinterpret_cast<void**>(&g_orig_fall_and_get_up_make_abortable));
+    if (g_stub_fall_and_get_up_make_abortable) LOGI("✅ Hooked CTaskComplexFallAndGetUp::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexFallAndGetUp::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_play_hand_signal_control_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN30CTaskComplexPlayHandSignalAnim14ControlSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_play_hand_signal_control_sub_task),
+        reinterpret_cast<void**>(&g_orig_play_hand_signal_control_sub_task));
+    if (g_stub_play_hand_signal_control_sub_task) LOGI("✅ Hooked CTaskComplexPlayHandSignalAnim::ControlSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexPlayHandSignalAnim::ControlSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     g_stub_simple_anim_make_abortable = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN15CTaskSimpleAnim13MakeAbortableEP4CPediPK6CEvent",
