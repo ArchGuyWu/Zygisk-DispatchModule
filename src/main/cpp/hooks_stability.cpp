@@ -71,7 +71,7 @@ bool is_save_load_active() {
                    is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
                    *g_generic_game_storage_ms_bLoading;
     if (loading) {
-        mark_save_load_quiesce(45000);
+        mark_save_load_quiesce(90000);
         return true;
     }
     return now_ms() < g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
@@ -81,9 +81,27 @@ bool is_mod_dispatch_paused() {
     return is_scene_transition_active() || is_save_load_active() || !is_player_world_active();
 }
 
+// Sanitize must stay off for the full save/load hydration window. Do not tie it to
+// is_player_world_active(): player spawns ~20–25s in while tasks are still tearing down
+// (tombstone_19–20: sanitize_unsafe_subtask_at vs async task destruction).
 inline bool is_stability_sanitize_paused() {
-    return is_save_load_active() || !is_player_world_active();
+    return is_save_load_active();
 }
+
+#define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
+    do { \
+        if (is_stability_sanitize_paused()) { \
+            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
+        } \
+    } while (0)
+
+#define CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_fn, self, ped) \
+    do { \
+        if (is_stability_sanitize_paused()) { \
+            if (!self || !is_pointer_readable(self)) return nullptr; \
+            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped); \
+        } \
+    } while (0)
 
 // =====================================================================
 // Stability hook helpers
@@ -398,15 +416,15 @@ fn_GenericGameStorageLoadGame_t g_orig_generic_game_storage_load_game = nullptr;
 
 void proxy_generic_game_storage_load(void* self, bool flag) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_save_load_quiesce(60000);
-    LOGI("💾 [SaveLoad] CGenericGameStorage::Load — stability quiesce 60s");
+    mark_save_load_quiesce(90000);
+    LOGI("💾 [SaveLoad] CGenericGameStorage::Load — stability quiesce 90s");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load, self, flag);
 }
 
 void proxy_generic_game_storage_load_game(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_save_load_quiesce(60000);
-    LOGI("💾 [SaveLoad] CGenericGameStorage::LoadGame — stability quiesce 60s");
+    mark_save_load_quiesce(90000);
+    LOGI("💾 [SaveLoad] CGenericGameStorage::LoadGame — stability quiesce 90s");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load_game, self);
 }
 
@@ -486,6 +504,7 @@ void* g_stub_ccgf_control = nullptr;
 fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_ccgf_control, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
@@ -724,6 +743,7 @@ fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
 
 void* proxy_avoid_ped_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_avoid_ped_control, self, ped);
     if (self && is_pointer_readable(self)) {
         void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
         if (is_pointer_readable(subtask_ptr)) {
@@ -901,6 +921,7 @@ fn_BeInGroupControlSubTask_t g_orig_be_in_group_control_sub_task = nullptr;
 
 void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_be_in_group_control_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
@@ -1221,13 +1242,6 @@ inline bool make_abortable_subtask_tailcall_unsafe(void* self, size_t vtable_off
     return task_subtask_vtable_fn_unsafe(self, 0x10, vtable_offset);
 }
 
-#define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
-    do { \
-        if (is_stability_sanitize_paused()) { \
-            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
-        } \
-    } while (0)
-
 // --- CTaskComplexLeaveCar::MakeAbortable Hook ---
 void* g_stub_leave_car_make_abortable = nullptr;
 fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
@@ -1383,6 +1397,7 @@ fn_PlayHandSignalControlSubTask_t g_orig_play_hand_signal_control_sub_task = nul
 
 void* proxy_play_hand_signal_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_play_hand_signal_control_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     sanitize_unsafe_subtask_at(self, 0x10);
@@ -1751,6 +1766,7 @@ fn_FacialControlSubTask_t g_orig_facial_control_sub_task = nullptr;
 
 void* proxy_facial_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_facial_control_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
@@ -1773,6 +1789,11 @@ fn_IKManagerProcessPed_t g_orig_ik_manager_process_ped = nullptr;
 
 void proxy_ik_manager_process_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return;
+        SHADOWHOOK_CALL_PREV(proxy_ik_manager_process_ped, self, ped);
+        return;
+    }
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
 
