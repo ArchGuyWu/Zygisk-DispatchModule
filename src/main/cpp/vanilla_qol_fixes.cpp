@@ -16,6 +16,12 @@ namespace {
 // --- Touch HUD rehydrate (missing right-side buttons after load / skip) ---
 typedef void (*fn_TouchVoid_t)();
 typedef void (*fn_TouchVisualizeAll_t)(bool);
+typedef void (*fn_TouchDrawAll_t)(bool);
+typedef void (*fn_RemoveWidgetFlag_t)(int widget_id, int flag);
+typedef void (*fn_ProcessLatentWidget_t)(int widget_id, bool);
+typedef bool (*fn_IsWidgetEnabled_t)(int widget_id);
+typedef bool (*fn_LoadDataInSlot_t)(void* self, int slot);
+typedef void (*fn_StartNewGameFromMenu_t)(void* self);
 typedef void (*fn_MobileMenuVoid_t)(void* self);
 typedef void* (*fn_LoadGameFromSlot_t)(const void* slot_name, int user_index);
 
@@ -24,7 +30,12 @@ static fn_TouchVoid_t g_touch_create_all = nullptr;
 static fn_TouchVoid_t g_touch_setup_layout = nullptr;
 static fn_TouchVoid_t g_touch_setup_steering = nullptr;
 static fn_TouchVisualizeAll_t g_touch_visualize_all = nullptr;
+static fn_TouchDrawAll_t g_touch_draw_all = nullptr;
 static fn_TouchVoid_t g_touch_process_latent_all = nullptr;
+static fn_RemoveWidgetFlag_t g_touch_remove_widget_flag = nullptr;
+static fn_RemoveWidgetFlag_t g_touch_remove_button_flag = nullptr;
+static fn_ProcessLatentWidget_t g_touch_process_latent_widget = nullptr;
+static bool (*g_touch_is_widget_enabled)(int) = nullptr;
 
 static std::atomic<bool> g_touch_rehydrate_pending{false};
 static std::atomic<int64_t> g_touch_rehydrate_not_before_ms{0};
@@ -33,6 +44,17 @@ static std::atomic<bool> g_prev_save_load_session{false};
 static constexpr int64_t kTouchRehydrateDeferMs = 500;
 static constexpr int kTouchRehydrateMaxAttempts = 30;
 static constexpr int64_t kTouchRehydrateRetryMs = 500;
+
+// On-foot HUD: right-side action cluster (DE mobile widget IDs).
+static constexpr int kGameplayWidgetIds[] = {
+    0,   // enter/exit vehicle
+    1,   // punch/fire
+    22,  // aim
+    154, // weapon icon
+    161, // sprint
+    150, // look
+    160, // move joystick border
+};
 
 static void schedule_touch_rehydrate(const char* reason) {
     g_touch_rehydrate_pending.store(true, std::memory_order_release);
@@ -44,9 +66,39 @@ static void schedule_touch_rehydrate(const char* reason) {
 
 static bool touch_rehydrate_world_ready() {
     if (is_scene_transition_active()) return false;
-    if (is_save_load_session_or_loading()) return false;
+    if (!is_player_world_active()) return false;
     if (is_skip_cutscene_pipeline_active()) return false;
-    return is_player_world_active();
+    // After skip clears, allow action-widget unhide even if save-load session is winding down.
+    return true;
+}
+
+static void clear_widget_hide_flags(int widget_id) {
+    if (!g_touch_remove_widget_flag && !g_touch_remove_button_flag) return;
+    for (int bit = 0; bit < 16; ++bit) {
+        const int flag = 1 << bit;
+        if (g_touch_remove_widget_flag) {
+            g_touch_remove_widget_flag(widget_id, flag);
+        }
+        if (g_touch_remove_button_flag) {
+            g_touch_remove_button_flag(widget_id, flag);
+        }
+    }
+}
+
+static void unhide_gameplay_action_widgets() {
+    for (int widget_id : kGameplayWidgetIds) {
+        clear_widget_hide_flags(widget_id);
+        if (g_touch_process_latent_widget) {
+            g_touch_process_latent_widget(widget_id, true);
+        }
+    }
+}
+
+static bool core_action_widgets_enabled() {
+    if (!g_touch_is_widget_enabled) return false;
+    return g_touch_is_widget_enabled(0) &&
+           g_touch_is_widget_enabled(1) &&
+           g_touch_is_widget_enabled(161);
 }
 
 static void run_touch_rehydrate_chain() {
@@ -62,8 +114,12 @@ static void run_touch_rehydrate_chain() {
     if (g_touch_setup_steering) {
         g_touch_setup_steering();
     }
+    unhide_gameplay_action_widgets();
     if (g_touch_visualize_all) {
         g_touch_visualize_all(true);
+    }
+    if (g_touch_draw_all) {
+        g_touch_draw_all(true);
     }
     if (g_touch_process_latent_all) {
         g_touch_process_latent_all();
@@ -87,20 +143,70 @@ static void try_rehydrate_touch_controls() {
     const int attempt =
         g_touch_rehydrate_attempts.fetch_add(1, std::memory_order_acq_rel) + 1;
 
+    if (core_action_widgets_enabled()) {
+        g_touch_rehydrate_pending.store(false, std::memory_order_release);
+        LOGI("🛠️ [VanillaQoL] Action widgets enabled after attempt %d "
+             "(enter=%d attack=%d sprint=%d)",
+             attempt,
+             g_touch_is_widget_enabled(0) ? 1 : 0,
+             g_touch_is_widget_enabled(1) ? 1 : 0,
+             g_touch_is_widget_enabled(161) ? 1 : 0);
+        return;
+    }
+
     if (attempt < kTouchRehydrateMaxAttempts) {
         g_touch_rehydrate_not_before_ms.store(now_ms() + kTouchRehydrateRetryMs,
                                               std::memory_order_release);
-        LOGI("🛠️ [VanillaQoL] Touch chain applied (attempt %d/%d)",
+        LOGI("🛠️ [VanillaQoL] Touch chain applied (attempt %d/%d, action widgets pending)",
              attempt, kTouchRehydrateMaxAttempts);
         return;
     }
 
     g_touch_rehydrate_pending.store(false, std::memory_order_release);
-    LOGI("🛠️ [VanillaQoL] Touch controls rehydrated — full chain after %d attempts",
-         attempt);
+    LOGW("🛠️ [VanillaQoL] Touch rehydrate finished — action widgets still disabled "
+         "(enter=%d attack=%d sprint=%d)",
+         g_touch_is_widget_enabled ? (g_touch_is_widget_enabled(0) ? 1 : 0) : -1,
+         g_touch_is_widget_enabled ? (g_touch_is_widget_enabled(1) ? 1 : 0) : -1,
+         g_touch_is_widget_enabled ? (g_touch_is_widget_enabled(161) ? 1 : 0) : -1);
 }
 
-// --- Menu read-save entry hooks (DE has no StartGameScreen::OnLoadGame) ---
+// --- Menu read-save / new-game entry hooks (DE actual paths) ---
+static fn_LoadDataInSlot_t g_orig_gameterface_load_data_in_slot = nullptr;
+static void* g_stub_gameterface_load_data_in_slot = nullptr;
+static fn_LoadDataInSlot_t g_orig_san_andreas_load_data_in_slot = nullptr;
+static void* g_stub_san_andreas_load_data_in_slot = nullptr;
+
+static fn_StartNewGameFromMenu_t g_orig_gameterface_start_new_game = nullptr;
+static void* g_stub_gameterface_start_new_game = nullptr;
+static fn_StartNewGameFromMenu_t g_orig_san_andreas_start_new_game = nullptr;
+static void* g_stub_san_andreas_start_new_game = nullptr;
+
+bool proxy_gameterface_load_data_in_slot(void* self, int slot) {
+    SHADOWHOOK_STACK_SCOPE();
+    notify_menu_read_save_path("UGameterface::LoadDataInSlot");
+    LOGI("💾 [SaveLoad] UGameterface::LoadDataInSlot(slot=%d)", slot);
+    return SHADOWHOOK_CALL_PREV(proxy_gameterface_load_data_in_slot, self, slot);
+}
+
+bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
+    SHADOWHOOK_STACK_SCOPE();
+    notify_menu_read_save_path("USanAndreasInterface::LoadDataInSlot");
+    LOGI("💾 [SaveLoad] USanAndreasInterface::LoadDataInSlot(slot=%d)", slot);
+    return SHADOWHOOK_CALL_PREV(proxy_san_andreas_load_data_in_slot, self, slot);
+}
+
+void proxy_gameterface_start_new_game_from_menu(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    notify_explicit_new_game_bootstrap("UGameterface::StartNewGameFromMenu");
+    SHADOWHOOK_CALL_PREV(proxy_gameterface_start_new_game_from_menu, self);
+}
+
+void proxy_san_andreas_start_new_game_from_menu(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    notify_explicit_new_game_bootstrap("USanAndreasInterface::StartNewGameFromMenu");
+    SHADOWHOOK_CALL_PREV(proxy_san_andreas_start_new_game_from_menu, self);
+}
+
 static fn_MobileMenuVoid_t g_orig_mobile_menu_load = nullptr;
 static void* g_stub_mobile_menu_load = nullptr;
 
@@ -123,13 +229,10 @@ void* proxy_load_game_from_slot(const void* slot_name, int user_index) {
 // ---------------------------------------------------------------------
 // TODO(qol-001): Interior save-load — shop clerk / ambient ped missing
 // ---------------------------------------------------------------------
-// void try_rehydrate_interior_shop_peds();  // TODO(qol-001)
 
 // ---------------------------------------------------------------------
 // TODO(qol-002): Vehicle ground sink — body partially buried, cannot drive out
 // ---------------------------------------------------------------------
-// void try_unwedge_vehicle_if_sunk(void* veh, bool is_player_vehicle);  // TODO(qol-002)
-// void scan_nearby_npc_vehicles_for_sink();  // TODO(qol-002)
 
 static bool g_vanilla_qol_installed = false;
 
@@ -161,8 +264,19 @@ void install_vanilla_qol_fixes(void* lib_handle) {
             lib_handle, "_ZN15CTouchInterface17SetupSteeringModeEv", nullptr));
         g_touch_visualize_all = reinterpret_cast<fn_TouchVisualizeAll_t>(xdl_sym(
             lib_handle, "_ZN15CTouchInterface12VisualizeAllEb", nullptr));
+        g_touch_draw_all = reinterpret_cast<fn_TouchDrawAll_t>(xdl_sym(
+            lib_handle, "_ZN15CTouchInterface7DrawAllEb", nullptr));
         g_touch_process_latent_all = reinterpret_cast<fn_TouchVoid_t>(xdl_sym(
             lib_handle, "_ZN15CTouchInterface32ProcessLatentEventsForAllWidgetsEv", nullptr));
+        g_touch_remove_widget_flag = reinterpret_cast<fn_RemoveWidgetFlag_t>(xdl_sym(
+            lib_handle, "_ZN15CTouchInterface16RemoveWidgetFlagENS_9WidgetIDsEi", nullptr));
+        g_touch_remove_button_flag = reinterpret_cast<fn_RemoveWidgetFlag_t>(xdl_sym(
+            lib_handle, "_ZN15CTouchInterface16RemoveButtonFlagENS_9WidgetIDsEi", nullptr));
+        g_touch_process_latent_widget = reinterpret_cast<fn_ProcessLatentWidget_t>(xdl_sym(
+            lib_handle, "_ZN15CTouchInterface28ProcessLatentEventsForWidgetENS_9WidgetIDsEb",
+            nullptr));
+        g_touch_is_widget_enabled = reinterpret_cast<fn_IsWidgetEnabled_t>(xdl_sym(
+            lib_handle, "_ZN15CTouchInterface15IsWidgetEnabledENS_9WidgetIDsE", nullptr));
 
         if (g_touch_create_all && g_touch_setup_layout && g_touch_visualize_all) {
             LOGI("🛠️ [VanillaQoL] Resolved CTouchInterface rehydrate chain");
@@ -170,29 +284,46 @@ void install_vanilla_qol_fixes(void* lib_handle) {
             LOGW("🛠️ [VanillaQoL] CTouchInterface symbols missing — touch rehydrate disabled");
         }
 
-        g_stub_mobile_menu_load = shadowhook_hook_sym_name(
-            TARGET_LIB,
-            "_ZN10MobileMenu4LoadEv",
-            reinterpret_cast<void*>(proxy_mobile_menu_load),
-            reinterpret_cast<void**>(&g_orig_mobile_menu_load));
-        if (g_stub_mobile_menu_load) {
-            LOGI("🛠️ [VanillaQoL] Hooked MobileMenu::Load");
-        } else {
-            LOGW("🛠️ [VanillaQoL] Failed to hook MobileMenu::Load: %s",
-                 shadowhook_to_errmsg(shadowhook_get_errno()));
-        }
+        #define HOOK_QOL_SYM(mangled, proxy_fn, stub_var, orig_var, label) do { \
+            (stub_var) = shadowhook_hook_sym_name( \
+                TARGET_LIB, (mangled), reinterpret_cast<void*>(proxy_fn), \
+                reinterpret_cast<void**>(&(orig_var))); \
+            if (stub_var) LOGI("🛠️ [VanillaQoL] Hooked %s", (label)); \
+            else LOGW("🛠️ [VanillaQoL] Failed to hook %s: %s", (label), \
+                     shadowhook_to_errmsg(shadowhook_get_errno())); \
+        } while (0)
 
-        g_stub_load_game_from_slot = shadowhook_hook_sym_name(
-            TARGET_LIB,
-            "_ZN16UGameplayStatics16LoadGameFromSlotERK7FStringi",
-            reinterpret_cast<void*>(proxy_load_game_from_slot),
-            reinterpret_cast<void**>(&g_orig_load_game_from_slot));
-        if (g_stub_load_game_from_slot) {
-            LOGI("🛠️ [VanillaQoL] Hooked UGameplayStatics::LoadGameFromSlot");
-        } else {
-            LOGW("🛠️ [VanillaQoL] Failed to hook LoadGameFromSlot: %s",
-                 shadowhook_to_errmsg(shadowhook_get_errno()));
-        }
+        HOOK_QOL_SYM("_ZN12UGameterface14LoadDataInSlotEi",
+                     proxy_gameterface_load_data_in_slot,
+                     g_stub_gameterface_load_data_in_slot,
+                     g_orig_gameterface_load_data_in_slot,
+                     "UGameterface::LoadDataInSlot");
+        HOOK_QOL_SYM("_ZN20USanAndreasInterface14LoadDataInSlotEi",
+                     proxy_san_andreas_load_data_in_slot,
+                     g_stub_san_andreas_load_data_in_slot,
+                     g_orig_san_andreas_load_data_in_slot,
+                     "USanAndreasInterface::LoadDataInSlot");
+        HOOK_QOL_SYM("_ZN12UGameterface20StartNewGameFromMenuEv",
+                     proxy_gameterface_start_new_game_from_menu,
+                     g_stub_gameterface_start_new_game,
+                     g_orig_gameterface_start_new_game,
+                     "UGameterface::StartNewGameFromMenu");
+        HOOK_QOL_SYM("_ZN20USanAndreasInterface20StartNewGameFromMenuEv",
+                     proxy_san_andreas_start_new_game_from_menu,
+                     g_stub_san_andreas_start_new_game,
+                     g_orig_san_andreas_start_new_game,
+                     "USanAndreasInterface::StartNewGameFromMenu");
+        HOOK_QOL_SYM("_ZN10MobileMenu4LoadEv",
+                     proxy_mobile_menu_load,
+                     g_stub_mobile_menu_load,
+                     g_orig_mobile_menu_load,
+                     "MobileMenu::Load");
+        HOOK_QOL_SYM("_ZN16UGameplayStatics16LoadGameFromSlotERK7FStringi",
+                     proxy_load_game_from_slot,
+                     g_stub_load_game_from_slot,
+                     g_orig_load_game_from_slot,
+                     "UGameplayStatics::LoadGameFromSlot");
+        #undef HOOK_QOL_SYM
     }
 
     g_vanilla_qol_installed = true;
@@ -207,8 +338,6 @@ void poll_vanilla_qol_fixes() {
         schedule_touch_rehydrate("save-load session cleared");
     }
     try_rehydrate_touch_controls();
-    // TODO(qol-001): interior shop peds
-    // TODO(qol-002): vehicle ground sink
 }
 
 bool vanilla_qol_touch_rehydrate_pending() {

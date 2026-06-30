@@ -69,6 +69,7 @@ enum class SaveLoadKind : uint8_t {
 };
 static std::atomic<uint8_t> g_save_load_kind{static_cast<uint8_t>(SaveLoadKind::Unknown)};
 static std::atomic<bool> g_menu_read_save_path_seen{false};
+static std::atomic<bool> g_explicit_new_game_bootstrap{false};
 
 static constexpr int64_t kAbandonedSessionMs = 120000;
 static constexpr int64_t kSessionHardCapMs = 180000;
@@ -88,10 +89,20 @@ void begin_save_load_session();
 
 void notify_menu_read_save_path(const char* via) {
     begin_save_load_session();
+    g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                            std::memory_order_release);
     LOGI("💾 [SaveLoad] Menu read-save via %s (direct scene, no intro expected)", via);
+}
+
+void notify_explicit_new_game_bootstrap(const char* via) {
+    begin_save_load_session();
+    g_menu_read_save_path_seen.store(false, std::memory_order_release);
+    g_explicit_new_game_bootstrap.store(true, std::memory_order_release);
+    g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::NewGameBootstrap),
+                           std::memory_order_release);
+    LOGI("💾 [SaveLoad] Explicit new-game via %s (intro may follow)", via);
 }
 
 static bool read_ms_b_loading() {
@@ -237,6 +248,7 @@ static void end_save_load_session(const char* reason) {
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::Unknown),
                            std::memory_order_release);
     g_menu_read_save_path_seen.store(false, std::memory_order_release);
+    g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_save_load_quiesce_until_ms.store(
         now_ms() + kSaveLoadPostSessionCooldownMs, std::memory_order_release);
     LOGI("💾 [SaveLoad] Session end — %s (cooldown %lldms)",
@@ -431,7 +443,17 @@ inline bool is_stability_sanitize_paused() {
 // ManageTasks hot path: active session / ms_bLoading only — not post-session cooldown (touch HUD needs tasks).
 static inline bool is_task_manager_hotpath_paused() {
     if (read_ms_b_loading()) return true;
-    return g_save_load_session.load(std::memory_order_acquire);
+    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
+    // Post-skip: resume scripts so right-side action widgets get re-enabled.
+    const int64_t skip_cleared =
+        g_skip_pipeline_cleared_ms.load(std::memory_order_acquire);
+    if (skip_cleared > 0 &&
+        now_ms() - skip_cleared >= kUltraRelaxedPostSkipDwellMs &&
+        !read_skip_pipeline_active() &&
+        is_player_world_active()) {
+        return false;
+    }
+    return true;
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
@@ -846,12 +868,21 @@ void proxy_cgame_logic_init_at_start_of_game() {
         g_menu_read_save_path_seen.load(std::memory_order_acquire);
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
+    const bool explicit_new_game =
+        g_explicit_new_game_bootstrap.load(std::memory_order_acquire);
     if (kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad) || menu_load_seen) {
         if (kind != static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad)) {
             g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                                    std::memory_order_release);
         }
         LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — menu read-save (gameState=%u)",
+             have_game_state ? game_state : 255u);
+    } else if (explicit_new_game ||
+               kind == static_cast<uint8_t>(SaveLoadKind::NewGameBootstrap)) {
+        g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
+        g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::NewGameBootstrap),
+                               std::memory_order_release);
+        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — new game bootstrap (gameState=%u)",
              have_game_state ? game_state : 255u);
     } else if (read_ms_b_loading() ||
                (have_game_state && game_state == kGameStateLoadingStarted)) {

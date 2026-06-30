@@ -286,6 +286,7 @@ bool is_save_load_session_or_loading();
 bool is_skip_cutscene_pipeline_active();
 void begin_save_load_session();
 void notify_menu_read_save_path(const char* via);
+void notify_explicit_new_game_bootstrap(const char* via);
 void mark_save_load_quiesce(int64_t duration_ms = 0);
 void poll_save_load_hydration_state();
 bool is_mod_dispatch_paused();
