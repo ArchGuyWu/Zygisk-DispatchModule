@@ -311,7 +311,6 @@ void poll_save_load_hydration_state() {
     if (have_game_state &&
         prev_game_state == kGameStateFrontendIdle &&
         game_state != kGameStateFrontendIdle) {
-        begin_save_load_session();
         LOGI("💾 [SaveLoad] Left frontend idle — gameState=%u", game_state);
     }
 
@@ -454,12 +453,15 @@ inline bool is_stability_sanitize_paused() {
            !is_gameplay_world_stable_for_sanitize();
 }
 
-// ManageTasks hot path: ms_bLoading or post-load hydration session — not frontend/loading-screen idle.
+// ManageTasks hot path: pause post-load hydration (gameState 9) — allow on loading screen (state 8).
 static inline bool is_task_manager_hotpath_paused() {
-    if (read_ms_b_loading()) return true;
     uint8_t game_state = 0;
-    if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
+    const bool have_game_state = read_game_state(&game_state);
+    if (have_game_state && game_state == kGameStateLoadingStarted) {
         return false;
+    }
+    if (read_ms_b_loading()) {
+        return true;
     }
     if (!g_save_load_session.load(std::memory_order_acquire)) return false;
     // Post-skip: resume scripts so right-side action widgets get re-enabled.
