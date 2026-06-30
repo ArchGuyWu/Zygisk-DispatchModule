@@ -453,9 +453,9 @@ inline bool is_stability_sanitize_paused() {
            !is_gameplay_world_stable_for_sanitize();
 }
 
-// ManageTasks hot path: hard-stop only during post-load hydration (session + gameState 9).
-// ms_bLoading and gameState 7/8 must always run ManageTasks or the loading screen hangs.
-static inline bool is_task_manager_hotpath_paused() {
+// ManageTasks execution: hard-stop only during post-load hydration (session + gameState 9).
+// ms_bLoading and gameState 7/8 must run ManageTasks or the loading screen hangs.
+static inline bool is_manage_tasks_execution_paused() {
     if (read_ms_b_loading()) return false;
     if (!g_save_load_session.load(std::memory_order_acquire)) return false;
     uint8_t game_state = 0;
@@ -472,6 +472,16 @@ static inline bool is_task_manager_hotpath_paused() {
         return false;
     }
     return true;
+}
+
+// Task-manager queries (GetSimplestActiveTask, FindActiveTaskByType, …): pause for the full
+// save-load lifecycle. CALL_PREV on half-hydrated slots crashes (#32–34).
+static inline bool is_task_manager_query_paused() {
+    if (read_ms_b_loading()) return true;
+    if (g_save_load_session.load(std::memory_order_acquire)) return true;
+    const int64_t quiesce_until =
+        g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
+    return quiesce_until > 0 && now_ms() < quiesce_until;
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
@@ -503,7 +513,7 @@ static inline bool is_task_manager_hotpath_paused() {
 #define STABILITY_VOID_SAVE_LOAD_SKIP_HOTPATH(proxy_fn, self) \
     do { \
         if (is_stability_sanitize_paused()) { \
-            if (is_task_manager_hotpath_paused()) return; \
+            if (is_manage_tasks_execution_paused()) return; \
             if (!self || !is_pointer_readable(self)) return; \
             SHADOWHOOK_CALL_PREV(proxy_fn, self); \
             return; \
@@ -734,7 +744,7 @@ void proxy_manage_tasks(void* self) {
     if (is_stability_sanitize_paused()) {
         // Layered gate (tombstone 29–32): skip CALL_PREV only during session+gameState 9
         // hydration; ms_bLoading / state 7–8 always CALL_PREV (loading screen progress).
-        if (is_task_manager_hotpath_paused()) return;
+        if (is_manage_tasks_execution_paused()) return;
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
     }
@@ -760,7 +770,7 @@ fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
 void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return;
+        if (is_manage_tasks_execution_paused()) return;
         if (!ped || !is_pointer_readable(ped)) return;
         SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
         return;
@@ -1075,7 +1085,7 @@ void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return nullptr;
+        if (is_task_manager_query_paused()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
     }
 
@@ -1119,7 +1129,7 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return nullptr;
+        if (is_task_manager_query_paused()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
     }
     sanitize_intel_for_task_lookup(self);
@@ -1483,7 +1493,7 @@ fn_GetNearestCarDoor_t g_orig_get_nearest_car_door = nullptr;
 bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* door_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return false;
+        if (is_task_manager_query_paused()) return false;
         return SHADOWHOOK_CALL_PREV(proxy_get_nearest_car_door, ped, vehicle, out_vec, door_index);
     }
     if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -1612,8 +1622,16 @@ void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return nullptr;
-        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
+        if (is_task_manager_query_paused()) return nullptr;
+        for (int i = 0; i < 5; ++i) {
+            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+            if (!is_pointer_readable(task_slot)) continue;
+            void* task = *task_slot;
+            if (!task) continue;
+            void* simplest = simplest_in_task_chain(task, 0x18);
+            if (simplest) return simplest;
+        }
+        return nullptr;
     }
     sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
     sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
@@ -1638,7 +1656,13 @@ void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
+        if (is_task_manager_query_paused()) return nullptr;
+        if (index < 0 || index > 10) return nullptr;
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
+        if (!is_pointer_readable(task_slot)) return nullptr;
+        void* task = *task_slot;
+        if (!task) return nullptr;
+        return simplest_in_task_chain(task, 0x18);
     }
     if (index < 0 || index > 10) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
@@ -2132,7 +2156,7 @@ fn_EventPotentialWalkIntoVehicleAffectsPed_t g_orig_event_walk_into_vehicle_affe
 bool proxy_event_walk_into_vehicle_affects_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return false;
+        if (is_task_manager_query_paused()) return false;
         if (!self || !is_pointer_readable(self)) return false;
         if (!ped || !is_pointer_readable(ped)) return false;
         return SHADOWHOOK_CALL_PREV(proxy_event_walk_into_vehicle_affects_ped, self, ped);
@@ -2281,7 +2305,7 @@ void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, voi
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_task_manager_hotpath_paused()) return nullptr;
+        if (is_task_manager_query_paused()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_compute_ped_collision_with_ped_response, self, event, task, task2);
     }
     if (compute_collision_event_unreadable(event)) return nullptr;
