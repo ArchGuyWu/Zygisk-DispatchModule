@@ -283,6 +283,7 @@ bool is_scene_transition_active();
 bool is_player_world_active();
 bool is_save_load_active();
 void begin_save_load_session();
+void notify_menu_read_save_path(const char* via);
 void mark_save_load_quiesce(int64_t duration_ms = 0);
 void poll_save_load_hydration_state();
 bool is_mod_dispatch_paused();

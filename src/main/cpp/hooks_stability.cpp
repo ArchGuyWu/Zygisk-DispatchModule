@@ -29,6 +29,7 @@
 #include "game_types.hpp"
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
+#include "vanilla_qol_fixes.hpp"
 #include "ecs_engine.hpp"
 
 // =====================================================================
@@ -73,14 +74,15 @@ static constexpr int64_t kSessionHardCapMs = 180000;
 static constexpr int64_t kSessionMinActiveMs = 28000;
 static constexpr int64_t kHydrationSignalDwellMs = 15000;
 // Main-menu load save (no cutscene): recover ManageTasks / touch HUD quickly.
-static constexpr int64_t kDirectLoadSessionMinActiveMs = 8000;
-static constexpr int64_t kDirectLoadHydrationDwellMs = 3000;
+static constexpr int64_t kDirectLoadSessionMinActiveMs = 5000;
+static constexpr int64_t kDirectLoadHydrationDwellMs = 2000;
 static constexpr int64_t kMinPostLoadingHoldMs = 5000;
+static constexpr int64_t kRelaxedPostLoadingHoldMs = 2000;
 static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
 
 void begin_save_load_session();
 
-static void mark_menu_save_load_path(const char* via) {
+void notify_menu_read_save_path(const char* via) {
     begin_save_load_session();
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                            std::memory_order_release);
@@ -152,6 +154,37 @@ static bool save_load_hydration_signals_settled() {
     return true;
 }
 
+// Menu read-save / post-skip recovery: do not wait for streaming queue (touch HUD + ManageTasks).
+static bool save_load_hydration_signals_settled_relaxed() {
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    if (read_ms_b_loading()) return false;
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kRelaxedPostLoadingHoldMs) {
+        return false;
+    }
+    if (!is_player_world_active()) return false;
+    if (!have_game_state || game_state != kGameStateIdle) return false;
+    if (read_skip_pipeline_active()) return false;
+    return true;
+}
+
+static bool use_relaxed_hydration_settled() {
+    const uint8_t kind = g_save_load_kind.load(std::memory_order_acquire);
+    if (kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad)) return true;
+    const int64_t skip_cleared = g_skip_pipeline_cleared_ms.load(std::memory_order_acquire);
+    return skip_cleared > 0 && now_ms() - skip_cleared < 120000;
+}
+
+static bool hydration_settled_for_session_end() {
+    if (use_relaxed_hydration_settled()) {
+        return save_load_hydration_signals_settled_relaxed();
+    }
+    return save_load_hydration_signals_settled();
+}
+
 void begin_save_load_session() {
     const bool was_active = g_save_load_session.exchange(true, std::memory_order_acq_rel);
     if (!was_active) {
@@ -183,6 +216,7 @@ static void end_save_load_session(const char* reason) {
         now_ms() + kSaveLoadPostSessionCooldownMs, std::memory_order_release);
     LOGI("💾 [SaveLoad] Session end — %s (cooldown %lldms)",
          reason, static_cast<long long>(kSaveLoadPostSessionCooldownMs));
+    vanilla_qol_on_save_load_session_ended();
 }
 
 static void session_timing_thresholds(int64_t* min_active_ms, int64_t* dwell_ms) {
@@ -223,6 +257,7 @@ void poll_save_load_hydration_state() {
         g_skip_pipeline_cleared_ms.store(now_ms(), std::memory_order_release);
         LOGI("💾 [SaveLoad] Skip pipeline cleared — gameState=%u",
              have_game_state ? game_state : 255u);
+        vanilla_qol_on_skip_pipeline_cleared();
     }
     g_skip_pipeline_was_active.store(skip_active, std::memory_order_release);
 
@@ -249,7 +284,7 @@ void poll_save_load_hydration_state() {
 
     if (g_save_load_session.load(std::memory_order_acquire)) {
         const int64_t started = g_session_started_ms.load(std::memory_order_acquire);
-        const bool settled = save_load_hydration_signals_settled();
+        const bool settled = hydration_settled_for_session_end();
         int64_t min_active_ms = kSessionMinActiveMs;
         int64_t dwell_ms = kHydrationSignalDwellMs;
         session_timing_thresholds(&min_active_ms, &dwell_ms);
@@ -719,25 +754,25 @@ fn_CGameLogicInitAtStartOfGame_t g_orig_cgame_logic_init_at_start_of_game = null
 
 void proxy_generic_game_storage_load(void* self, bool flag) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_menu_save_load_path("CGenericGameStorage::Load");
+    notify_menu_read_save_path("CGenericGameStorage::Load");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load, self, flag);
 }
 
 void proxy_generic_game_storage_load_game(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_menu_save_load_path("CGenericGameStorage::LoadGame");
+    notify_menu_read_save_path("CGenericGameStorage::LoadGame");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load_game, self);
 }
 
 void proxy_generic_game_storage_restore_for_start_load() {
     SHADOWHOOK_STACK_SCOPE();
-    mark_menu_save_load_path("RestoreForStartLoad");
+    notify_menu_read_save_path("RestoreForStartLoad");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_restore_for_start_load);
 }
 
 void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_menu_save_load_path("GenericLoad");
+    notify_menu_read_save_path("GenericLoad");
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d)", slot);
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
     const bool load_ok = out && is_pointer_readable(out) && *out;
@@ -757,13 +792,20 @@ void proxy_generic_game_storage_after_success_load() {
 void proxy_cgame_logic_init_at_start_of_game() {
     SHADOWHOOK_STACK_SCOPE();
     const uint8_t kind = g_save_load_kind.load(std::memory_order_acquire);
-    if (kind != static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad)) {
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    if (kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad)) {
+        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — after menu read-save (expected)");
+    } else if (read_ms_b_loading() ||
+               (have_game_state && game_state == kGameStateLoadingStarted)) {
+        // DE menu load often hits InitAtStartOfGame during state 8 before GenericLoad — not new game.
+        begin_save_load_session();
+        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — during engine load (defer new-game mark)");
+    } else {
         g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::NewGameBootstrap),
                                std::memory_order_release);
         begin_save_load_session();
         LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — new game bootstrap (intro may follow)");
-    } else {
-        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — after menu read-save (expected)");
     }
     SHADOWHOOK_CALL_PREV(proxy_cgame_logic_init_at_start_of_game);
 }
