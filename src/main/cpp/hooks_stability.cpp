@@ -37,6 +37,7 @@ inline bool intelligence_zero_filled(void* self);
 inline bool intelligence_process_hotpath_unsafe(void* intel, size_t vtable_fn_offset);
 inline bool ped_intel_ik_node_target_unsafe(void* ped);
 inline bool ped_intel_physical_tick_unsafe(void* ped);
+inline bool gang_follower_control_unsafe(void* self);
 
 // =====================================================================
 // Scene transition / interior entry state (yellow marker warp UX)
@@ -1113,29 +1114,25 @@ void* g_stub_ccgf_control = nullptr;
 fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_ccgf_control, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
+    if (is_task_manager_query_paused()) return nullptr;
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_ccgf_control, self, ped);
 
-    if (ped && is_ped_pointer_valid_safe(ped)) {
-        sanitize_ped_tasks(ped);
-    }
-
-    if (self) {
+    if (!is_stability_sanitize_paused()) {
+        if (ped && is_ped_pointer_valid_safe(ped)) {
+            sanitize_ped_tasks(ped);
+        }
         char* self_bytes = reinterpret_cast<char*>(self);
         sanitize_unsafe_subtask_at(self, 0x10);
         sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x18), "leader");
         sanitize_gang_follower_ped_slot(reinterpret_cast<void**>(self_bytes + 0x20), "partner");
-
-        // Original dereferences leader+0x498 with no null guard (tombstone_01–04, fault 0x498).
-        // Skip only when leader slot is empty after sanitization — not intercepting ped args.
-        void** leader_slot = reinterpret_cast<void**>(self_bytes + 0x18);
-        if (!is_pointer_readable(leader_slot) || !*leader_slot) {
-            LOGW("⚠️ [GangFollower::ControlSubTask] no leader after sanitize — skip original");
-            return nullptr;
-        }
     }
 
+    if (gang_follower_control_unsafe(self)) {
+        LOGW("⚠️ [GangFollower::ControlSubTask] unsafe leader/partner — skip (tombstone_20)");
+        return nullptr;
+    }
     return SHADOWHOOK_CALL_PREV(proxy_ccgf_control, self, ped);
 }
 
@@ -1463,7 +1460,7 @@ void proxy_process_buoyancy(void* self) {
     if (is_buoyancy_execution_paused()) return;
     if (!is_ped_pointer_valid_safe(self)) return;
     if (ped_intel_physical_tick_unsafe(self)) {
-        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p intel/IK — skip (tombstone_17)", self);
+        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p intel/IK — skip (tombstone_21)", self);
         return;
     }
     if (!is_stability_sanitize_paused()) {
@@ -2297,15 +2294,51 @@ inline bool intelligence_process_hotpath_unsafe(void* intel, size_t vtable_fn_of
     return intelligence_ik_node_target_unsafe(intel);
 }
 
+inline void* get_ped_intelligence_safe(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return nullptr;
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(intel_slot)) return nullptr;
+    return *intel_slot;
+}
+
+inline bool ped_intel_slot_unsafe(void* ped) {
+    void* intel = get_ped_intelligence_safe(ped);
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return true;
+    return false;
+}
+
 inline bool ped_intel_ik_node_target_unsafe(void* ped) {
-    if (!ped || !is_ped_pointer_valid_safe(ped)) return true;
-    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-    return intelligence_ik_node_target_unsafe(intel);
+    if (ped_intel_slot_unsafe(ped)) return true;
+    return intelligence_ik_node_target_unsafe(get_ped_intelligence_safe(ped));
 }
 
 inline bool ped_intel_physical_tick_unsafe(void* ped) {
+    if (ped_intel_slot_unsafe(ped)) return true;
     if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x18)) return true;
-    return ped_intel_ik_node_target_unsafe(ped);
+    return intelligence_ik_node_target_unsafe(get_ped_intelligence_safe(ped));
+}
+
+// leader+0x18 null → engine loads [leader+0x18] without guard (tombstone_20).
+inline bool gang_follower_control_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) return true;
+    if (task_slot_unsafe_for_vtable_call(*sub_slot, 0x18)) return true;
+
+    void** leader_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (!is_pointer_readable(leader_slot) || !*leader_slot) return true;
+    void* leader = *leader_slot;
+    if (!is_pointer_readable(leader) || !is_ped_pointer_valid_safe(leader)) return true;
+    if (ped_intel_slot_unsafe(leader)) return true;
+    if (ped_intel_physical_tick_unsafe(leader)) return true;
+
+    void** partner_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x20);
+    if (!is_pointer_readable(partner_slot)) return false;
+    void* partner = *partner_slot;
+    if (!partner) return false;
+    if (!is_pointer_readable(partner) || !is_ped_pointer_valid_safe(partner)) return true;
+    if (ped_intel_slot_unsafe(partner)) return true;
+    return ped_intel_physical_tick_unsafe(partner);
 }
 
 // --- CTaskComplexWanderCop::LookForCriminals Hook ---
