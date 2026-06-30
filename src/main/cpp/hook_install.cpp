@@ -381,6 +381,33 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskManager::FindActiveTaskByType: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_intel_find_task_by_type = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK16CPedIntelligence14FindTaskByTypeEi",
+        reinterpret_cast<void*>(proxy_intel_find_task_by_type),
+        reinterpret_cast<void**>(&g_orig_intel_find_task_by_type));
+    if (g_stub_intel_find_task_by_type) LOGI("✅ Hooked CPedIntelligence::FindTaskByType");
+    else LOGE("❌ Failed to hook CPedIntelligence::FindTaskByType: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_wander_cop_look_for_criminals = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN21CTaskComplexWanderCop16LookForCriminalsEP4CPed",
+        reinterpret_cast<void*>(proxy_wander_cop_look_for_criminals),
+        reinterpret_cast<void**>(&g_orig_wander_cop_look_for_criminals));
+    if (g_stub_wander_cop_look_for_criminals) LOGI("✅ Hooked CTaskComplexWanderCop::LookForCriminals");
+    else LOGE("❌ Failed to hook CTaskComplexWanderCop::LookForCriminals: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_kill_criminal_create_first_sub_task = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN24CTaskComplexKillCriminal18CreateFirstSubTaskEP4CPed",
+        reinterpret_cast<void*>(proxy_kill_criminal_create_first_sub_task),
+        reinterpret_cast<void**>(&g_orig_kill_criminal_create_first_sub_task));
+    if (g_stub_kill_criminal_create_first_sub_task) LOGI("✅ Hooked CTaskComplexKillCriminal::CreateFirstSubTask");
+    else LOGE("❌ Failed to hook CTaskComplexKillCriminal::CreateFirstSubTask: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
 
     // Hook CTaskManager Destructor (析构时强制净化，防止删除零填充任务虚表解引用闪退)
     g_stub_task_manager_destructor = shadowhook_hook_sym_name(

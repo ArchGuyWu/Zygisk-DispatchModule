@@ -1078,12 +1078,14 @@ static CopCombatDispatchMethod dispatch_cop_combat_ladder(
         return CopCombatDispatchMethod::ALREADY_ACTIVE;
     }
 
-    if (is_cop_currently_exiting(cop)) {
-        LOGI("🎯 [Native Dispatch] Cop %p is exiting vehicle — defer combat inject", cop);
-        return CopCombatDispatchMethod::NONE;
-    }
+    auto* cop_comp = ecs::EntityManager::get().get_component<ecs::CopComponent>(cop);
+    bool exited_or_exiting = is_cop_currently_exiting(cop) ||
+        (cop_comp && cop_comp->has_exited_vehicle);
 
     bool in_vehicle = find_vehicle_of_cop_cached(cop) != nullptr;
+    if (exited_or_exiting) {
+        in_vehicle = false;
+    }
     if (in_vehicle) {
         LOGI("🎯 [Native Dispatch] Cop %p still in vehicle — defer combat until on foot", cop);
         return CopCombatDispatchMethod::NONE;

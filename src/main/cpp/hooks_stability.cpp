@@ -448,26 +448,59 @@ void* proxy_find_active_task(void* self, int type) {
     if (self && !is_pointer_readable(self)) return nullptr;
 
     if (self) {
-        // CTaskManager contains primary tasks (5 slots) and secondary tasks (6 slots)
-        // Total 11 slots of pointers starting at offset 0 of CTaskManager.
+        sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
+        sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
         for (int i = 0; i < 11; ++i) {
             void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            if (is_pointer_readable(task_slot)) {
-                void* task = *task_slot;
-                if (task) {
-                    if (!is_task_vtable_safe(task)) {
-                        LOGW("⚠️ [FindActiveTaskByType Sanitizer] Sanitizing unsafe task %p at slot %d inside CTaskManager %p", task, i, self);
-                        *task_slot = nullptr;
-                    } else {
-                        sanitize_task_tree(task);
-                    }
-                }
+            if (!is_pointer_readable(task_slot)) continue;
+            void* task = *task_slot;
+            if (task && is_task_vtable_safe(task)) {
+                sanitize_task_tree(task);
             }
         }
     }
     return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
 }
 
+// --- CPedIntelligence::FindTaskByType Hook ---
+// RE: intel+0x28/+0x20 secondary tasks → vtable+0x28 chain 55c6a34/55c6a80 (tombstone_00).
+void* g_stub_intel_find_task_by_type = nullptr;
+fn_IntelFindTaskByType_t g_orig_intel_find_task_by_type = nullptr;
+
+inline void sanitize_intel_for_task_lookup(void* intel) {
+    if (!intel || !is_pointer_readable(intel)) return;
+    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "Intel::FindTaskByType", 0x28);
+    sanitize_task_manager_primary_chains(reinterpret_cast<char*>(intel) + 8, "Intel::FindTaskByType", 0x28);
+    for (size_t off : {0x20u, 0x28u}) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + off);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_slot_unsafe_for_vtable_call(task, 0x28)) {
+            LOGW("⚠️ [Intel::FindTaskByType] Clearing unsafe task %p at intel+0x%zx", task, off);
+            *task_slot = nullptr;
+        }
+    }
+}
+
+void* proxy_intel_find_task_by_type(void* self, int type) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    sanitize_intel_for_task_lookup(self);
+    for (size_t off : {0x20u, 0x28u}) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + off);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_chain_walk_unsafe(task, 0x28)) return nullptr;
+    }
+    void* task_mgr = reinterpret_cast<char*>(self) + 8;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_chain_walk_unsafe(task, 0x28)) return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
+}
 
 // --- CTaskManager Destructor Hook ---
 void* g_stub_task_manager_destructor = nullptr;
@@ -1360,6 +1393,45 @@ inline bool ped_intel_primary_tasks_unsafe_for_event(void* ped, size_t vtable_fn
         if (task_slot_unsafe_for_vtable_call(task, 0x28)) return true;
     }
     return false;
+}
+
+// --- CTaskComplexWanderCop::LookForCriminals Hook ---
+// RE: ped+0x5e8 task slots → vtable+0x28 57855c4 (tombstone_01).
+void* g_stub_wander_cop_look_for_criminals = nullptr;
+fn_WanderCopLookForCriminals_t g_orig_wander_cop_look_for_criminals = nullptr;
+
+void proxy_wander_cop_look_for_criminals(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (self && !is_pointer_readable(self)) return;
+    if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
+    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
+        LOGW("⚠️ [WanderCop::LookForCriminals] unsafe ped %p tasks — skip original", ped);
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_wander_cop_look_for_criminals, self, ped);
+}
+
+// --- CTaskComplexKillCriminal::CreateFirstSubTask Hook ---
+// RE: target at +0x18 null → cbz 57c2c80; stale target intel+0x5e8 no cbz 57c309c (tombstone_02).
+void* g_stub_kill_criminal_create_first_sub_task = nullptr;
+fn_KillCriminalCreateFirstSubTask_t g_orig_kill_criminal_create_first_sub_task = nullptr;
+
+void* proxy_kill_criminal_create_first_sub_task(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    if (ped && !is_pointer_readable(ped)) return nullptr;
+    clear_task_ped_slot_if_stale(self, 0x18, "KillCriminal::CreateFirstSubTask");
+    void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (!is_pointer_readable(target_slot) || !*target_slot) {
+        LOGW("⚠️ [KillCriminal::CreateFirstSubTask] null target — skip hate inject");
+        return nullptr;
+    }
+    if (!is_ped_pointer_valid_safe(*target_slot)) {
+        LOGW("⚠️ [KillCriminal::CreateFirstSubTask] stale target %p — clear slot", *target_slot);
+        *target_slot = nullptr;
+        return nullptr;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_kill_criminal_create_first_sub_task, self, ped);
 }
 
 // --- CEventPotentialWalkIntoVehicle::AffectsPed Hook ---

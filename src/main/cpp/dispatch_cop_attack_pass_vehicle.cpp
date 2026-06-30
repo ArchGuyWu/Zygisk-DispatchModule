@@ -103,6 +103,15 @@ void cop_attack_dispatch_vehicle_cop(
 
                             if (should_exit) {
                                 if (!ctx.vector_contains(ctx.vehicles_emptied_snapshot, veh)) {
+                                    if (!ctx.vector_contains(ctx.vehicles_siren_awakened_snapshot, veh) &&
+                                        g_VehicleInflictDamage) {
+                                        g_VehicleInflictDamage(veh, nullptr, WEAPON_UNARMED, 0.0f, session.veh_pos);
+                                        ctx.vehicles_siren_awakened_snapshot.push_back(veh);
+                                        ctx.pending_vehicles_siren_awakened.push_back(veh);
+                                        add_vehicle_siren_awakened(veh);
+                                        LOGI("Vehicle siren awakened on exit order (dist=%.1f): %p",
+                                             session.v_dist, veh);
+                                    }
                                     dispatch_tell_occupants_to_leave_car(veh);
                                     ctx.vehicles_emptied_snapshot.push_back(veh);
                                     ctx.pending_vehicles_emptied.push_back(veh);
