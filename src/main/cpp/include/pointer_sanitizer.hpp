@@ -25,3 +25,7 @@ bool is_pointer_readable(const void* ptr);
 
 // Force Tier 3 only (diagnostics / rare strict checks).
 bool is_pointer_readable_strict(const void* ptr);
+
+// Bounded ICU-style UTF-16 strlen: probe each page before dereference so stale
+// string scans cannot SIGSEGV inside u_strlen_64 (tombstone_01–04, #48–49).
+int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units = 4096);

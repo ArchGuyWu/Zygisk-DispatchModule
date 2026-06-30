@@ -171,3 +171,24 @@ bool is_pointer_readable(const void* ptr) {
     }
     return false;
 }
+
+int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units) {
+    if (!s || max_units <= 0) return 0;
+    if (!is_userspace_address(s) || !is_pointer_readable(s)) return 0;
+
+    const auto* p = static_cast<const uint16_t*>(s);
+
+    for (int32_t i = 0; i < max_units; ++i) {
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(p + i);
+        const uintptr_t page_off = addr & 0xFFF;
+        if (page_off == 0 || page_off == 0xFFF) {
+            if (!is_pointer_readable(reinterpret_cast<const void*>(addr))) return 0;
+            if (page_off == 0xFFF &&
+                !is_pointer_readable(reinterpret_cast<const void*>(addr + 1))) {
+                return 0;
+            }
+        }
+        if (p[i] == 0) return i;
+    }
+    return 0;
+}
