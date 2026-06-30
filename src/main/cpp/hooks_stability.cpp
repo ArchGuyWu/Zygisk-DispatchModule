@@ -1115,6 +1115,132 @@ bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void*
     return SHADOWHOOK_CALL_PREV(proxy_simple_anim_make_abortable, self, ped, priority, event);
 }
 
+inline bool arrest_ped_task_target_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (!is_pointer_readable(target_slot)) return false;
+    void* target = *target_slot;
+    if (!target) return false;
+    return !is_ped_pointer_valid_safe(target);
+}
+
+inline bool intelligence_self_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** vtable_slot = reinterpret_cast<void**>(self);
+    if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return true;
+    if (!is_pointer_readable(reinterpret_cast<char*>(self) + 0x18)) return true;
+    return false;
+}
+
+inline bool collision_event_entity_refs_unsafe(void* event) {
+    if (!event || !is_pointer_readable(event)) return true;
+    if (make_abortable_event_unsafe(event)) return true;
+    static constexpr size_t kEntityOffsets[] = {0x10, 0x18, 0x20};
+    for (size_t off : kEntityOffsets) {
+        void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(event) + off);
+        if (!is_pointer_readable(slot)) continue;
+        void* ent = *slot;
+        if (!ent) continue;
+        if (!is_pointer_readable(ent)) return true;
+        if (is_ped_pointer_valid_safe(ent)) continue;
+        if (is_entity_pointer_valid(ent)) continue;
+        void** vtable_slot = reinterpret_cast<void**>(ent);
+        if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return true;
+    }
+    return false;
+}
+
+// --- CTaskSimpleArrestPed::MakeAbortable Hook ---
+// Stale arrest target at +0x18 → wild deref in HandleEvents (tombstone_36).
+void* g_stub_simple_arrest_ped_make_abortable = nullptr;
+fn_SimpleArrestPedMakeAbortable_t g_orig_simple_arrest_ped_make_abortable = nullptr;
+
+bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    if (arrest_ped_task_target_unsafe(self)) {
+        void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+        if (is_pointer_readable(target_slot) && *target_slot) {
+            LOGW("⚠️ [SimpleArrestPed::MakeAbortable] stale target %p — clear, delegate to engine",
+                 *target_slot);
+            *target_slot = nullptr;
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_simple_arrest_ped_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexArrestPed::MakeAbortable Hook ---
+void* g_stub_complex_arrest_ped_make_abortable = nullptr;
+fn_ComplexArrestPedMakeAbortable_t g_orig_complex_arrest_ped_make_abortable = nullptr;
+
+bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    if (arrest_ped_task_target_unsafe(self)) {
+        void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+        if (is_pointer_readable(target_slot) && *target_slot) {
+            LOGW("⚠️ [ComplexArrestPed::MakeAbortable] stale target %p — clear, delegate to engine",
+                 *target_slot);
+            *target_slot = nullptr;
+        }
+    }
+    sanitize_unsafe_subtask_at(self, 0x10);
+    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return true;
+    return SHADOWHOOK_CALL_PREV(proxy_complex_arrest_ped_make_abortable, self, ped, priority, event);
+}
+
+// --- CPedIntelligence::ProcessAfterProcCol Hook ---
+// Zero-filled intel or null +0x18 member → fault 0x18 (tombstone_37).
+void* g_stub_process_after_proc_col = nullptr;
+fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
+
+void proxy_process_after_proc_col(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (intelligence_self_unsafe(self)) return;
+    sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessAfterProcCol");
+    SHADOWHOOK_CALL_PREV(proxy_process_after_proc_col, self);
+}
+
+// --- CCollisionEventScanner::ScanForCollisionEvents Hook ---
+// Ped intel/event chain null at +0x18 (tombstone_38).
+void* g_stub_scan_for_collision_events = nullptr;
+fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events = nullptr;
+
+void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_pointer_readable(ped)) return;
+    if (!is_ped_pointer_valid_safe(ped)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (!intel || intelligence_self_unsafe(intel)) return;
+    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForCollisionEvents");
+    if (!event_group || !is_pointer_readable(event_group)) return;
+    SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
+}
+
+// --- CEventHandler::ComputePedCollisionWithPedResponse Hook ---
+// Null event/task or stale ped refs in collision event (tombstone_39/40).
+void* g_stub_compute_ped_collision_with_ped_response = nullptr;
+fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with_ped_response = nullptr;
+
+void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    if (!event || collision_event_entity_refs_unsafe(event)) return nullptr;
+    if (!task || !is_task_vtable_safe(task)) return nullptr;
+    if (task2 && !is_task_vtable_safe(task2)) return nullptr;
+    return SHADOWHOOK_CALL_PREV(proxy_compute_ped_collision_with_ped_response, self, event, task, task2);
+}
+
 // --- CCarAI::UpdateCarAI Hook ---
 void* g_stub_update_car_ai = nullptr;
 fn_UpdateCarAI_t g_orig_update_car_ai = nullptr;

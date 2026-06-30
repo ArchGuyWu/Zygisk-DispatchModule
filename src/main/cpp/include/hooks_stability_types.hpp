@@ -46,6 +46,11 @@ typedef bool (*fn_KillCriminalMakeAbortable_t)(void* self, void* ped, int priori
 typedef bool (*fn_FallAndGetUpMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void* (*fn_PlayHandSignalControlSubTask_t)(void* self, void* ped);
 typedef bool (*fn_SimpleAnimMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_SimpleArrestPedMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_ComplexArrestPedMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef void (*fn_ProcessAfterProcCol_t)(void* self);
+typedef void (*fn_ScanForCollisionEvents_t)(void* self, void* ped, void* event_group);
+typedef void* (*fn_ComputePedCollisionWithPedResponse_t)(void* self, void* event, void* task, void* task2);
 typedef void (*fn_UpdateCarAI_t)(void* vehicle);
 typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
 typedef void* (*fn_GetTaskMain_t)(void* self, void* ped);
@@ -96,6 +101,11 @@ extern fn_KillCriminalMakeAbortable_t g_orig_kill_criminal_make_abortable;
 extern fn_FallAndGetUpMakeAbortable_t g_orig_fall_and_get_up_make_abortable;
 extern fn_PlayHandSignalControlSubTask_t g_orig_play_hand_signal_control_sub_task;
 extern fn_SimpleAnimMakeAbortable_t g_orig_simple_anim_make_abortable;
+extern fn_SimpleArrestPedMakeAbortable_t g_orig_simple_arrest_ped_make_abortable;
+extern fn_ComplexArrestPedMakeAbortable_t g_orig_complex_arrest_ped_make_abortable;
+extern fn_ProcessAfterProcCol_t g_orig_process_after_proc_col;
+extern fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events;
+extern fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with_ped_response;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -143,3 +153,8 @@ bool proxy_kill_criminal_make_abortable(void* self, void* ped, int priority, voi
 bool proxy_fall_and_get_up_make_abortable(void* self, void* ped, int priority, void* event);
 void* proxy_play_hand_signal_control_sub_task(void* self, void* ped);
 bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event);
+void proxy_process_after_proc_col(void* self);
+void proxy_scan_for_collision_events(void* self, void* ped, void* event_group);
+void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2);

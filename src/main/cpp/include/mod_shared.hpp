@@ -204,6 +204,11 @@ extern void* g_stub_kill_criminal_make_abortable;
 extern void* g_stub_fall_and_get_up_make_abortable;
 extern void* g_stub_play_hand_signal_control_sub_task;
 extern void* g_stub_simple_anim_make_abortable;
+extern void* g_stub_simple_arrest_ped_make_abortable;
+extern void* g_stub_complex_arrest_ped_make_abortable;
+extern void* g_stub_process_after_proc_col;
+extern void* g_stub_scan_for_collision_events;
+extern void* g_stub_compute_ped_collision_with_ped_response;
 
 // Dispatch state (defined in dispatch_logic.cpp)
 extern std::recursive_mutex g_crime_mutex;

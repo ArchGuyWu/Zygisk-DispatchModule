@@ -677,6 +677,54 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskSimpleAnim::MakeAbortable: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_simple_arrest_ped_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN20CTaskSimpleArrestPed13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_simple_arrest_ped_make_abortable),
+        reinterpret_cast<void**>(&g_orig_simple_arrest_ped_make_abortable));
+    if (g_stub_simple_arrest_ped_make_abortable) LOGI("✅ Hooked CTaskSimpleArrestPed::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskSimpleArrestPed::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_complex_arrest_ped_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN21CTaskComplexArrestPed13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_complex_arrest_ped_make_abortable),
+        reinterpret_cast<void**>(&g_orig_complex_arrest_ped_make_abortable));
+    if (g_stub_complex_arrest_ped_make_abortable) LOGI("✅ Hooked CTaskComplexArrestPed::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexArrestPed::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_process_after_proc_col = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN16CPedIntelligence19ProcessAfterProcColEv",
+        reinterpret_cast<void*>(proxy_process_after_proc_col),
+        reinterpret_cast<void**>(&g_orig_process_after_proc_col));
+    if (g_stub_process_after_proc_col) LOGI("✅ Hooked CPedIntelligence::ProcessAfterProcCol");
+    else LOGE("❌ Failed to hook CPedIntelligence::ProcessAfterProcCol: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_scan_for_collision_events = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN22CCollisionEventScanner22ScanForCollisionEventsER4CPedP11CEventGroup",
+        reinterpret_cast<void*>(proxy_scan_for_collision_events),
+        reinterpret_cast<void**>(&g_orig_scan_for_collision_events));
+    if (g_stub_scan_for_collision_events) LOGI("✅ Hooked CCollisionEventScanner::ScanForCollisionEvents");
+    else LOGE("❌ Failed to hook CCollisionEventScanner::ScanForCollisionEvents: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_compute_ped_collision_with_ped_response = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN13CEventHandler34ComputePedCollisionWithPedResponseEP6CEventP5CTaskS3_",
+        reinterpret_cast<void*>(proxy_compute_ped_collision_with_ped_response),
+        reinterpret_cast<void**>(&g_orig_compute_ped_collision_with_ped_response));
+    if (g_stub_compute_ped_collision_with_ped_response) {
+        LOGI("✅ Hooked CEventHandler::ComputePedCollisionWithPedResponse");
+    } else {
+        LOGE("❌ Failed to hook CEventHandler::ComputePedCollisionWithPedResponse: %s",
+             shadowhook_to_errmsg(shadowhook_get_errno()));
+    }
+
     // Hook CCarAI::UpdateCarAI
     g_stub_update_car_ai = shadowhook_hook_sym_name(
         TARGET_LIB,
