@@ -60,6 +60,7 @@ static std::atomic<int64_t> g_hydration_ready_since_ms{0};
 static std::atomic<int64_t> g_save_load_quiesce_until_ms{0};
 static std::atomic<bool> g_skip_pipeline_was_active{false};
 static std::atomic<int64_t> g_skip_pipeline_cleared_ms{0};
+static std::atomic<int64_t> g_u_strlen_hydration_ready_since_ms{0};
 
 // Menu read-save: direct scene, no intro. New game bootstrap may enter skip/intro pipeline.
 enum class SaveLoadKind : uint8_t {
@@ -85,8 +86,9 @@ static constexpr int64_t kPostSkipForceSessionEndMs = 1000;
 static constexpr int64_t kMinPostLoadingHoldMs = 5000;
 static constexpr int64_t kRelaxedPostLoadingHoldMs = 2000;
 static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
-// ICU u_strlen stale pointers outlive task-query hold (#08–10).
-static constexpr int64_t kUstrlenPostLoadHoldMs = 90000;
+// u_strlen: dynamic post-load gate — dwell after gameState==9 + streaming==0 (#08–10).
+static constexpr int64_t kUstrlenPostLoadDwellMs = 3000;
+static constexpr int64_t kUstrlenPostLoadHardCapMs = 120000;
 
 void begin_save_load_session();
 
@@ -223,6 +225,44 @@ static bool hydration_settled_for_session_end() {
     return save_load_hydration_signals_settled();
 }
 
+// u_strlen release: gameState==9, player valid, streaming queue empty, skip cleared.
+static bool u_strlen_post_load_hydration_settled() {
+    if (read_ms_b_loading()) return false;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state) || game_state != kGameStateIdle) return false;
+    if (!is_player_world_active()) return false;
+    const int pending = read_streaming_num_requested();
+    if (pending != 0) return false;
+    if (read_skip_pipeline_active()) return false;
+    return true;
+}
+
+static void poll_u_strlen_post_load_hydration() {
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared <= 0) {
+        g_u_strlen_hydration_ready_since_ms.store(0, std::memory_order_release);
+        return;
+    }
+    const bool settled = u_strlen_post_load_hydration_settled();
+    if (settled) {
+        int64_t ready =
+            g_u_strlen_hydration_ready_since_ms.load(std::memory_order_acquire);
+        if (ready <= 0) {
+            ready = now_ms();
+            g_u_strlen_hydration_ready_since_ms.store(ready, std::memory_order_release);
+            uint8_t game_state = 0;
+            read_game_state(&game_state);
+            LOGI("💾 [SaveLoad] u_strlen hydration settled — gameState=%u streaming=%d (dwell %lldms)",
+                 game_state,
+                 read_streaming_num_requested(),
+                 static_cast<long long>(kUstrlenPostLoadDwellMs));
+        }
+    } else {
+        g_u_strlen_hydration_ready_since_ms.store(0, std::memory_order_release);
+    }
+}
+
 void begin_save_load_session() {
     const bool was_active = g_save_load_session.exchange(true, std::memory_order_acq_rel);
     if (!was_active) {
@@ -233,6 +273,7 @@ void begin_save_load_session() {
         g_save_load_quiesce_until_ms.store(0, std::memory_order_release);
         g_skip_pipeline_was_active.store(false, std::memory_order_release);
         g_skip_pipeline_cleared_ms.store(0, std::memory_order_release);
+        g_u_strlen_hydration_ready_since_ms.store(0, std::memory_order_release);
         LOGI("💾 [SaveLoad] Session begin");
     }
 }
@@ -390,6 +431,8 @@ void poll_save_load_hydration_state() {
 
     prev_skip_active = skip_active;
     prev_ms_loading = ms_loading;
+
+    poll_u_strlen_post_load_hydration();
 }
 
 bool is_player_world_active() {
@@ -493,7 +536,7 @@ static inline bool is_task_manager_query_paused() {
     return false;
 }
 
-// u_strlen: wider pause than task queries — ICU buffers stale well after session end.
+// u_strlen: pause until gameState==9 + streaming==0 (+ short dwell), not fixed timer.
 static inline bool is_u_strlen_paused() {
     if (read_ms_b_loading()) return true;
     uint8_t game_state = 0;
@@ -504,13 +547,20 @@ static inline bool is_u_strlen_paused() {
     const int64_t quiesce_until =
         g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
     if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
+    if (is_manage_tasks_execution_paused()) return true;
+
     const int64_t loading_cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (loading_cleared > 0 &&
-        now_ms() - loading_cleared < kUstrlenPostLoadHoldMs) {
+    if (loading_cleared <= 0) return false;
+    if (now_ms() - loading_cleared >= kUstrlenPostLoadHardCapMs) return false;
+
+    if (!u_strlen_post_load_hydration_settled()) return true;
+    const int64_t ready_since =
+        g_u_strlen_hydration_ready_since_ms.load(std::memory_order_acquire);
+    if (ready_since <= 0 ||
+        now_ms() - ready_since < kUstrlenPostLoadDwellMs) {
         return true;
     }
-    if (is_manage_tasks_execution_paused()) return true;
     return false;
 }
 
