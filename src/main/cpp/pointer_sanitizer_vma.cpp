@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -172,13 +173,28 @@ bool is_pointer_readable(const void* ptr) {
     return false;
 }
 
+namespace {
+
+bool vm_read_memory(const void* src, void* dst, size_t len) {
+    if (!src || !dst || len == 0) return false;
+    if (!is_userspace_address(src)) return false;
+    struct iovec local_iov {};
+    struct iovec remote_iov {};
+    local_iov.iov_base = dst;
+    local_iov.iov_len = len;
+    remote_iov.iov_base = const_cast<void*>(src);
+    remote_iov.iov_len = len;
+    const ssize_t n = process_vm_readv(getpid(), &local_iov, 1, &remote_iov, 1, 0);
+    return n == static_cast<ssize_t>(len);
+}
+
+} // namespace
+
 bool safe_read_u16(const void* addr, uint16_t* out) {
     if (!addr || !out) return false;
-    if (!is_userspace_address(addr)) return false;
-    const uintptr_t a = reinterpret_cast<uintptr_t>(addr);
-    if (!pipe_probe_readable(reinterpret_cast<const void*>(a))) return false;
-    if (!pipe_probe_readable(reinterpret_cast<const void*>(a + 1))) return false;
-    *out = *reinterpret_cast<const uint16_t*>(addr);
+    uint16_t buf = 0;
+    if (!vm_read_memory(addr, &buf, sizeof(buf))) return false;
+    *out = buf;
     return true;
 }
 

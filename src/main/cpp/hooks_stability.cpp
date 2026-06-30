@@ -85,6 +85,8 @@ static constexpr int64_t kPostSkipForceSessionEndMs = 1000;
 static constexpr int64_t kMinPostLoadingHoldMs = 5000;
 static constexpr int64_t kRelaxedPostLoadingHoldMs = 2000;
 static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
+// ICU u_strlen stale pointers outlive task-query hold (#08–10).
+static constexpr int64_t kUstrlenPostLoadHoldMs = 90000;
 
 void begin_save_load_session();
 
@@ -488,6 +490,27 @@ static inline bool is_task_manager_query_paused() {
         now_ms() - loading_cleared < kMinPostLoadingHoldMs) {
         return true;
     }
+    return false;
+}
+
+// u_strlen: wider pause than task queries — ICU buffers stale well after session end.
+static inline bool is_u_strlen_paused() {
+    if (read_ms_b_loading()) return true;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
+        return true;
+    }
+    if (g_save_load_session.load(std::memory_order_acquire)) return true;
+    const int64_t quiesce_until =
+        g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
+    if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kUstrlenPostLoadHoldMs) {
+        return true;
+    }
+    if (is_manage_tasks_execution_paused()) return true;
     return false;
 }
 
@@ -1420,17 +1443,13 @@ fn_u_strlen_t g_orig_u_strlen = nullptr;
 int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
     if (!s) return 0;
-    // Save-load / post-load / hydration: stale ICU string pointers (tombstone_01–07/48/49).
-    if (is_task_manager_query_paused() ||
-        is_save_load_active() ||
-        is_manage_tasks_execution_paused()) {
-        return 0;
-    }
+    // Save-load / post-load / hydration: stale ICU string pointers (tombstone_01–10/48/49).
+    if (is_u_strlen_paused()) return 0;
     if (!is_userspace_address(s)) {
         LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
         return 0;
     }
-    // Never CALL_PREV — pipe-probed bounded UTF-16 walk only.
+    // Never CALL_PREV — vm_readv bounded UTF-16 walk only.
     const int32_t len = safe_utf16_strlen_bounded(s);
     if (len == 0) {
         uint16_t first = 0;

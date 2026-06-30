@@ -673,7 +673,7 @@ void hook_thread_func() {
 
 
 
-    // Hook u_strlen_64 (防止 ICU 字符串长度计算传入野指针崩溃)
+    // Hook u_strlen_64 / u_strlen (防止 ICU 字符串长度计算传入野指针崩溃)
     g_stub_u_strlen = shadowhook_hook_sym_name(
         TARGET_LIB,
         "u_strlen_64",
@@ -681,6 +681,13 @@ void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_u_strlen));
     if (g_stub_u_strlen) LOGI("✅ Hooked u_strlen_64");
     else LOGE("❌ Failed to hook u_strlen_64: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+    if (shadowhook_hook_sym_name(
+            TARGET_LIB,
+            "u_strlen",
+            reinterpret_cast<void*>(proxy_u_strlen),
+            nullptr)) {
+        LOGI("✅ Hooked u_strlen");
+    }
 
     // Hook CTaskComplexSequence::Flush (防止删除/清空序列时因序列中残留零填充任务导致闪退)
     g_stub_sequence_flush = shadowhook_hook_sym_name(

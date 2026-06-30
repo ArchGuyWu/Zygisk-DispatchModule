@@ -26,9 +26,8 @@ bool is_pointer_readable(const void* ptr);
 // Force Tier 3 only (diagnostics / rare strict checks).
 bool is_pointer_readable_strict(const void* ptr);
 
-// Pipe-probed UTF-16 unit read (no direct deref until both bytes pass Tier 3).
+// process_vm_readv UTF-16 unit read (never dereferences remote memory).
 bool safe_read_u16(const void* addr, uint16_t* out);
 
-// Bounded ICU-style UTF-16 strlen: pipe-probe each unit so stale VMA cache cannot
-// SIGSEGV inside u_strlen_64 (tombstone_01–07, #48–49).
+// Bounded ICU-style UTF-16 strlen: vm_readv each unit (tombstone_01–10, #48–49).
 int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units = 4096);
