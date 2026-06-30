@@ -54,6 +54,7 @@ namespace {
 // ---------------------------------------------------------------------
 // Symptom (vanilla, rare): after collision / streaming / warp / save-load, a vehicle
 // clips into the terrain; wheels spin but the body stays wedged below ground.
+// Affects player AND NPC/ambient traffic — not player-only.
 //
 // Root cause: physics/collision desync — entity matrix Z below ground mesh; engine
 // stuck-car recovery may not trigger for partial embed (not full "stuck" flag).
@@ -68,31 +69,41 @@ namespace {
 //   _ZN11CAutomobile21GetAllWheelsOffGroundEv
 //   _ZN4AGTAVehicle14UpdateOnGroundEb  (UE layer — verify before hooking)
 //
-// Detection sketch (player vehicle only — do not scan entire pool every frame):
-//   1. Throttle: check at most every 2s while player is driver (not on foot).
-//   2. CVector pos = get_entity_pos(veh); float groundZ;
+// Detection sketch (player first, then nearby NPC pool — budgeted scan):
+//   Player vehicle (priority, every 2s while driving):
+//   1. CVector pos = get_entity_pos(veh); float groundZ;
 //      CWorld::FindGroundZFor3DCoord(pos.x, pos.y, pos.z + 2.f, ..., &groundZ);
-//   3. float embed = groundZ - pos.z;  // positive => center below ground sample
-//   4. Trigger if embed > kSinkThreshold (e.g. 0.35–0.5 m) for N consecutive checks
-//      AND speed near zero AND player pressing accelerate (wheels spinning, no progress).
-//   5. Optional: confirm with wheel contact — GetAllWheelsOffGround or col point probe.
+//   2. float embed = groundZ - pos.z;  // positive => center below ground sample
+//   3. Trigger if embed > kSinkThreshold (e.g. 0.35–0.5 m) for N consecutive checks
+//      AND speed near zero (player: also wheels spinning with no progress).
+//
+//   NPC / ambient vehicles (secondary, every 5–10s, capped per tick):
+//   4. Walk CVehiclePool byte map (same pattern as count_active_police_vehicles_near_player).
+//   5. Only candidates within ~120 m of player camera / player coords (streaming relevance).
+//   6. Skip: mission/script-owned cars (check vehicle flags / script brain / driver task if RE
+//      exposes IsMissionVehicle / m_nVehicleFlags — verify offsets before filtering).
+//   7. NPC trigger: embed > threshold + speed ~0 for M checks (no player input required).
+//   8. Optional: confirm with wheel contact — GetAllWheelsOffGround or col point probe.
 //
 // Recovery sketch (prefer engine-native fix over raw teleport):
 //   a. Try CAutomobile::PlaceOnRoadProperly() / CBike::PlaceOnRoadProperly() on veh.
 //   b. If still embedded: CStuckCarCheck::AttemptToWarpVehicle(veh, outPos, heading).
 //   c. Last resort: set_entity_pos(veh, {x, y, groundZ + kClearance}) + zero velocity
 //      (reuse mod_shared helpers — only after (a)(b) fail; log as last resort).
-//   d. Cooldown per vehicle handle (e.g. 30s) so we do not fight physics every frame.
+//   d. Cooldown per pool handle (e.g. 30s) so we do not fight physics every frame.
 //
 // Integration:
 //   - poll_vanilla_qol_fixes() when is_mod_gameplay_active() && !is_scene_transition_active().
 //   - Skip during is_save_load_active() and first N seconds after session end.
-//   - Log: "🛠️ [QoL] Unwedged player vehicle (embed=%.2f method=PlaceOnRoad|Warp|Nudge)".
+//   - Log player: "🛠️ [QoL] Unwedged player vehicle (embed=%.2f method=...)".
+//   - Log NPC:     "🛠️ [QoL] Unwedged NPC vehicle idx=%d (embed=%.2f method=...)" (verbose/debug).
 //
-// Risks: false positive on slopes/ramps (embed probe on incline); multiplayer N/A.
-// Mitigate: require low pitch/roll, multiple samples under bbox corners, min stuck duration.
+// Risks: false positive on slopes/ramps; unwarping mission traffic breaks scripts.
+// Mitigate: pitch/roll cap, multi-corner ground samples, min stuck duration, mission filter,
+//           max N NPC fixes per scan (e.g. 2) to limit perf + gameplay side effects.
 //
-// void try_unwedge_player_vehicle_if_sunk();  // TODO(qol-002)
+// void try_unwedge_vehicle_if_sunk(void* veh, bool is_player_vehicle);  // TODO(qol-002)
+// void scan_nearby_npc_vehicles_for_sink();  // TODO(qol-002)
 
 static bool g_vanilla_qol_installed = false;
 
@@ -111,5 +122,5 @@ void install_vanilla_qol_fixes(void* lib_handle) {
 void poll_vanilla_qol_fixes() {
     // Called each frame from poll_save_load_transition() after hydration poll.
     // TODO(qol-001): if (!is_save_load_active() && pending_interior_rehydrate) try_rehydrate_interior_shop_peds();
-    // TODO(qol-002): if (is_mod_gameplay_active()) try_unwedge_player_vehicle_if_sunk();
+    // TODO(qol-002): if (is_mod_gameplay_active()) { player veh; then scan_nearby_npc_vehicles_for_sink(); }
 }
