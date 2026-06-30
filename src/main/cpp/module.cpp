@@ -3,6 +3,7 @@
  *
  * 入口：module.cpp（全局符号、辅助函数、Zygisk）
  * Hook 安装：hook_install.cpp | 派发：dispatch_*.cpp | 稳定性：hooks_stability.cpp
+ * 原版体验修复：vanilla_qol_fixes.cpp（与 dispatch / 稳定性分离，见文件内 TODO）
  *
  * 符号经 nm -D libUE4.so 核对；运行时通过 xdl_sym 解析。
  */

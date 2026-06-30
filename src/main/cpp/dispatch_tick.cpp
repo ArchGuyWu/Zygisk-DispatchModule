@@ -34,6 +34,7 @@
 #include "dispatch_emergency_services.hpp"
 #include "dispatch_hit_and_run.hpp"
 #include "dispatch_cop_state.hpp"
+#include "vanilla_qol_fixes.hpp"
 
 
 // =====================================================================
@@ -98,6 +99,7 @@ void purge_dispatch_state_for_save_load() {
 
 void poll_save_load_transition() {
     poll_save_load_hydration_state();
+    poll_vanilla_qol_fixes();
     const bool loading = is_save_load_active();
     const bool prev = g_prev_save_loading.exchange(loading, std::memory_order_acq_rel);
     if (loading && !prev) {

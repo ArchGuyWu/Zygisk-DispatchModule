@@ -21,6 +21,7 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "manage_tasks_guard.hpp"
+#include "vanilla_qol_fixes.hpp"
 
 typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
 typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
@@ -1109,6 +1110,8 @@ void hook_thread_func() {
     if (lib) {
         xdl_close(lib);
     }
+
+    install_vanilla_qol_fixes(lib);
 
     init_ecs_systems();
 

@@ -92,6 +92,7 @@ add_library(policemod SHARED
     dispatch_spawn_hooks.cpp
     hooks_stability.cpp
     manage_tasks_guard.cpp
+    vanilla_qol_fixes.cpp
     pointer_sanitizer_vma.cpp
     ecs_systems.cpp
 )
