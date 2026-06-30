@@ -68,7 +68,7 @@ static bool touch_rehydrate_world_ready() {
     if (is_scene_transition_active()) return false;
     if (!is_player_world_active()) return false;
     if (is_skip_cutscene_pipeline_active()) return false;
-    // After skip clears, allow action-widget unhide even if save-load session is winding down.
+    if (is_save_load_session_or_loading()) return false;
     return true;
 }
 
@@ -171,8 +171,6 @@ static void try_rehydrate_touch_controls() {
 }
 
 // --- Menu read-save / new-game entry hooks (DE actual paths) ---
-static fn_LoadDataInSlot_t g_orig_gameterface_load_data_in_slot = nullptr;
-static void* g_stub_gameterface_load_data_in_slot = nullptr;
 static fn_LoadDataInSlot_t g_orig_san_andreas_load_data_in_slot = nullptr;
 static void* g_stub_san_andreas_load_data_in_slot = nullptr;
 
@@ -180,13 +178,6 @@ static fn_StartNewGameFromMenu_t g_orig_gameterface_start_new_game = nullptr;
 static void* g_stub_gameterface_start_new_game = nullptr;
 static fn_StartNewGameFromMenu_t g_orig_san_andreas_start_new_game = nullptr;
 static void* g_stub_san_andreas_start_new_game = nullptr;
-
-bool proxy_gameterface_load_data_in_slot(void* self, int slot) {
-    SHADOWHOOK_STACK_SCOPE();
-    notify_menu_read_save_path("UGameterface::LoadDataInSlot");
-    LOGI("💾 [SaveLoad] UGameterface::LoadDataInSlot(slot=%d)", slot);
-    return SHADOWHOOK_CALL_PREV(proxy_gameterface_load_data_in_slot, self, slot);
-}
 
 bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
     SHADOWHOOK_STACK_SCOPE();
@@ -293,11 +284,7 @@ void install_vanilla_qol_fixes(void* lib_handle) {
                      shadowhook_to_errmsg(shadowhook_get_errno())); \
         } while (0)
 
-        HOOK_QOL_SYM("_ZN12UGameterface14LoadDataInSlotEi",
-                     proxy_gameterface_load_data_in_slot,
-                     g_stub_gameterface_load_data_in_slot,
-                     g_orig_gameterface_load_data_in_slot,
-                     "UGameterface::LoadDataInSlot");
+        // USanAndreasInterface does the real load; UGameterface is a thin thunk.
         HOOK_QOL_SYM("_ZN20USanAndreasInterface14LoadDataInSlotEi",
                      proxy_san_andreas_load_data_in_slot,
                      g_stub_san_andreas_load_data_in_slot,

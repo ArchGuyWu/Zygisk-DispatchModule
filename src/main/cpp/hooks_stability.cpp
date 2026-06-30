@@ -88,7 +88,8 @@ static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
 void begin_save_load_session();
 
 void notify_menu_read_save_path(const char* via) {
-    begin_save_load_session();
+    // Kind flags only — do NOT begin session here. Starting session before
+    // ms_bLoading/game_state==8 skips ManageTasks during the loading screen (hang).
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
@@ -97,7 +98,6 @@ void notify_menu_read_save_path(const char* via) {
 }
 
 void notify_explicit_new_game_bootstrap(const char* via) {
-    begin_save_load_session();
     g_menu_read_save_path_seen.store(false, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(true, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::NewGameBootstrap),
@@ -440,9 +440,13 @@ inline bool is_stability_sanitize_paused() {
            !is_gameplay_world_stable_for_sanitize();
 }
 
-// ManageTasks hot path: active session / ms_bLoading only — not post-session cooldown (touch HUD needs tasks).
+// ManageTasks hot path: ms_bLoading or post-load hydration session — not frontend/loading-screen idle.
 static inline bool is_task_manager_hotpath_paused() {
     if (read_ms_b_loading()) return true;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
+        return false;
+    }
     if (!g_save_load_session.load(std::memory_order_acquire)) return false;
     // Post-skip: resume scripts so right-side action widgets get re-enabled.
     const int64_t skip_cleared =
