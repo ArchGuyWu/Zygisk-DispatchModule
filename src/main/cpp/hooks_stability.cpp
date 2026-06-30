@@ -40,6 +40,8 @@ inline bool ped_intel_physical_tick_unsafe(void* ped);
 inline bool gang_follower_control_unsafe(void* self, void* ped = nullptr);
 inline bool ped_intel_slot_unsafe(void* ped);
 inline bool be_in_group_control_unsafe(void* self, void* ped);
+inline bool ped_buoyancy_unsafe(void* ped);
+inline bool intelligence_static_counter_unsafe(void* intel);
 
 // =====================================================================
 // Scene transition / interior entry state (yellow marker warp UX)
@@ -577,13 +579,25 @@ static inline bool is_u_strlen_paused() {
     return is_post_load_hydration_paused();
 }
 
-// Buoyancy / ProcessStaticCounter: intel task + IK chains (tombstone_11–13, #17–19).
+// Buoyancy / ProcessStaticCounter: intel task + IK chains (tombstone_11–13, #17–29).
 static inline bool is_buoyancy_execution_paused() {
     if (read_ms_b_loading()) return true;
     if (is_save_load_active()) return true;
     if (g_save_load_session.load(std::memory_order_acquire)) return true;
     if (is_task_manager_query_paused()) return true;
     if (is_manage_tasks_execution_paused()) return true;
+    return false;
+}
+
+static inline bool is_ped_physics_hotpath_paused() {
+    if (is_buoyancy_execution_paused()) return true;
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kUstrlenPostLoadHardCapMs &&
+        !is_gameplay_world_stable()) {
+        return true;
+    }
     return false;
 }
 
@@ -1466,10 +1480,10 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
-    if (is_buoyancy_execution_paused()) return;
+    if (is_ped_physics_hotpath_paused()) return;
     if (!is_ped_pointer_valid_safe(self)) return;
-    if (ped_intel_physical_tick_unsafe(self)) {
-        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p intel/IK — skip (tombstone_21)", self);
+    if (ped_buoyancy_unsafe(self)) {
+        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p — skip (tombstone_27)", self);
         return;
     }
     if (!is_stability_sanitize_paused()) {
@@ -1485,9 +1499,9 @@ fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
 void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
-    if (is_buoyancy_execution_paused()) return;
-    if (intelligence_process_hotpath_unsafe(self, 0x18)) {
-        LOGW("⚠️ [ProcessStaticCounter] unsafe intel %p — skip (tombstone_18)", self);
+    if (is_ped_physics_hotpath_paused()) return;
+    if (intelligence_static_counter_unsafe(self)) {
+        LOGW("⚠️ [ProcessStaticCounter] unsafe intel %p — skip (tombstone_28)", self);
         return;
     }
     if (!is_stability_sanitize_paused()) {
@@ -1503,15 +1517,15 @@ fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return false;
-    if (is_buoyancy_execution_paused()) return false;
+    if (is_ped_physics_hotpath_paused()) return false;
     if (physical && !is_pointer_readable(physical)) return false;
     // vec2 write at 57ff744 (tombstone_13) — reject wild output pointers from caller stack.
     if (vec1 && !is_pointer_readable(vec1)) return false;
     if (vec2 && !is_pointer_readable(vec2)) return false;
     if (physical) {
         if (!is_ped_pointer_valid_safe(physical)) return false;
-        if (ped_intel_physical_tick_unsafe(physical)) {
-            LOGW("⚠️ [cBuoyancy::ProcessBuoyancy] unsafe physical %p — skip (tombstone_19)", physical);
+        if (ped_buoyancy_unsafe(physical)) {
+            LOGW("⚠️ [cBuoyancy::ProcessBuoyancy] unsafe physical %p — skip (tombstone_29)", physical);
             return false;
         }
         if (!is_stability_sanitize_paused()) {
@@ -1623,7 +1637,7 @@ void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
     if (is_task_manager_query_paused()) return nullptr;
     CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_be_in_group_control_sub_task, self, ped);
     if (be_in_group_control_unsafe(self, ped)) {
-        LOGW("⚠️ [BeInGroup::ControlSubTask] unsafe group/ped tasks — skip (tombstone_24)");
+        LOGW("⚠️ [BeInGroup::ControlSubTask] unsafe group/ped tasks — skip (tombstone_26)");
         return nullptr;
     }
     if (!is_stability_sanitize_paused()) {
@@ -1647,6 +1661,11 @@ void* proxy_get_task_main(void* self, void* ped) {
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     if (is_task_manager_query_paused()) return nullptr;
+    if (intelligence_zero_filled(self) ||
+        intelligence_process_hotpath_unsafe(self, 0x28)) {
+        LOGW("⚠️ [GetTaskMain] unsafe group intel %p — skip (tombstone_26)", self);
+        return nullptr;
+    }
     void* result = SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
     if (!result || !is_task_vtable_safe(result)) {
         if (result) {
@@ -2367,6 +2386,22 @@ inline bool gang_follower_control_unsafe(void* self, void* ped) {
     return false;
 }
 
+inline bool ped_buoyancy_unsafe(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return true;
+    if (!ped_field_range_readable(ped, 0x18, 8)) return true;
+    return ped_intel_physical_tick_unsafe(ped);
+}
+
+// ProcessStaticCounter reads [intel+0x18] then [obj+0x18] without null guard (#28).
+inline bool intelligence_static_counter_unsafe(void* intel) {
+    if (intelligence_process_hotpath_unsafe(intel, 0x18)) return true;
+    void** slot18 = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x18);
+    if (!is_pointer_readable(slot18) || !*slot18) return true;
+    void* obj = *slot18;
+    if (!is_pointer_readable(obj)) return true;
+    return task_slot_unsafe_for_vtable_call(obj, 0x18);
+}
+
 inline bool be_in_group_control_unsafe(void* self, void* ped) {
     if (!self || !is_pointer_readable(self)) return true;
     void** vtable_ptr = reinterpret_cast<void**>(self);
@@ -2375,6 +2410,8 @@ inline bool be_in_group_control_unsafe(void* self, void* ped) {
     void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
     if (!is_pointer_readable(sub_slot) || !*sub_slot) return true;
     if (task_slot_unsafe_for_vtable_call(*sub_slot, 0x28)) return true;
+    if (task_chain_walk_unsafe(*sub_slot, 0x28)) return true;
+    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return true;
 
     void** sec_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x28);
     if (is_pointer_readable(sec_slot) && *sec_slot) {
@@ -2382,8 +2419,17 @@ inline bool be_in_group_control_unsafe(void* self, void* ped) {
         if (task_chain_walk_unsafe(*sec_slot, 0x28)) return true;
     }
 
-    if (ped && (!is_ped_pointer_valid_safe(ped) || ped_intel_slot_unsafe(ped))) return true;
-    if (ped && ped_intel_physical_tick_unsafe(ped)) return true;
+    void** tert_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x38);
+    if (is_pointer_readable(tert_slot) && *tert_slot) {
+        if (task_slot_unsafe_for_vtable_call(*tert_slot, 0x28)) return true;
+        if (task_chain_walk_unsafe(*tert_slot, 0x28)) return true;
+    }
+
+    if (ped) {
+        if (!is_ped_pointer_valid_safe(ped) || ped_intel_slot_unsafe(ped)) return true;
+        if (!ped_field_range_readable(ped, 0x18, 8)) return true;
+        if (ped_intel_physical_tick_unsafe(ped)) return true;
+    }
     return false;
 }
 
