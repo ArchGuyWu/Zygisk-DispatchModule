@@ -1198,6 +1198,32 @@ void* proxy_partner_greet_get_sequence(void* self) {
     return SHADOWHOOK_CALL_PREV(proxy_partner_greet_get_sequence, self);
 }
 
+static inline bool ped_field_range_readable(void* base, size_t offset, size_t span = 8) {
+    if (!base || !is_pointer_readable(base)) return false;
+    return is_pointer_readable(reinterpret_cast<char*>(base) + offset);
+}
+
+// tombstone_35: PlayLoadedSound writes speech-mgr+0x1c — intel+0x48 may be set before object is live.
+static inline bool ped_speech_playback_ready(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return false;
+    void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(p_intel) || !*p_intel) return false;
+    void* intel = *p_intel;
+    if (!is_pointer_readable(intel)) return false;
+    void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
+    if (!is_pointer_readable(p_speech) || !*p_speech) return false;
+    void* speech = *p_speech;
+    if (!is_pointer_readable(speech)) return false;
+    return ped_field_range_readable(speech, 0x1c);
+}
+
+// tombstone_36: player shortcut in is_ped_pointer_valid_safe hides half-hydrated player fields.
+static inline bool player_ped_world_query_ready(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return false;
+    if (!ped_field_range_readable(ped, 0x84, 16)) return false;
+    return is_ped_pointer_valid_safe(ped);
+}
+
 // --- CAEPedSpeechAudioEntity::PlayLoadedSound Hook ---
 void* g_stub_play_loaded_sound = nullptr;
 fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
@@ -1206,29 +1232,18 @@ void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
 
-    // ped null: engine cbz at 52c120c handles safely. Only guard paths where
-    // ped is non-null but intel/speech chain is null (52c1398–52c13a4, no cbz).
-    if (self) {
-        void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
-        if (is_pointer_readable(p_ped) && *p_ped) {
-            void* ped = *p_ped;
-            if (!is_pointer_readable(ped)) return;
+    void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
+    if (!is_pointer_readable(p_ped)) return;
 
-            void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
-            if (!is_pointer_readable(p_intel) || !*p_intel) {
-                LOGW("⚠️ [PlayLoadedSound] ped %p has null intel — skip (engine path 52c1398 has no cbz)", ped);
-                return;
-            }
-            void* intel = *p_intel;
-            if (!is_pointer_readable(intel)) return;
+    void* ped = *p_ped;
+    if (!ped) {
+        // DE startup/splash: audio entity can outlive ped binding — 52c13a4 has no cbz.
+        return;
+    }
 
-            void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
-            if (!is_pointer_readable(p_speech) || !*p_speech) {
-                LOGW("⚠️ [PlayLoadedSound] intel %p has null speech mgr — skip (engine path 52c13a4 has no cbz)", intel);
-                return;
-            }
-            if (!is_pointer_readable(*p_speech)) return;
-        }
+    if (!ped_speech_playback_ready(ped)) {
+        LOGW("⚠️ [PlayLoadedSound] ped %p speech chain not ready — skip (tombstone_35)", ped);
+        return;
     }
     SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
 }
@@ -1240,17 +1255,24 @@ bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return false;
 
-    // nullptr player: let engine handle. Only block stale non-null ped pointers (tombstone_36).
-    if (g_FindPlayerPed) {
-        void* player = g_FindPlayerPed(0);
-        if (player && !is_ped_pointer_valid_safe(player)) {
-            return false;
-        }
-        void* player1 = g_FindPlayerPed(1);
-        if (player1 && !is_ped_pointer_valid_safe(player1)) {
-            return false;
-        }
+    // Save-load / transition / non-idle: player slot and ped+0x84 not trustworthy (tombstone_36).
+    if (is_save_load_active() || is_scene_transition_active()) return false;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state != kGameStateIdle) {
+        return false;
     }
+
+    if (!g_FindPlayerPed) {
+        return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
+    }
+
+    void* player = g_FindPlayerPed(0);
+    if (!player) return false;
+    if (!player_ped_world_query_ready(player)) return false;
+
+    void* player1 = g_FindPlayerPed(1);
+    if (player1 && !player_ped_world_query_ready(player1)) return false;
+
     return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
 }
 
