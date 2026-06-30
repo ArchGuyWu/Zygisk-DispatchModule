@@ -1027,14 +1027,17 @@ bool proxy_kill_criminal_make_abortable(void* self, void* ped, int priority, voi
     if (kill_criminal_task_target_unsafe(self)) {
         void** target_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
         if (is_pointer_readable(target_slot) && *target_slot) {
-            LOGW("⚠️ [KillCriminal::MakeAbortable] stale target %p — clear and abort", *target_slot);
+            LOGW("⚠️ [KillCriminal::MakeAbortable] stale target %p — clear to nullptr, delegate abort to engine",
+                 *target_slot);
             *target_slot = nullptr;
         }
-        sanitize_unsafe_subtask_at(self, 0x10);
-        return true;
     }
     sanitize_unsafe_subtask_at(self, 0x10);
-    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) return true;
+    // Subtask vtable still broken after sanitize — engine path would fault; short-circuit only here.
+    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) {
+        LOGW("⚠️ [KillCriminal::MakeAbortable] unsafe subtask after sanitize — return true");
+        return true;
+    }
     return SHADOWHOOK_CALL_PREV(proxy_kill_criminal_make_abortable, self, ped, priority, event);
 }
 
