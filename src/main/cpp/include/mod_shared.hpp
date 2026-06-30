@@ -282,6 +282,8 @@ bool is_ped_pointer_valid_safe(void* target_ped);
 bool is_scene_transition_active();
 bool is_player_world_active();
 bool is_save_load_active();
+bool is_save_load_session_or_loading();
+bool is_skip_cutscene_pipeline_active();
 void begin_save_load_session();
 void notify_menu_read_save_path(const char* via);
 void mark_save_load_quiesce(int64_t duration_ms = 0);
