@@ -38,23 +38,78 @@ static std::atomic<bool> g_mod_interior_transition{false};
 bool* g_entry_exit_ms_bWarping = nullptr;
 fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition = nullptr;
 bool* g_generic_game_storage_ms_bLoading = nullptr;
+uint8_t* g_cgame_logic_game_state = nullptr;
+uint32_t* g_streaming_ms_num_models_requested = nullptr;
+uint32_t* g_cgame_logic_skip_state = nullptr;
+uint32_t* g_cgame_logic_skip_timer = nullptr;
+fn_IsSkipWaitingForScriptToFadeIn_t g_is_skip_waiting_for_script_to_fade_in = nullptr;
 
-// Save/load quiesce is session-based, not a fixed timer from Load():
-//   ms_bLoading true  → hold for as long as the engine is loading (menu dwell OK)
-//   ms_bLoading false → keep holding until player spawns, then post-spawn hydration
-//   abandoned         → ms_bLoading cleared but no player for kAbandonedSessionMs
+// eGameState (gta-reversed): 7=FRONTEND_IDLE, 8=LOADING_STARTED, 9=IDLE (in-game).
+static constexpr uint8_t kGameStateFrontendIdle = 7;
+static constexpr uint8_t kGameStateLoadingStarted = 8;
+static constexpr uint8_t kGameStateIdle = 9;
+
+// Session hold is signal-driven (ms_bLoading / GameState / streaming / skip), not a fixed
+// post-spawn timer. kAbandonedSessionMs / kSessionHardCapMs are safety nets only.
 static std::atomic<bool> g_save_load_session{false};
 static std::atomic<int64_t> g_session_started_ms{0};
 static std::atomic<int64_t> g_ms_b_loading_cleared_ms{0};
-static std::atomic<int64_t> g_post_spawn_hydration_until_ms{0};
 
-static constexpr int64_t kPostSpawnHydrationMs = 45000;
 static constexpr int64_t kAbandonedSessionMs = 120000;
+static constexpr int64_t kSessionHardCapMs = 180000;
 
 static bool read_ms_b_loading() {
     return g_generic_game_storage_ms_bLoading &&
            is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
            *g_generic_game_storage_ms_bLoading;
+}
+
+static bool read_game_state(uint8_t* out) {
+    if (!out) return false;
+    if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return false;
+    *out = *g_cgame_logic_game_state;
+    return true;
+}
+
+static int read_streaming_num_requested() {
+    if (!g_streaming_ms_num_models_requested ||
+        !is_pointer_readable(g_streaming_ms_num_models_requested)) {
+        return -1;
+    }
+    return static_cast<int>(*g_streaming_ms_num_models_requested);
+}
+
+static bool read_skip_pipeline_active() {
+    if (g_cgame_logic_skip_state &&
+        is_pointer_readable(g_cgame_logic_skip_state) &&
+        *g_cgame_logic_skip_state != 0) {
+        return true;
+    }
+    if (g_cgame_logic_skip_timer &&
+        is_pointer_readable(g_cgame_logic_skip_timer) &&
+        *g_cgame_logic_skip_timer != 0) {
+        return true;
+    }
+    if (g_is_skip_waiting_for_script_to_fade_in &&
+        g_is_skip_waiting_for_script_to_fade_in()) {
+        return true;
+    }
+    return false;
+}
+
+static bool save_load_hydration_signals_settled() {
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    if (read_ms_b_loading()) return false;
+    if (!is_player_world_active()) return false;
+
+    if (have_game_state) {
+        if (game_state != kGameStateIdle) return false;
+    }
+    const int pending = read_streaming_num_requested();
+    if (pending > 0) return false;
+    if (read_skip_pipeline_active()) return false;
+    return true;
 }
 
 void begin_save_load_session() {
@@ -63,7 +118,7 @@ void begin_save_load_session() {
         const int64_t t = now_ms();
         g_session_started_ms.store(t, std::memory_order_release);
         g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
-        g_post_spawn_hydration_until_ms.store(0, std::memory_order_release);
+        LOGI("💾 [SaveLoad] Session begin");
     }
 }
 
@@ -75,54 +130,54 @@ static void end_save_load_session(const char* reason) {
     if (!g_save_load_session.exchange(false, std::memory_order_acq_rel)) return;
     g_session_started_ms.store(0, std::memory_order_release);
     g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
-    g_post_spawn_hydration_until_ms.store(0, std::memory_order_release);
     LOGI("💾 [SaveLoad] Session end — %s", reason);
 }
 
 void poll_save_load_hydration_state() {
     static bool prev_ms_loading = false;
-    static bool prev_player_world = false;
+    static bool prev_settled = false;
 
     const bool ms_loading = read_ms_b_loading();
-    const bool player_world = is_player_world_active();
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
 
-    if (ms_loading) {
+    if (ms_loading || (have_game_state && game_state == kGameStateLoadingStarted)) {
         begin_save_load_session();
     } else if (prev_ms_loading && g_save_load_session.load(std::memory_order_acquire)) {
         g_ms_b_loading_cleared_ms.store(now_ms(), std::memory_order_release);
-        LOGI("💾 [SaveLoad] ms_bLoading cleared — awaiting spawn/hydration");
-        if (player_world) {
-            g_post_spawn_hydration_until_ms.store(
-                now_ms() + kPostSpawnHydrationMs, std::memory_order_release);
-            LOGI("💾 [SaveLoad] Player already present — hydration %llds",
-                 (long long)(kPostSpawnHydrationMs / 1000));
-        }
-    }
-
-    if (player_world && !prev_player_world && g_save_load_session.load(std::memory_order_acquire)) {
-        g_post_spawn_hydration_until_ms.store(
-            now_ms() + kPostSpawnHydrationMs, std::memory_order_release);
-        LOGI("💾 [SaveLoad] Player spawned — post-spawn hydration %llds",
-             (long long)(kPostSpawnHydrationMs / 1000));
+        LOGI("💾 [SaveLoad] ms_bLoading cleared — gameState=%u streaming=%d skip=%d",
+             have_game_state ? game_state : 255u,
+             read_streaming_num_requested(),
+             read_skip_pipeline_active() ? 1 : 0);
     }
 
     if (g_save_load_session.load(std::memory_order_acquire)) {
-        const int64_t hydration_until =
-            g_post_spawn_hydration_until_ms.load(std::memory_order_acquire);
-        if (hydration_until > 0 && now_ms() >= hydration_until && player_world) {
-            end_save_load_session("post-spawn hydration complete");
-        } else if (!ms_loading && !player_world) {
+        const int64_t started = g_session_started_ms.load(std::memory_order_acquire);
+        const bool settled = save_load_hydration_signals_settled();
+        if (settled && !prev_settled) {
+            LOGI("💾 [SaveLoad] Hydration signals settled — gameState=%u streaming=%d",
+                 have_game_state ? game_state : 255u,
+                 read_streaming_num_requested());
+        }
+        prev_settled = settled;
+
+        if (settled) {
+            end_save_load_session("engine signals settled");
+        } else if (started > 0 && now_ms() - started >= kSessionHardCapMs) {
+            end_save_load_session("session hard cap");
+        } else if (!ms_loading && have_game_state && game_state <= kGameStateFrontendIdle) {
             const int64_t cleared =
                 g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-            const int64_t anchor = cleared > 0 ? cleared : g_session_started_ms.load(std::memory_order_acquire);
+            const int64_t anchor = cleared > 0 ? cleared : started;
             if (anchor > 0 && now_ms() - anchor >= kAbandonedSessionMs) {
-                end_save_load_session("no player after load window");
+                end_save_load_session("returned to frontend idle");
             }
         }
+    } else {
+        prev_settled = false;
     }
 
     prev_ms_loading = ms_loading;
-    prev_player_world = player_world;
 }
 
 bool is_player_world_active() {
@@ -151,8 +206,8 @@ bool is_mod_dispatch_paused() {
     return is_scene_transition_active() || is_save_load_active() || !is_player_world_active();
 }
 
-// Sanitize stays off for the save/load session (ms_bLoading + post-spawn hydration).
-// Session is anchor-based, not a fixed timer from Load() — menu dwell is safe.
+// Sanitize stays off for the save/load session until engine signals settle
+// (GameState IDLE + streaming queue empty + skip/fade done).
 inline bool is_stability_sanitize_paused() {
     return is_save_load_active();
 }

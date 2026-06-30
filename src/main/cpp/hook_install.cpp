@@ -336,6 +336,17 @@ void hook_thread_func() {
                 "_ZN17CEntryExitManager25WeAreInInteriorTransitionEv", fn_WeAreInInteriorTransition_t);
     RESOLVE_SYM(lib, g_generic_game_storage_ms_bLoading,
                 "_ZN19CGenericGameStorage11ms_bLoadingE", bool*);
+    RESOLVE_SYM(lib, g_cgame_logic_game_state,
+                "_ZN10CGameLogic9GameStateE", uint8_t*);
+    RESOLVE_SYM(lib, g_streaming_ms_num_models_requested,
+                "_ZN10CStreaming21ms_numModelsRequestedE", uint32_t*);
+    RESOLVE_SYM(lib, g_cgame_logic_skip_state,
+                "_ZN10CGameLogic9SkipStateE", uint32_t*);
+    RESOLVE_SYM(lib, g_cgame_logic_skip_timer,
+                "_ZN10CGameLogic9SkipTimerE", uint32_t*);
+    RESOLVE_SYM(lib, g_is_skip_waiting_for_script_to_fade_in,
+                "_ZN10CGameLogic30IsSkipWaitingForScriptToFadeInEv",
+                fn_IsSkipWaitingForScriptToFadeIn_t);
 
     void* load_sym = xdl_sym(lib, "_ZN19CGenericGameStorage4LoadEb", nullptr);
     if (load_sym) {
