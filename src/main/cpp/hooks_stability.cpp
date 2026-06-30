@@ -32,6 +32,8 @@
 #include "vanilla_qol_fixes.hpp"
 #include "ecs_engine.hpp"
 
+inline bool ped_intel_primary_tasks_unsafe_for_event(void* ped, size_t vtable_fn_offset);
+
 // =====================================================================
 // Scene transition / interior entry state (yellow marker warp UX)
 // =====================================================================
@@ -536,6 +538,22 @@ static inline bool is_task_manager_query_paused() {
     return false;
 }
 
+// Shared post-load tail: gameState==9 + streaming==0 (+ short dwell after settle).
+static inline bool is_post_load_hydration_paused() {
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared <= 0) return false;
+    if (now_ms() - loading_cleared >= kUstrlenPostLoadHardCapMs) return false;
+    if (!u_strlen_post_load_hydration_settled()) return true;
+    const int64_t ready_since =
+        g_u_strlen_hydration_ready_since_ms.load(std::memory_order_acquire);
+    if (ready_since <= 0 ||
+        now_ms() - ready_since < kUstrlenPostLoadDwellMs) {
+        return true;
+    }
+    return false;
+}
+
 // u_strlen: pause until gameState==9 + streaming==0 (+ short dwell), not fixed timer.
 static inline bool is_u_strlen_paused() {
     if (read_ms_b_loading()) return true;
@@ -548,20 +566,17 @@ static inline bool is_u_strlen_paused() {
         g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
     if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
     if (is_manage_tasks_execution_paused()) return true;
+    return is_post_load_hydration_paused();
+}
 
-    const int64_t loading_cleared =
-        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (loading_cleared <= 0) return false;
-    if (now_ms() - loading_cleared >= kUstrlenPostLoadHardCapMs) return false;
-
-    if (!u_strlen_post_load_hydration_settled()) return true;
-    const int64_t ready_since =
-        g_u_strlen_hydration_ready_since_ms.load(std::memory_order_acquire);
-    if (ready_since <= 0 ||
-        now_ms() - ready_since < kUstrlenPostLoadDwellMs) {
-        return true;
-    }
-    return false;
+// Buoyancy walks ped intel task vtable+0x18 without null guard (tombstone_11–13).
+static inline bool is_buoyancy_execution_paused() {
+    if (read_ms_b_loading()) return true;
+    if (is_save_load_active()) return true;
+    if (g_save_load_session.load(std::memory_order_acquire)) return true;
+    if (is_task_manager_query_paused()) return true;
+    if (is_manage_tasks_execution_paused()) return true;
+    return is_post_load_hydration_paused();
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
@@ -1436,15 +1451,15 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
-    if (is_task_manager_query_paused()) return;
-    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_buoyancy, self);
+    if (is_buoyancy_execution_paused()) return;
     if (!is_ped_pointer_valid_safe(self)) return;
-    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(self));
-    if (intel && is_pointer_readable(intel) &&
-        task_manager_has_unsafe_slot(reinterpret_cast<char*>(intel) + 8, 11, 0x18)) {
+    if (ped_intel_primary_tasks_unsafe_for_event(self, 0x18)) {
+        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p intel/tasks — skip (tombstone_11)", self);
         return;
     }
-    sanitize_ped_tasks(self);
+    if (!is_stability_sanitize_paused()) {
+        sanitize_ped_tasks(self);
+    }
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
 
@@ -1468,18 +1483,21 @@ fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 
 bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (!self || !is_pointer_readable(self)) return false;
-        if (is_task_manager_query_paused()) return false;
-        return SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
-    }
     if (!self || !is_pointer_readable(self)) return false;
+    if (is_buoyancy_execution_paused()) return false;
     if (physical && !is_pointer_readable(physical)) return false;
     // vec2 write at 57ff744 (tombstone_13) — reject wild output pointers from caller stack.
     if (vec1 && !is_pointer_readable(vec1)) return false;
     if (vec2 && !is_pointer_readable(vec2)) return false;
-    if (physical && is_ped_pointer_valid_safe(physical)) {
-        sanitize_ped_tasks(physical);
+    if (physical) {
+        if (!is_ped_pointer_valid_safe(physical)) return false;
+        if (ped_intel_primary_tasks_unsafe_for_event(physical, 0x18)) {
+            LOGW("⚠️ [cBuoyancy::ProcessBuoyancy] unsafe physical %p — skip (tombstone_13)", physical);
+            return false;
+        }
+        if (!is_stability_sanitize_paused()) {
+            sanitize_ped_tasks(physical);
+        }
     }
     return SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
 }
