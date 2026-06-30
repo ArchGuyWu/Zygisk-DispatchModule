@@ -514,6 +514,8 @@ static inline bool is_task_manager_query_paused() {
     do { \
         if (is_stability_sanitize_paused()) { \
             if (!self || !is_pointer_readable(self)) return; \
+            /* Save-load: stale task slots in Flush/Buoyancy/etc. (#43–44). */ \
+            if (is_task_manager_query_paused()) return; \
             SHADOWHOOK_CALL_PREV(proxy_fn, self); \
             return; \
         } \
@@ -1367,8 +1369,10 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_buoyancy, self);
     if (!self || !is_pointer_readable(self)) return;
+    if (is_task_manager_query_paused()) return;
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_buoyancy, self);
+    if (!is_ped_pointer_valid_safe(self)) return;
     sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
@@ -1395,6 +1399,7 @@ bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
         if (!self || !is_pointer_readable(self)) return false;
+        if (is_task_manager_query_paused()) return false;
         return SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
     }
     if (!self || !is_pointer_readable(self)) return false;
@@ -1428,7 +1433,6 @@ void* g_stub_sequence_flush = nullptr;
 fn_SequenceFlush_t g_orig_sequence_flush = nullptr;
 
 inline void sanitize_sequence_task_slots(void* self) {
-    if (is_stability_sanitize_paused()) return;
     if (!self || !is_pointer_readable(self)) return;
     for (int i = 0; i < 8; ++i) {
         void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8 + 0x20);
@@ -1443,11 +1447,11 @@ inline void sanitize_sequence_task_slots(void* self) {
 
 void proxy_sequence_flush(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_sequence_flush, self);
     if (!self || !is_pointer_readable(self)) return;
-    if (self) {
-        sanitize_sequence_task_slots(self);
-    }
+    if (is_task_manager_query_paused()) return;
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_sequence_flush, self);
+    sanitize_sequence_task_slots(self);
+    if (!is_task_vtable_safe(self)) return;
     SHADOWHOOK_CALL_PREV(proxy_sequence_flush, self);
 }
 
