@@ -181,7 +181,7 @@ void* g_stub_set_ped_pos = nullptr;
 fn_SetPedPosition_t g_orig_set_ped_pos = nullptr;
 void proxy_set_ped_pos(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) {
+    if (!self || !is_pointer_readable(self)) {
         LOGW("⚠️ [SetPedPosition] unsafe self! Skipping.");
         return;
     }
@@ -329,6 +329,9 @@ inline void sanitize_task_tree(void* task) {
 }
 
 inline void sanitize_ped_tasks(void* ped) {
+    // During save/load, ped/intel/task slots are torn down asynchronously — clearing
+    // slots here races the loader and causes null vtable dispatch (tombstone_12–14).
+    if (is_save_load_active()) return;
     if (!ped || !is_pointer_readable(ped)) return;
     void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
     if (!is_pointer_readable(intel_slot)) return;
@@ -428,7 +431,7 @@ void* g_stub_ccgf_control = nullptr;
 fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
     if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -475,7 +478,7 @@ fn_FacialDtor_t g_orig_facial_dtor = nullptr;
 
 void proxy_facial_dtor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
 
     if (self) {
         void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
@@ -496,7 +499,7 @@ fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 
 void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
+    if (!self || !is_pointer_readable(self)) return nullptr;
 
     if (self) {
         sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
@@ -559,7 +562,7 @@ fn_TaskManagerDestructor_t g_orig_task_manager_destructor = nullptr;
 
 void proxy_task_manager_destructor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
 
     if (self) {
         for (int i = 0; i < 11; ++i) {
@@ -584,10 +587,10 @@ fn_GetPartnerSequence_t g_orig_partner_greet_get_sequence = nullptr;
 
 void* proxy_partner_greet_get_sequence(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) {
+    if (!self || !is_pointer_readable(self)) {
         return nullptr;
     }
-    if (self) {
+    {
         void** vtable_ptr = reinterpret_cast<void**>(self);
         if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
             LOGW("⚠️ [PartnerGreet::GetPartnerSequence] zero-filled self %p — skip original", self);
@@ -603,7 +606,7 @@ fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
 
 void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
 
     // ped null: engine cbz at 52c120c handles safely. Only guard paths where
     // ped is non-null but intel/speech chain is null (52c1398–52c13a4, no cbz).
@@ -637,7 +640,7 @@ void* g_stub_check_if_within_range = nullptr;
 fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
 bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
 
     // nullptr player: let engine handle. Only block stale non-null ped pointers (tombstone_36).
     if (g_FindPlayerPed) {
@@ -715,7 +718,7 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
@@ -726,7 +729,7 @@ fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
 
 void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     if (self) {
         sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessStaticCounter");
     }
@@ -739,7 +742,7 @@ fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 
 bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (physical && !is_pointer_readable(physical)) return false;
     // vec2 write at 57ff744 (tombstone_13) — reject wild output pointers from caller stack.
     if (vec1 && !is_pointer_readable(vec1)) return false;
@@ -784,7 +787,7 @@ inline void sanitize_sequence_task_slots(void* self) {
 
 void proxy_sequence_flush(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     if (self) {
         sanitize_sequence_task_slots(self);
     }
@@ -797,7 +800,7 @@ fn_SequenceCreateNextSubTask_t g_orig_sequence_create_next_sub_task = nullptr;
 
 void* proxy_sequence_create_next_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     if (self) {
         sanitize_sequence_task_slots(self);
@@ -836,7 +839,7 @@ fn_BeInGroupControlSubTask_t g_orig_be_in_group_control_sub_task = nullptr;
 
 void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
     if (self) {
@@ -907,7 +910,7 @@ inline bool ik_chain_has_null_entity_slot(void* self) {
 
 void proxy_ik_chain_update(void* self, float dt) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     // Original cbz x0 falls through to ldr [x0,#0x20] (tombstone_09, fault 0x20).
     if (self && ik_chain_has_null_entity_slot(self)) {
         LOGW("⚠️ [IKChainManager::Update] chain node with null entity — skip original");
@@ -981,7 +984,7 @@ inline bool ik_facing_target_ped_chain_unsafe(void* ped, int index) {
 
 bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (self && ik_chain_has_null_entity_slot(self)) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -1112,7 +1115,7 @@ fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa = nullptr;
 
 void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
 }
 
@@ -1156,7 +1159,7 @@ fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
 
 bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
 
@@ -1172,7 +1175,7 @@ fn_GoToPointMakeAbortable_t g_orig_goto_point_make_abortable = nullptr;
 
 bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -1191,7 +1194,7 @@ fn_AchieveHeadingMakeAbortable_t g_orig_achieve_heading_make_abortable = nullptr
 
 bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -1214,7 +1217,7 @@ fn_FollowPointRouteMakeAbortable_t g_orig_follow_point_route_make_abortable = nu
 
 bool proxy_follow_point_route_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) {
         LOGW("⚠️ [FollowPointRoute::MakeAbortable] stale event %p — return false", event);
@@ -1316,7 +1319,7 @@ fn_KillPedOnFootMakeAbortable_t g_orig_kill_ped_on_foot_make_abortable = nullptr
 
 bool proxy_kill_ped_on_foot_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
     if (ped && make_abortable_ped_field_unsafe(ped, 0x63c)) {
@@ -1364,7 +1367,7 @@ fn_SimpleAnimMakeAbortable_t g_orig_simple_anim_make_abortable = nullptr;
 
 bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return false;
+    if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) {
         LOGW("⚠️ [SimpleAnim::MakeAbortable] stale event %p — return false", event);
@@ -1453,7 +1456,7 @@ fn_WanderCopLookForCriminals_t g_orig_wander_cop_look_for_criminals = nullptr;
 
 void proxy_wander_cop_look_for_criminals(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
     if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
         LOGW("⚠️ [WanderCop::LookForCriminals] unsafe ped %p tasks — skip original", ped);
@@ -1661,7 +1664,7 @@ fn_FacialControlSubTask_t g_orig_facial_control_sub_task = nullptr;
 
 void* proxy_facial_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return nullptr;
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
 
     if (self) {
@@ -1683,7 +1686,7 @@ fn_IKManagerProcessPed_t g_orig_ik_manager_process_ped = nullptr;
 
 void proxy_ik_manager_process_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
 
     if (self) {
@@ -1762,7 +1765,7 @@ inline void sanitize_wander_chat_partner_cache(void* ped) {
 
 void proxy_wander_look_for_chat_partners(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (self && !is_pointer_readable(self)) return;
+    if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
 
     if (ped && is_ped_pointer_valid_safe(ped)) {
