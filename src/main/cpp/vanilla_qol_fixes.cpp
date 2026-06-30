@@ -109,7 +109,6 @@ static bool core_action_widgets_enabled() {
 }
 
 static void run_touch_rehydrate_chain() {
-    try_restore_hud_after_skip_cutscene();
     if (g_touch_load_defaults) {
         g_touch_load_defaults();
     }
@@ -239,7 +238,6 @@ void proxy_jump_to_new_game(void* self) {
 void proxy_skip_cutscene() {
     SHADOWHOOK_STACK_SCOPE();
     SHADOWHOOK_CALL_PREV(proxy_skip_cutscene);
-    try_restore_hud_after_skip_cutscene();
     schedule_touch_rehydrate("CCutsceneMgr::SkipCutscene");
 }
 

@@ -732,9 +732,9 @@ void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_stability_sanitize_paused()) {
-        // ms_bLoading only: hard-stop (tombstone ManageTasks @ deserialize).
-        // Active session after load/skip: CALL_PREV so scripts re-enable touch HUD.
-        if (read_ms_b_loading()) return;
+        // Layered gate (tombstone 29–32): hot path skips CALL_PREV during ms_bLoading
+        // and post-load hydration session; post-skip exception re-enables for touch HUD.
+        if (is_task_manager_hotpath_paused()) return;
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
     }
