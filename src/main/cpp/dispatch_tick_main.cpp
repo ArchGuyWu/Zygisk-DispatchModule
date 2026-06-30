@@ -58,6 +58,10 @@ CVector dispatch_spawn_emergency_car(unsigned int model, CVector pos, CVector in
     return pos;
 }
 void on_main_thread_tick() {
+    if (is_mod_dispatch_paused()) {
+        return;
+    }
+
     // 1. 每帧高频平滑避让更新（无感避让）
     apply_civilian_avoidance_field();
 
@@ -66,10 +70,6 @@ void on_main_thread_tick() {
         return;
     }
     g_last_tick_time_ms = cur_time;
-
-    if (is_scene_transition_active()) {
-        return;
-    }
 
     ecs::EventDispatcher::get().dispatch(ecs::TickEvent(cur_time));
 

@@ -1015,7 +1015,7 @@ static bool try_dispatch_via_add_criminal(CPed* cop, CPed* criminal) {
 }
 
 static bool try_dispatch_via_kill_task(CPed* cop, CPed* criminal) {
-    if (is_scene_transition_active()) return false;
+    if (is_mod_dispatch_paused()) return false;
     if (!g_TaskNew || !g_TaskKillCriminal_ctor || !cop || !criminal) return false;
     if (!is_ped_pointer_valid_safe(criminal)) return false;
     if (g_IsAlive && !g_IsAlive(criminal)) return false;

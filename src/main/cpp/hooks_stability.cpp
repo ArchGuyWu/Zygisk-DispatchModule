@@ -37,6 +37,7 @@
 static std::atomic<bool> g_mod_interior_transition{false};
 bool* g_entry_exit_ms_bWarping = nullptr;
 fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition = nullptr;
+bool* g_generic_game_storage_ms_bLoading = nullptr;
 
 bool is_scene_transition_active() {
     if (g_mod_interior_transition.load(std::memory_order_acquire)) return true;
@@ -47,6 +48,16 @@ bool is_scene_transition_active() {
         return g_we_are_in_interior_transition();
     }
     return false;
+}
+
+bool is_save_load_active() {
+    return g_generic_game_storage_ms_bLoading &&
+           is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
+           *g_generic_game_storage_ms_bLoading;
+}
+
+bool is_mod_dispatch_paused() {
+    return is_scene_transition_active() || is_save_load_active();
 }
 
 // =====================================================================

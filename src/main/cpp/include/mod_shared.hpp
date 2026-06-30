@@ -280,6 +280,10 @@ CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radi
 
 bool is_ped_pointer_valid_safe(void* target_ped);
 bool is_scene_transition_active();
+bool is_save_load_active();
+bool is_mod_dispatch_paused();
+void purge_dispatch_state_for_save_load();
+void poll_save_load_transition();
 bool is_task_vtable_safe(void* task);
 bool is_vehicle_pointer_valid(void* target_veh);
 bool is_entity_pointer_valid(void* entity);

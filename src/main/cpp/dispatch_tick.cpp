@@ -32,11 +32,77 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_emergency_services.hpp"
+#include "dispatch_hit_and_run.hpp"
+#include "dispatch_cop_state.hpp"
 
 
 // =====================================================================
 // Dispatch tick entry + case cleanup
 // =====================================================================
+static std::atomic<bool> g_prev_save_loading{false};
+
+void purge_dispatch_state_for_save_load() {
+    std::vector<std::shared_ptr<CrimeEvent>> crimes_snapshot;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+        crimes_snapshot.swap(g_active_crimes);
+    }
+    for (auto& crime : crimes_snapshot) {
+        if (!crime) continue;
+        crime->cancelled = true;
+        cleanup_single_case_vehicles(crime);
+    }
+
+    g_tracked_criminal.store(nullptr);
+    g_player_stray_bullet_flag.store(false);
+    g_player_stray_bullet_time.store(0);
+    g_friendly_fire_cop_hits.store(0);
+    g_last_friendly_fire_cop_time.store(0);
+    g_player_friendly_fire_blocked.store(false);
+    g_player_wanted_level.store(0);
+    {
+        std::lock_guard<std::mutex> lock_emp(g_vehicles_emptied_mutex);
+        g_vehicles_emptied.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_dispatched_vehicles_time_mutex);
+        g_dispatched_vehicles_time.clear();
+    }
+    dispatch_cop_state::clear_all_cop_dispatch_state();
+    {
+        std::lock_guard<std::mutex> lock_sc(g_vehicles_mutex);
+        g_vehicles_ordered_to_scene.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock_sa(g_vehicles_siren_awakened_mutex);
+        g_vehicles_siren_awakened.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock_bind(g_bindings_mutex);
+        g_cop_vehicle_bindings.clear();
+    }
+    clear_vehicle_driver_locks();
+    clear_vehicle_enter_command_timestamps();
+    {
+        std::lock_guard<std::mutex> lock_ex(g_exits_mutex);
+        g_cop_exits.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_spawned_cop_vehicles_mutex);
+        g_spawned_cop_vehicles.clear();
+    }
+    dispatch_emergency_services::clear_all_emergency_records();
+    dispatch_hit_and_run::clear_all_pending();
+    LOGI("💾 [SaveLoad] Purged mod dispatch state");
+}
+
+void poll_save_load_transition() {
+    const bool loading = is_save_load_active();
+    const bool prev = g_prev_save_loading.exchange(loading, std::memory_order_acq_rel);
+    if (loading && !prev) {
+        purge_dispatch_state_for_save_load();
+    }
+}
 void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime) {
     if (!crime) return;
     
@@ -87,5 +153,8 @@ void proxy_the_scripts_process() {
         g_orig_the_scripts_process();
     }
 
-    on_main_thread_tick();
+    poll_save_load_transition();
+    if (!is_mod_dispatch_paused()) {
+        on_main_thread_tick();
+    }
 }

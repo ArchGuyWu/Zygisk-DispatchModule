@@ -325,6 +325,8 @@ void hook_thread_func() {
     RESOLVE_SYM(lib, g_entry_exit_ms_bWarping, "_ZN10CEntryExit11ms_bWarpingE", bool*);
     RESOLVE_SYM(lib, g_we_are_in_interior_transition,
                 "_ZN17CEntryExitManager25WeAreInInteriorTransitionEv", fn_WeAreInInteriorTransition_t);
+    RESOLVE_SYM(lib, g_generic_game_storage_ms_bLoading,
+                "_ZN19CGenericGameStorage11ms_bLoadingE", bool*);
 
     void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
     if (manage_tasks_sym) {

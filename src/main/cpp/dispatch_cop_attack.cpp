@@ -36,7 +36,7 @@
 
 
 void make_cops_attack_criminal(CPed* criminal) {
-    if (is_scene_transition_active()) return;
+    if (is_mod_dispatch_paused()) return;
     if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
     if (!g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType) return;
 

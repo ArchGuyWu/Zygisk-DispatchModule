@@ -59,7 +59,7 @@ void proxy_report_crime(eCrimeType crime_type, CEntity* victim, CPed* perpetrato
 
         // --- NPC 犯罪检测逻辑 (事件驱动) ---
         bool is_fire = (crime_type == CRIME_FIRE_WEAPON);
-        if ((victim || is_fire) && perp_type != PED_TYPE_PLAYER && perp_type != PED_TYPE_COP) {
+        if (!is_mod_dispatch_paused() && (victim || is_fire) && perp_type != PED_TYPE_PLAYER && perp_type != PED_TYPE_COP) {
             bool firearm = is_firearm(crime_type);
             int weap_cat = 0;
             if (firearm) {
