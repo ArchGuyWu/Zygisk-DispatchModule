@@ -748,16 +748,64 @@ inline void* read_subtask_ptr_at(void* task, size_t subtask_offset = 0x10) {
     return sub;
 }
 
-// RE: GetSimplestActiveTask walks subtask chain via vtable+0x18 — stale node crashes 57aaac4 (#32).
+// RE: GetSimplestActiveTask walks subtask chain via vtable+0x18 — stale node crashes 57aaac4 (#32/#34).
 inline void* simplest_in_task_chain_readonly(void* task, size_t subtask_offset = 0x10) {
     if (!task || !is_task_vtable_safe(task)) return nullptr;
+    if (task_slot_unsafe_for_vtable_call(task, 0x18)) return nullptr;
     void* current = task;
     for (int depth = 0; depth < 32; ++depth) {
         void* sub = read_subtask_ptr_at(current, subtask_offset);
-        if (!sub) return current;
+        if (!sub || task_slot_unsafe_for_vtable_call(sub, 0x18)) return current;
         current = sub;
     }
     return current;
+}
+
+using TaskGetIdFn_t = int (*)(void*);
+
+inline int call_task_get_id_safe(void* task) {
+    if (!task || task_slot_unsafe_for_vtable_call(task, 0x28)) return -1;
+    void** vtable = reinterpret_cast<void**>(task);
+    auto fn = reinterpret_cast<TaskGetIdFn_t>(
+        *reinterpret_cast<void**>(reinterpret_cast<char*>(*vtable) + 0x28));
+    return fn(task);
+}
+
+inline void* find_task_by_type_in_chain(void* task, int type, size_t subtask_offset = 0x10) {
+    if (!task || !is_task_vtable_safe(task)) return nullptr;
+    void* current = task;
+    for (int depth = 0; depth < 32 && current; ++depth) {
+        if (call_task_get_id_safe(current) == type) return current;
+        current = read_subtask_ptr_at(current, subtask_offset);
+    }
+    return nullptr;
+}
+
+// RE: FindActiveTaskByType calls vtable+0x28 GetId per slot — no CALL_PREV (#33, fault 0x28).
+inline void* find_active_task_by_type_readonly(void* task_mgr, int type) {
+    if (!task_mgr || !is_pointer_readable(task_mgr)) return nullptr;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        void* found = find_task_by_type_in_chain(task, type);
+        if (found) return found;
+    }
+    return nullptr;
+}
+
+inline void* simplest_active_task_from_mgr_readonly(void* task_mgr) {
+    if (!task_mgr || !is_pointer_readable(task_mgr)) return nullptr;
+    for (int i = 0; i < 5; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        void* simplest = simplest_in_task_chain_readonly(task);
+        if (simplest) return simplest;
+    }
+    return nullptr;
 }
 
 inline void* simplest_in_task_chain(void* task, size_t vtable_offset = 0x18) {
@@ -1227,25 +1275,16 @@ fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return nullptr;
     if (task_manager_has_unsafe_slot(self, 11, 0x28)) {
-        LOGW("⚠️ [FindActiveTaskByType] unsafe task mgr %p — skip (tombstone_14)", self);
+        LOGW("⚠️ [FindActiveTaskByType] unsafe task mgr %p — skip (tombstone_33)", self);
         return nullptr;
     }
-
-    sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
-    sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
-    for (int i = 0; i < 11; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-        if (!is_pointer_readable(task_slot)) continue;
-        void* task = *task_slot;
-        if (!task) continue;
-        if (task_chain_walk_unsafe(task, 0x28)) return nullptr;
-        if (is_task_vtable_safe(task)) {
-            sanitize_task_tree(task);
-        }
+    if (!is_stability_sanitize_paused()) {
+        sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
+        sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
     }
-    return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
+    return find_active_task_by_type_readonly(self, type);
 }
 
 // --- CPedIntelligence::FindTaskByType Hook ---
@@ -1351,15 +1390,20 @@ static inline bool ped_field_range_readable(void* base, size_t offset, size_t sp
 // tombstone_35: PlayLoadedSound writes speech-mgr+0x1c — intel+0x48 may be set before object is live.
 static inline bool ped_speech_playback_ready(void* ped) {
     if (!ped || !is_pointer_readable(ped)) return false;
+    if (is_current_player_ped(ped)) {
+        if (!player_ped_world_query_ready(ped)) return false;
+    } else if (!is_ped_pointer_valid_safe(ped)) {
+        return false;
+    }
     void** p_intel = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
     if (!is_pointer_readable(p_intel) || !*p_intel) return false;
     void* intel = *p_intel;
-    if (!is_pointer_readable(intel)) return false;
+    if (!is_pointer_readable(intel) || intelligence_zero_filled(intel)) return false;
     void** p_speech = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x48);
     if (!is_pointer_readable(p_speech) || !*p_speech) return false;
     void* speech = *p_speech;
-    if (!is_pointer_readable(speech)) return false;
-    return ped_field_range_readable(speech, 0x1c);
+    if (!is_pointer_readable(speech) || !is_task_vtable_safe(speech)) return false;
+    return ped_field_range_readable(speech, 0x1c, 32);
 }
 
 // tombstone_36: player shortcut in is_ped_pointer_valid_safe hides half-hydrated player fields.
@@ -1391,6 +1435,8 @@ fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
 void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return;
+    if (!ped_field_range_readable(self, 0x1c, 8)) return;
 
     void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
     if (!is_pointer_readable(p_ped)) return;
@@ -1891,30 +1937,16 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
-
-    if (is_stability_sanitize_paused()) {
-        for (int i = 0; i < 5; ++i) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            if (!is_pointer_readable(task_slot)) continue;
-            void* task = *task_slot;
-            if (!task) continue;
-            void* simplest = simplest_in_task_chain_readonly(task);
-            if (simplest) return simplest;
-        }
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return nullptr;
+    if (task_manager_has_unsafe_slot(self, 5, 0x18)) {
+        LOGW("⚠️ [GetSimplestActiveTask] unsafe task mgr %p — skip (tombstone_34)", self);
         return nullptr;
     }
-    sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
-    sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
-    for (int i = 0; i < 5; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-        if (!is_pointer_readable(task_slot)) continue;
-        void* task = *task_slot;
-        if (!task) continue;
-        void* simplest = simplest_in_task_chain_readonly(task);
-        if (simplest) return simplest;
+    if (!is_stability_sanitize_paused()) {
+        sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
+        sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
     }
-    return nullptr;
+    return simplest_active_task_from_mgr_readonly(self);
 }
 
 // --- CTaskManager::GetSimplestTaskEi Hook ---
@@ -1925,19 +1957,13 @@ fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
 void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
-    if (is_stability_sanitize_paused()) {
-        if (index < 0 || index > 10) return nullptr;
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
-        if (!is_pointer_readable(task_slot)) return nullptr;
-        void* task = *task_slot;
-        if (!task) return nullptr;
-        return simplest_in_task_chain_readonly(task);
-    }
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return nullptr;
     if (index < 0 || index > 10) return nullptr;
-    sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
-    if (index < 5) {
-        sanitize_task_manager_primary_chains(self, "GetSimplestTaskEi", 0x18);
+    if (!is_stability_sanitize_paused()) {
+        sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
+        if (index < 5) {
+            sanitize_task_manager_primary_chains(self, "GetSimplestTaskEi", 0x18);
+        }
     }
     void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
     if (!is_pointer_readable(task_slot)) return nullptr;
