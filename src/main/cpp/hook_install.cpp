@@ -560,14 +560,23 @@ void hook_thread_func() {
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
-    // Hook CTaskManager Destructor (析构时强制净化，防止删除零填充任务虚表解引用闪退)
+    // Hook CTaskManager Destructor D1+D2 (tombstone_41 crashes in D2Ev, not D1Ev alone)
     g_stub_task_manager_destructor = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN12CTaskManagerD1Ev",
         reinterpret_cast<void*>(proxy_task_manager_destructor),
         reinterpret_cast<void**>(&g_orig_task_manager_destructor));
-    if (g_stub_task_manager_destructor) LOGI("✅ Hooked CTaskManager Destructor");
-    else LOGE("❌ Failed to hook CTaskManager Destructor: %s",
+    if (g_stub_task_manager_destructor) LOGI("✅ Hooked CTaskManager::~CTaskManager (D1)");
+    else LOGE("❌ Failed to hook CTaskManager D1: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_task_manager_destructor_d2 = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN12CTaskManagerD2Ev",
+        reinterpret_cast<void*>(proxy_task_manager_destructor),
+        reinterpret_cast<void**>(&g_orig_task_manager_destructor_d2));
+    if (g_stub_task_manager_destructor_d2) LOGI("✅ Hooked CTaskManager::~CTaskManager (D2)");
+    else LOGE("❌ Failed to hook CTaskManager D2: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CTaskComplexPartnerGreet::GetPartnerSequence (防止在伙伴问候任务中读取已销毁或零填充任务虚表闪退)

@@ -172,6 +172,7 @@ extern void* g_stub_intel_find_task_by_type;
 extern void* g_stub_wander_cop_look_for_criminals;
 extern void* g_stub_kill_criminal_create_first_sub_task;
 extern void* g_stub_task_manager_destructor;
+extern void* g_stub_task_manager_destructor_d2;
 extern void* g_stub_partner_greet_get_sequence;
 extern void* g_stub_play_loaded_sound;
 extern void* g_stub_check_if_within_range;

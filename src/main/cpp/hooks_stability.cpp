@@ -1158,33 +1158,31 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
     return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
 }
 
-// --- CTaskManager Destructor Hook ---
+// --- CTaskManager Destructor Hook (D1/D2 — tombstone_41 hooks D2Ev, not D1 alone) ---
 void* g_stub_task_manager_destructor = nullptr;
 fn_TaskManagerDestructor_t g_orig_task_manager_destructor = nullptr;
+void* g_stub_task_manager_destructor_d2 = nullptr;
+fn_TaskManagerDestructor_t g_orig_task_manager_destructor_d2 = nullptr;
 
 void proxy_task_manager_destructor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (!self || !is_pointer_readable(self)) return;
-        SHADOWHOOK_CALL_PREV(proxy_task_manager_destructor, self);
-        return;
-    }
     if (!self || !is_pointer_readable(self)) return;
 
-    if (self) {
-        for (int i = 0; i < 11; ++i) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            if (is_pointer_readable(task_slot)) {
-                void* task = *task_slot;
-                if (task) {
-                    if (!is_task_vtable_safe(task)) {
-                        LOGW("⚠️ [CTaskManager Destructor Sanitizer] Sanitizing unsafe task %p at slot %d inside CTaskManager %p before destruction", task, i, self);
-                        *task_slot = nullptr;
-                    }
-                }
-            }
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && !is_task_vtable_safe(task)) {
+            LOGW("⚠️ [CTaskManager Dtor] Clearing unsafe task %p at slot %d in mgr %p",
+                 task, i, self);
+            *task_slot = nullptr;
         }
     }
+
+    // Save-load teardown: engine dtor walks vtable+0x8 on stale slots (#41).
+    if (is_task_manager_query_paused()) return;
+    if (!is_task_vtable_safe(self)) return;
+
     SHADOWHOOK_CALL_PREV(proxy_task_manager_destructor, self);
 }
 
@@ -1474,20 +1472,18 @@ fn_FinishAnimEvasiveStepCB_t g_orig_finish_anim_evasive_step_cb = nullptr;
 
 void proxy_finish_anim_evasive_step_cb(void* anim, void* context) {
     SHADOWHOOK_STACK_SCOPE();
-    if (context && !is_pointer_readable(context)) {
-        LOGW("⚠️ [EvasiveStep CB] context (%p) is invalid/unreadable! Intercepting callback to prevent crash.", context);
+    // Anim callbacks can fire after task teardown during save-load (#42).
+    if (is_task_manager_query_paused()) return;
+    if (!context || !is_pointer_readable(context)) {
+        LOGW("⚠️ [EvasiveStep CB] null/unreadable context — skip");
         return;
     }
-    if (context) {
-        // Check if the context object (the task) is zero-filled
-        void** vtable_ptr = reinterpret_cast<void**>(context);
-        if (is_pointer_readable(vtable_ptr) && *vtable_ptr == nullptr) {
-            LOGW("⚠️ [EvasiveStep CB] context (%p) is zero-filled! Intercepting callback to prevent crash.", context);
-            return;
-        }
+    if (!is_task_vtable_safe(context)) {
+        LOGW("⚠️ [EvasiveStep CB] stale context task %p — skip (tombstone_42)", context);
+        return;
     }
     if (anim && !is_pointer_readable(anim)) {
-        LOGW("⚠️ [EvasiveStep CB] anim (%p) is invalid/unreadable! Intercepting callback to prevent crash.", anim);
+        LOGW("⚠️ [EvasiveStep CB] anim %p unreadable — skip", anim);
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_finish_anim_evasive_step_cb, anim, context);
