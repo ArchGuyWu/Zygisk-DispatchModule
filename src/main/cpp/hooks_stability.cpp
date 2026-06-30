@@ -1095,21 +1095,18 @@ fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_stability_sanitize_paused()) {
-        if (is_task_manager_query_paused()) return nullptr;
-        return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
-    }
+    if (is_task_manager_query_paused()) return nullptr;
 
-    if (self) {
-        sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
-        sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
-        for (int i = 0; i < 11; ++i) {
-            void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-            if (!is_pointer_readable(task_slot)) continue;
-            void* task = *task_slot;
-            if (task && is_task_vtable_safe(task)) {
-                sanitize_task_tree(task);
-            }
+    sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
+    sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_chain_walk_unsafe(task, 0x28)) return nullptr;
+        if (is_task_vtable_safe(task)) {
+            sanitize_task_tree(task);
         }
     }
     return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
@@ -1121,7 +1118,6 @@ void* g_stub_intel_find_task_by_type = nullptr;
 fn_IntelFindTaskByType_t g_orig_intel_find_task_by_type = nullptr;
 
 inline void sanitize_intel_for_task_lookup(void* intel) {
-    if (is_stability_sanitize_paused()) return;
     if (!intel || !is_pointer_readable(intel)) return;
     sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "Intel::FindTaskByType", 0x28);
     sanitize_task_manager_primary_chains(reinterpret_cast<char*>(intel) + 8, "Intel::FindTaskByType", 0x28);
@@ -1139,10 +1135,7 @@ inline void sanitize_intel_for_task_lookup(void* intel) {
 void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_stability_sanitize_paused()) {
-        if (is_task_manager_query_paused()) return nullptr;
-        return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
-    }
+    if (is_task_manager_query_paused()) return nullptr;
     sanitize_intel_for_task_lookup(self);
     for (size_t off : {0x20u, 0x28u}) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + off);
@@ -1426,8 +1419,11 @@ fn_u_strlen_t g_orig_u_strlen = nullptr;
 
 int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
-    if (s && !is_pointer_readable(s)) {
-        LOGW("⚠️ [u_strlen_64 Hook] wild pointer detected! Returning 0.");
+    if (!s) return 0;
+    // Save-load / UI teardown: stale ICU string pointers (tombstone_48/49).
+    if (is_save_load_active()) return 0;
+    if (!is_userspace_address(s) || !is_pointer_readable(s)) {
+        LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
         return 0;
     }
     return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
@@ -2210,15 +2206,12 @@ fn_EventPotentialWalkIntoVehicleAffectsPed_t g_orig_event_walk_into_vehicle_affe
 
 bool proxy_event_walk_into_vehicle_affects_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (is_task_manager_query_paused()) return false;
-        if (!self || !is_pointer_readable(self)) return false;
-        if (!ped || !is_pointer_readable(ped)) return false;
-        return SHADOWHOOK_CALL_PREV(proxy_event_walk_into_vehicle_affects_ped, self, ped);
-    }
     if (!self || !is_pointer_readable(self)) return false;
-    if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return false;
-    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x18)) {
+    if (!ped || !is_pointer_readable(ped)) return false;
+    if (is_task_manager_query_paused()) return false;
+    if (!is_ped_pointer_valid_safe(ped)) return false;
+    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x18) ||
+        ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
         LOGW("⚠️ [WalkIntoVehicle::AffectsPed] unsafe ped %p task chain — return false", ped);
         return false;
     }
