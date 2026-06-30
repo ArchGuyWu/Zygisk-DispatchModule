@@ -45,9 +45,6 @@ fn_WantedUpdate_t g_orig_wanted_update = nullptr;
 
 void proxy_wanted_update(void* this_wanted) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_save_load_active()) {
-        return;
-    }
     g_in_wanted_update.store(true);
     SHADOWHOOK_CALL_PREV(proxy_wanted_update, this_wanted);
     g_in_wanted_update.store(false);
@@ -230,7 +227,7 @@ fn_TellOccupantsToLeaveCar_t g_orig_tell_occupants_leave_car = nullptr;
 
 void proxy_tell_occupants_leave_car(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_mod_dispatch_paused()) {
+    if (is_scene_transition_active()) {
         return;
     }
     bind_vehicle_occupants(vehicle);
@@ -243,7 +240,7 @@ fn_CreateCarForScript_t g_orig_create_car_for_script = nullptr;
 
 void* proxy_create_car_for_script(int modelid, CVector posn, unsigned char flag) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_mod_dispatch_paused()) {
+    if (is_scene_transition_active()) {
         return nullptr;
     }
     return SHADOWHOOK_CALL_PREV(proxy_create_car_for_script, modelid, posn, flag);
@@ -254,7 +251,7 @@ fn_AddCriminalToKill_t g_orig_add_criminal_to_kill = nullptr;
 
 void proxy_add_criminal_to_kill(void* cop, CPed* criminal) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_mod_dispatch_paused()) {
+    if (is_scene_transition_active()) {
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_add_criminal_to_kill, cop, criminal);
@@ -265,7 +262,7 @@ fn_FlyAIHeliToTarget_FixedOrientation_t g_orig_fly_ai_heli_to_target = nullptr;
 
 void proxy_fly_ai_heli_to_target(void* pHeli, float orientation, CVector posn) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_mod_dispatch_paused()) {
+    if (is_scene_transition_active()) {
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_fly_ai_heli_to_target, pHeli, orientation, posn);

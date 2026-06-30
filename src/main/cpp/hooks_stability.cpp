@@ -60,10 +60,10 @@ static std::atomic<int64_t> g_save_load_quiesce_until_ms{0};
 
 static constexpr int64_t kAbandonedSessionMs = 120000;
 static constexpr int64_t kSessionHardCapMs = 180000;
-static constexpr int64_t kSessionMinActiveMs = 28000;
+static constexpr int64_t kSessionMinActiveMs = 12000;
 static constexpr int64_t kHydrationSignalDwellMs = 15000;
 static constexpr int64_t kMinPostLoadingHoldMs = 5000;
-static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
+static constexpr int64_t kSaveLoadPostSessionCooldownMs = 5000;
 
 static bool read_ms_b_loading() {
     return g_generic_game_storage_ms_bLoading &&
@@ -279,10 +279,10 @@ inline bool is_stability_sanitize_paused() {
            !is_gameplay_world_stable_for_sanitize();
 }
 
+// Save-load / scene warp: skip sanitize mutations but always delegate to the engine.
 #define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
     do { \
         if (is_stability_sanitize_paused()) { \
-            if (is_save_load_active()) return false; \
             return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
         } \
     } while (0)
@@ -290,7 +290,6 @@ inline bool is_stability_sanitize_paused() {
 #define CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_fn, self, ped) \
     do { \
         if (is_stability_sanitize_paused()) { \
-            if (is_save_load_active()) return nullptr; \
             if (!self || !is_pointer_readable(self)) return nullptr; \
             return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped); \
         } \
@@ -299,7 +298,6 @@ inline bool is_stability_sanitize_paused() {
 #define STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_fn, self) \
     do { \
         if (is_stability_sanitize_paused()) { \
-            if (is_save_load_active()) return; \
             if (!self || !is_pointer_readable(self)) return; \
             SHADOWHOOK_CALL_PREV(proxy_fn, self); \
             return; \
@@ -528,8 +526,6 @@ void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_stability_sanitize_paused()) {
-        // Tombstone_25/26: CALL_PREV during hydration+cooldown races UE async task teardown.
-        if (is_save_load_active()) return;
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
     }
@@ -555,7 +551,6 @@ fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
 void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return;
         if (!ped || !is_pointer_readable(ped)) return;
         SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
         return;
@@ -834,7 +829,6 @@ void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
     }
 
@@ -878,7 +872,6 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
     }
     sanitize_intel_for_task_lookup(self);
@@ -1242,7 +1235,6 @@ fn_GetNearestCarDoor_t g_orig_get_nearest_car_door = nullptr;
 bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* door_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return false;
         return SHADOWHOOK_CALL_PREV(proxy_get_nearest_car_door, ped, vehicle, out_vec, door_index);
     }
     if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -1371,7 +1363,6 @@ void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
     }
     sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
@@ -1891,7 +1882,6 @@ fn_EventPotentialWalkIntoVehicleAffectsPed_t g_orig_event_walk_into_vehicle_affe
 bool proxy_event_walk_into_vehicle_affects_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return false;
         if (!self || !is_pointer_readable(self)) return false;
         if (!ped || !is_pointer_readable(ped)) return false;
         return SHADOWHOOK_CALL_PREV(proxy_event_walk_into_vehicle_affects_ped, self, ped);
@@ -2040,7 +2030,6 @@ void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, voi
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
-        if (is_save_load_active()) return nullptr;
         return SHADOWHOOK_CALL_PREV(proxy_compute_ped_collision_with_ped_response, self, event, task, task2);
     }
     if (compute_collision_event_unreadable(event)) return nullptr;
@@ -2061,9 +2050,6 @@ fn_UpdateCarAI_t g_orig_update_car_ai = nullptr;
 
 void proxy_update_car_ai(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_save_load_active()) {
-        return;
-    }
     if (vehicle && !is_pointer_readable(vehicle)) return;
     if (vehicle) {
         void** vtable_ptr = reinterpret_cast<void**>(vehicle);
