@@ -97,6 +97,12 @@ void purge_dispatch_state_for_save_load() {
 }
 
 void poll_save_load_transition() {
+    const bool raw_loading = g_generic_game_storage_ms_bLoading &&
+                             is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
+                             *g_generic_game_storage_ms_bLoading;
+    if (raw_loading) {
+        mark_save_load_quiesce(45000);
+    }
     const bool loading = is_save_load_active();
     const bool prev = g_prev_save_loading.exchange(loading, std::memory_order_acq_rel);
     if (loading && !prev) {

@@ -280,7 +280,9 @@ CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radi
 
 bool is_ped_pointer_valid_safe(void* target_ped);
 bool is_scene_transition_active();
+bool is_player_world_active();
 bool is_save_load_active();
+void mark_save_load_quiesce(int64_t duration_ms = 45000);
 bool is_mod_dispatch_paused();
 inline bool is_mod_gameplay_active() { return !is_mod_dispatch_paused(); }
 void purge_dispatch_state_for_save_load();

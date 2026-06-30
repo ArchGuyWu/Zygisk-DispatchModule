@@ -22,6 +22,15 @@
 #include "mod_shared.hpp"
 #include "manage_tasks_guard.hpp"
 
+typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
+typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
+extern void proxy_generic_game_storage_load(void* self, bool flag);
+extern void proxy_generic_game_storage_load_game(void* self);
+extern void* g_stub_generic_game_storage_load;
+extern void* g_stub_generic_game_storage_load_game;
+extern fn_GenericGameStorageLoad_t g_orig_generic_game_storage_load;
+extern fn_GenericGameStorageLoadGame_t g_orig_generic_game_storage_load_game;
+
 // =====================================================================
 // Pure Virtual Function Safe Patching
 // =====================================================================
@@ -327,6 +336,27 @@ void hook_thread_func() {
                 "_ZN17CEntryExitManager25WeAreInInteriorTransitionEv", fn_WeAreInInteriorTransition_t);
     RESOLVE_SYM(lib, g_generic_game_storage_ms_bLoading,
                 "_ZN19CGenericGameStorage11ms_bLoadingE", bool*);
+
+    void* load_sym = xdl_sym(lib, "_ZN19CGenericGameStorage4LoadEb", nullptr);
+    if (load_sym) {
+        g_stub_generic_game_storage_load = shadowhook_hook_sym_addr(
+            load_sym,
+            reinterpret_cast<void*>(proxy_generic_game_storage_load),
+            reinterpret_cast<void**>(&g_orig_generic_game_storage_load));
+        if (g_stub_generic_game_storage_load) {
+            LOGI("✅ Hooked CGenericGameStorage::Load");
+        }
+    }
+    void* load_game_sym = xdl_sym(lib, "_ZN19CGenericGameStorage8LoadGameEv", nullptr);
+    if (load_game_sym) {
+        g_stub_generic_game_storage_load_game = shadowhook_hook_sym_addr(
+            load_game_sym,
+            reinterpret_cast<void*>(proxy_generic_game_storage_load_game),
+            reinterpret_cast<void**>(&g_orig_generic_game_storage_load_game));
+        if (g_stub_generic_game_storage_load_game) {
+            LOGI("✅ Hooked CGenericGameStorage::LoadGame");
+        }
+    }
 
     void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
     if (manage_tasks_sym) {

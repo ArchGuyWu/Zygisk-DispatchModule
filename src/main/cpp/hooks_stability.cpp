@@ -38,6 +38,22 @@ static std::atomic<bool> g_mod_interior_transition{false};
 bool* g_entry_exit_ms_bWarping = nullptr;
 fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition = nullptr;
 bool* g_generic_game_storage_ms_bLoading = nullptr;
+static std::atomic<int64_t> g_save_load_quiesce_until_ms{0};
+
+void mark_save_load_quiesce(int64_t duration_ms) {
+    const int64_t until = now_ms() + duration_ms;
+    int64_t prev = g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
+    while (until > prev &&
+           !g_save_load_quiesce_until_ms.compare_exchange_weak(
+               prev, until, std::memory_order_release, std::memory_order_acquire)) {
+    }
+}
+
+bool is_player_world_active() {
+    if (!g_FindPlayerPed) return false;
+    CPlayerPed* player = g_FindPlayerPed(0);
+    return player && is_ped_pointer_valid_safe(reinterpret_cast<CPed*>(player));
+}
 
 bool is_scene_transition_active() {
     if (g_mod_interior_transition.load(std::memory_order_acquire)) return true;
@@ -51,17 +67,22 @@ bool is_scene_transition_active() {
 }
 
 bool is_save_load_active() {
-    return g_generic_game_storage_ms_bLoading &&
-           is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
-           *g_generic_game_storage_ms_bLoading;
+    bool loading = g_generic_game_storage_ms_bLoading &&
+                   is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
+                   *g_generic_game_storage_ms_bLoading;
+    if (loading) {
+        mark_save_load_quiesce(45000);
+        return true;
+    }
+    return now_ms() < g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
 }
 
 bool is_mod_dispatch_paused() {
-    return is_scene_transition_active() || is_save_load_active();
+    return is_scene_transition_active() || is_save_load_active() || !is_player_world_active();
 }
 
 inline bool is_stability_sanitize_paused() {
-    return is_save_load_active();
+    return is_save_load_active() || !is_player_world_active();
 }
 
 // =====================================================================
@@ -366,6 +387,29 @@ inline void sanitize_ped_tasks(void* ped) {
     }
 }
 
+// --- CGenericGameStorage load hooks (arm quiesce before async world hydration) ---
+typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
+typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
+
+void* g_stub_generic_game_storage_load = nullptr;
+fn_GenericGameStorageLoad_t g_orig_generic_game_storage_load = nullptr;
+void* g_stub_generic_game_storage_load_game = nullptr;
+fn_GenericGameStorageLoadGame_t g_orig_generic_game_storage_load_game = nullptr;
+
+void proxy_generic_game_storage_load(void* self, bool flag) {
+    SHADOWHOOK_STACK_SCOPE();
+    mark_save_load_quiesce(60000);
+    LOGI("💾 [SaveLoad] CGenericGameStorage::Load — stability quiesce 60s");
+    SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load, self, flag);
+}
+
+void proxy_generic_game_storage_load_game(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    mark_save_load_quiesce(60000);
+    LOGI("💾 [SaveLoad] CGenericGameStorage::LoadGame — stability quiesce 60s");
+    SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load_game, self);
+}
+
 // --- CEntryExit transition hooks (pause mod dispatch during interior warp/fade) ---
 void* g_stub_entry_exit_transition_started = nullptr;
 fn_EntryExitTransitionStarted_t g_orig_entry_exit_transition_started = nullptr;
@@ -510,10 +554,10 @@ fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 
 void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
         return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
     }
-    if (!self || !is_pointer_readable(self)) return nullptr;
 
     if (self) {
         sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
@@ -553,10 +597,10 @@ inline void sanitize_intel_for_task_lookup(void* intel) {
 
 void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
         return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
     }
-    if (!self || !is_pointer_readable(self)) return nullptr;
     sanitize_intel_for_task_lookup(self);
     for (size_t off : {0x20u, 0x28u}) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + off);
@@ -1022,10 +1066,10 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
         return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
     }
-    if (!self || !is_pointer_readable(self)) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
     sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
     // RE: walks subtask chain via vtable+0x18 loop 57aaabc — unsafe child node crashes 57aaac4 (tombstone_44).
@@ -1047,10 +1091,10 @@ fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
 
 void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_stability_sanitize_paused()) {
         return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
     }
-    if (!self || !is_pointer_readable(self)) return nullptr;
     if (index < 0 || index > 10) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
     if (index < 5) {
