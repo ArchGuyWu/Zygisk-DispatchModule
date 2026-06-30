@@ -59,7 +59,8 @@ static std::atomic<int64_t> g_hydration_ready_since_ms{0};
 
 static constexpr int64_t kAbandonedSessionMs = 120000;
 static constexpr int64_t kSessionHardCapMs = 180000;
-static constexpr int64_t kHydrationSignalDwellMs = 10000;
+static constexpr int64_t kHydrationSignalDwellMs = 15000;
+static constexpr int64_t kMinPostLoadingHoldMs = 3000;
 
 static bool read_ms_b_loading() {
     return g_generic_game_storage_ms_bLoading &&
@@ -110,6 +111,12 @@ static bool save_load_hydration_signals_settled() {
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
     if (read_ms_b_loading()) return false;
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kMinPostLoadingHoldMs) {
+        return false;
+    }
     if (!is_player_world_active()) return false;
     if (!have_game_state || game_state != kGameStateIdle) return false;
 
@@ -679,6 +686,7 @@ void proxy_entry_exit_transition_finished(void* self, void* ped) {
 }
 
 inline void sanitize_optional_ped_at_slot(void** slot, const char* label) {
+    if (is_stability_sanitize_paused()) return;
     if (!slot || !is_pointer_readable(slot)) return;
     void* ped = *slot;
     if (!ped) return;
@@ -706,6 +714,7 @@ inline void sanitize_unsafe_task_slot_at(void* obj, size_t offset, const char* l
 }
 
 inline void sanitize_gang_follower_ped_slot(void** slot, const char* label) {
+    if (is_stability_sanitize_paused()) return;
     if (!slot || !is_pointer_readable(slot)) return;
     void* ped = *slot;
     if (!ped) return;
@@ -1750,6 +1759,7 @@ inline bool ped_slot_stale_nonnull(void* owner, size_t offset) {
 }
 
 inline void clear_ped_slot_if_stale(void* owner, size_t offset, const char* label) {
+    if (is_stability_sanitize_paused()) return;
     if (!ped_slot_stale_nonnull(owner, offset)) return;
     void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(owner) + offset);
     LOGW("⚠️ [%s] stale ped %p at +0x%zx — clear, delegate to engine (cbz path)",
@@ -1767,6 +1777,7 @@ inline bool task_slot_stale_nonnull(void* self, size_t offset) {
 }
 
 inline void clear_task_ped_slot_if_stale(void* self, size_t offset, const char* label) {
+    if (is_stability_sanitize_paused()) return;
     if (!task_slot_stale_nonnull(self, offset)) return;
     void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + offset);
     LOGW("⚠️ [%s] stale target %p at +0x%zx — clear, delegate to engine (cbz path)",
@@ -2027,6 +2038,9 @@ fn_UpdateCarAI_t g_orig_update_car_ai = nullptr;
 
 void proxy_update_car_ai(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_save_load_active()) {
+        return;
+    }
     if (vehicle && !is_pointer_readable(vehicle)) return;
     if (vehicle) {
         void** vtable_ptr = reinterpret_cast<void**>(vehicle);

@@ -47,6 +47,16 @@ extern fn_GenericGameStorageGenericLoad_t g_orig_generic_game_storage_generic_lo
 extern fn_GenericGameStorageAfterSuccessLoad_t g_orig_generic_game_storage_after_success_load;
 extern fn_CGameLogicInitAtStartOfGame_t g_orig_cgame_logic_init_at_start_of_game;
 
+extern void* g_stub_create_car_for_script;
+extern fn_CreateCarForScript_t g_orig_create_car_for_script;
+void* proxy_create_car_for_script(int modelid, CVector posn, unsigned char flag);
+extern void* g_stub_add_criminal_to_kill;
+extern fn_AddCriminalToKill_t g_orig_add_criminal_to_kill;
+extern void proxy_add_criminal_to_kill(void* cop, CPed* criminal);
+extern void* g_stub_fly_ai_heli_to_target;
+extern fn_FlyAIHeliToTarget_FixedOrientation_t g_orig_fly_ai_heli_to_target;
+extern void proxy_fly_ai_heli_to_target(void* pHeli, float orientation, CVector posn);
+
 // =====================================================================
 // Pure Virtual Function Safe Patching
 // =====================================================================
@@ -333,7 +343,35 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CCarCtrl::ScriptGenerateOneEmergencyServicesCar: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CCarCtrl::CreateCarForScript (block native script spawns during load/menu)
+    g_stub_create_car_for_script = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN8CCarCtrl18CreateCarForScriptEi7CVectorh",
+        reinterpret_cast<void*>(proxy_create_car_for_script),
+        reinterpret_cast<void**>(&g_orig_create_car_for_script));
+    if (g_stub_create_car_for_script) LOGI("✅ Hooked CCarCtrl::CreateCarForScript");
+    else LOGE("❌ Failed to hook CCarCtrl::CreateCarForScript: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CCopPed::AddCriminalToKill (block native hate inject during load)
+    g_stub_add_criminal_to_kill = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN7CCopPed17AddCriminalToKillEP4CPed",
+        reinterpret_cast<void*>(proxy_add_criminal_to_kill),
+        reinterpret_cast<void**>(&g_orig_add_criminal_to_kill));
+    if (g_stub_add_criminal_to_kill) LOGI("✅ Hooked CCopPed::AddCriminalToKill");
+    else LOGE("❌ Failed to hook CCopPed::AddCriminalToKill: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CCarCtrl::FlyAIHeliToTarget_FixedOrientation
+    g_stub_fly_ai_heli_to_target = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN8CCarCtrl35FlyAIHeliToTarget_FixedOrientationEP5CHelif7CVector",
+        reinterpret_cast<void*>(proxy_fly_ai_heli_to_target),
+        reinterpret_cast<void**>(&g_orig_fly_ai_heli_to_target));
+    if (g_stub_fly_ai_heli_to_target) LOGI("✅ Hooked CCarCtrl::FlyAIHeliToTarget_FixedOrientation");
+    else LOGE("❌ Failed to hook FlyAIHeliToTarget_FixedOrientation: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // 4b. CTaskSimpleHoldEntity::SetPedPosition
     g_stub_set_ped_pos = shadowhook_hook_sym_name(
