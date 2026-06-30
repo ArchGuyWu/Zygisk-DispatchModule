@@ -55,9 +55,11 @@ static constexpr uint8_t kGameStateIdle = 9;
 static std::atomic<bool> g_save_load_session{false};
 static std::atomic<int64_t> g_session_started_ms{0};
 static std::atomic<int64_t> g_ms_b_loading_cleared_ms{0};
+static std::atomic<int64_t> g_hydration_ready_since_ms{0};
 
 static constexpr int64_t kAbandonedSessionMs = 120000;
 static constexpr int64_t kSessionHardCapMs = 180000;
+static constexpr int64_t kHydrationSignalDwellMs = 10000;
 
 static bool read_ms_b_loading() {
     return g_generic_game_storage_ms_bLoading &&
@@ -109,12 +111,11 @@ static bool save_load_hydration_signals_settled() {
     const bool have_game_state = read_game_state(&game_state);
     if (read_ms_b_loading()) return false;
     if (!is_player_world_active()) return false;
+    if (!have_game_state || game_state != kGameStateIdle) return false;
 
-    if (have_game_state) {
-        if (game_state != kGameStateIdle) return false;
-    }
+    // Unreadable streaming counter (-1) must not count as "queue empty".
     const int pending = read_streaming_num_requested();
-    if (pending > 0) return false;
+    if (pending != 0) return false;
     if (read_skip_pipeline_active()) return false;
     return true;
 }
@@ -125,6 +126,7 @@ void begin_save_load_session() {
         const int64_t t = now_ms();
         g_session_started_ms.store(t, std::memory_order_release);
         g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
+        g_hydration_ready_since_ms.store(0, std::memory_order_release);
         LOGI("💾 [SaveLoad] Session begin");
     }
 }
@@ -137,6 +139,7 @@ static void end_save_load_session(const char* reason) {
     if (!g_save_load_session.exchange(false, std::memory_order_acq_rel)) return;
     g_session_started_ms.store(0, std::memory_order_release);
     g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
+    g_hydration_ready_since_ms.store(0, std::memory_order_release);
     LOGI("💾 [SaveLoad] Session end — %s", reason);
 }
 
@@ -166,13 +169,20 @@ void poll_save_load_hydration_state() {
         const int64_t started = g_session_started_ms.load(std::memory_order_acquire);
         const bool settled = save_load_hydration_signals_settled();
         if (settled && !prev_settled) {
-            LOGI("💾 [SaveLoad] Hydration signals settled — gameState=%u streaming=%d",
+            const int64_t t = now_ms();
+            g_hydration_ready_since_ms.store(t, std::memory_order_release);
+            LOGI("💾 [SaveLoad] Hydration signals settled — gameState=%u streaming=%d (dwell %lldms)",
                  have_game_state ? game_state : 255u,
-                 read_streaming_num_requested());
+                 read_streaming_num_requested(),
+                 static_cast<long long>(kHydrationSignalDwellMs));
+        } else if (!settled) {
+            g_hydration_ready_since_ms.store(0, std::memory_order_release);
         }
         prev_settled = settled;
 
-        if (settled) {
+        const int64_t ready_since = g_hydration_ready_since_ms.load(std::memory_order_acquire);
+        if (settled && ready_since > 0 &&
+            now_ms() - ready_since >= kHydrationSignalDwellMs) {
             end_save_load_session("engine signals settled");
         } else if (started > 0 && now_ms() - started >= kSessionHardCapMs) {
             end_save_load_session("session hard cap");
@@ -217,10 +227,21 @@ bool is_mod_dispatch_paused() {
     return is_scene_transition_active() || is_save_load_active() || !is_player_world_active();
 }
 
-// Sanitize stays off for the save/load session until engine signals settle
-// (GameState IDLE + streaming queue empty + skip/fade done).
+// Sanitize mutates task slots only when the player is in a stable in-game world.
+// Frontend idle / save-load / scene warp: CALL_PREV only (tombstone_21 menu wait, #22 load).
+static bool is_gameplay_world_stable_for_sanitize() {
+    if (!is_player_world_active()) return false;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state != kGameStateIdle) {
+        return false;
+    }
+    return true;
+}
+
 inline bool is_stability_sanitize_paused() {
-    return is_save_load_active();
+    return is_save_load_active() ||
+           is_scene_transition_active() ||
+           !is_gameplay_world_stable_for_sanitize();
 }
 
 #define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
