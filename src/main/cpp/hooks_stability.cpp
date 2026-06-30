@@ -446,10 +446,15 @@ void poll_save_load_hydration_state() {
     poll_u_strlen_post_load_hydration();
 }
 
+static inline bool ped_field_range_readable(void* base, size_t offset, size_t span);
+static inline bool is_current_player_ped(void* ped);
+static inline bool player_ped_world_query_ready(void* ped);
+static inline bool ped_physics_tick_ready(void* ped);
+
 bool is_player_world_active() {
     if (!g_FindPlayerPed) return false;
     CPlayerPed* player = g_FindPlayerPed(0);
-    return player && is_ped_pointer_valid_safe(reinterpret_cast<CPed*>(player));
+    return player && player_ped_world_query_ready(player);
 }
 
 static bool is_gameplay_world_stable() {
@@ -732,6 +737,27 @@ inline bool task_chain_walk_unsafe(void* task, size_t vtable_offset, int max_dep
         task = call_task_vtable_fn_at(task, vtable_offset);
     }
     return false;
+}
+
+inline void* read_subtask_ptr_at(void* task, size_t subtask_offset = 0x10) {
+    if (!task || !is_pointer_readable(task)) return nullptr;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + subtask_offset);
+    if (!is_pointer_readable(sub_slot)) return nullptr;
+    void* sub = *sub_slot;
+    if (!sub || !is_task_vtable_safe(sub)) return nullptr;
+    return sub;
+}
+
+// RE: GetSimplestActiveTask walks subtask chain via vtable+0x18 — stale node crashes 57aaac4 (#32).
+inline void* simplest_in_task_chain_readonly(void* task, size_t subtask_offset = 0x10) {
+    if (!task || !is_task_vtable_safe(task)) return nullptr;
+    void* current = task;
+    for (int depth = 0; depth < 32; ++depth) {
+        void* sub = read_subtask_ptr_at(current, subtask_offset);
+        if (!sub) return current;
+        current = sub;
+    }
+    return current;
 }
 
 inline void* simplest_in_task_chain(void* task, size_t vtable_offset = 0x18) {
@@ -1337,10 +1363,25 @@ static inline bool ped_speech_playback_ready(void* ped) {
 }
 
 // tombstone_36: player shortcut in is_ped_pointer_valid_safe hides half-hydrated player fields.
+static inline bool is_current_player_ped(void* ped) {
+    if (!ped || !g_FindPlayerPed) return false;
+    return ped == g_FindPlayerPed(0) || ped == g_FindPlayerPed(-1);
+}
+
 static inline bool player_ped_world_query_ready(void* ped) {
     if (!ped || !is_pointer_readable(ped)) return false;
     if (!ped_field_range_readable(ped, 0x84, 16)) return false;
     return is_ped_pointer_valid_safe(ped);
+}
+
+static inline bool ped_physics_tick_ready(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return false;
+    if (is_current_player_ped(ped)) {
+        if (!player_ped_world_query_ready(ped)) return false;
+    } else if (!is_ped_pointer_valid_safe(ped)) {
+        return false;
+    }
+    return true;
 }
 
 // --- CAEPedSpeechAudioEntity::PlayLoadedSound Hook ---
@@ -1480,16 +1521,42 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_manage_tasks_execution_paused()) return;
     if (is_ped_physics_hotpath_paused()) return;
-    if (!is_ped_pointer_valid_safe(self)) return;
+    if (!ped_physics_tick_ready(self)) return;
     if (ped_buoyancy_unsafe(self)) {
-        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p — skip (tombstone_27)", self);
+        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p — skip (tombstone_30)", self);
         return;
     }
     if (!is_stability_sanitize_paused()) {
         sanitize_ped_tasks(self);
     }
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
+}
+
+// --- CPlayerPed::ProcessControl Hook ---
+// RE: ped+0x44 null → no cbz 55e7dd4 (tombstone_31, fault 0x44).
+void* g_stub_player_ped_process_control = nullptr;
+fn_PlayerPedProcessControl_t g_orig_player_ped_process_control = nullptr;
+
+static inline bool player_ped_control_unsafe(void* ped) {
+    if (!ped || !is_pointer_readable(ped)) return true;
+    if (!player_ped_world_query_ready(ped)) return true;
+    if (!ped_field_range_readable(ped, 0x44, 8)) return true;
+    if (ped_intel_slot_unsafe(ped)) return true;
+    return ped_intel_physical_tick_unsafe(ped);
+}
+
+void proxy_player_ped_process_control(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return;
+    if (is_task_manager_query_paused()) return;
+    if (is_manage_tasks_execution_paused()) return;
+    if (player_ped_control_unsafe(self)) {
+        LOGW("⚠️ [ProcessControl] unsafe player %p — skip (tombstone_31)", self);
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_player_ped_process_control, self);
 }
 
 // --- CPedIntelligence::ProcessStaticCounter Hook ---
@@ -1523,7 +1590,7 @@ bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void
     if (vec1 && !is_pointer_readable(vec1)) return false;
     if (vec2 && !is_pointer_readable(vec2)) return false;
     if (physical) {
-        if (!is_ped_pointer_valid_safe(physical)) return false;
+        if (!ped_physics_tick_ready(physical)) return false;
         if (ped_buoyancy_unsafe(physical)) {
             LOGW("⚠️ [cBuoyancy::ProcessBuoyancy] unsafe physical %p — skip (tombstone_29)", physical);
             return false;
@@ -1825,20 +1892,19 @@ void* proxy_get_simplest_active_task(void* self) {
             if (!is_pointer_readable(task_slot)) continue;
             void* task = *task_slot;
             if (!task) continue;
-            void* simplest = simplest_in_task_chain(task, 0x18);
+            void* simplest = simplest_in_task_chain_readonly(task);
             if (simplest) return simplest;
         }
         return nullptr;
     }
     sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
     sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
-    // RE: walks subtask chain via vtable+0x18 loop 57aaabc — unsafe child node crashes 57aaac4 (tombstone_44).
     for (int i = 0; i < 5; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
         if (!is_pointer_readable(task_slot)) continue;
         void* task = *task_slot;
         if (!task) continue;
-        void* simplest = simplest_in_task_chain(task, 0x18);
+        void* simplest = simplest_in_task_chain_readonly(task);
         if (simplest) return simplest;
     }
     return nullptr;
@@ -1859,7 +1925,7 @@ void* proxy_get_simplest_task_ei(void* self, int index) {
         if (!is_pointer_readable(task_slot)) return nullptr;
         void* task = *task_slot;
         if (!task) return nullptr;
-        return simplest_in_task_chain(task, 0x18);
+        return simplest_in_task_chain_readonly(task);
     }
     if (index < 0 || index > 10) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
@@ -1870,7 +1936,7 @@ void* proxy_get_simplest_task_ei(void* self, int index) {
     if (!is_pointer_readable(task_slot)) return nullptr;
     void* task = *task_slot;
     if (!task) return nullptr;
-    return simplest_in_task_chain(task, 0x18);
+    return simplest_in_task_chain_readonly(task);
 }
 
 // --- CEventScriptCommand destructor hooks (D0/D1) ---
@@ -2283,7 +2349,12 @@ inline void sanitize_intel_tasks_if_present(void* ped, const char* tag) {
 }
 
 inline bool ped_intel_primary_tasks_unsafe_for_event(void* ped, size_t vtable_fn_offset = 0x18) {
-    if (!ped || !is_ped_pointer_valid_safe(ped)) return true;
+    if (!ped || !is_pointer_readable(ped)) return true;
+    if (is_current_player_ped(ped)) {
+        if (!player_ped_world_query_ready(ped)) return true;
+    } else if (!is_ped_pointer_valid_safe(ped)) {
+        return true;
+    }
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return true;
     void* task_mgr = reinterpret_cast<char*>(intel) + 8;

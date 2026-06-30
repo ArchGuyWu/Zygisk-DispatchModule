@@ -647,6 +647,16 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CPed::ProcessBuoyancy: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CPlayerPed::ProcessControl (读档水合期 ped+0x44 空指针闪退, tombstone_31)
+    g_stub_player_ped_process_control = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN10CPlayerPed14ProcessControlEv",
+        reinterpret_cast<void*>(proxy_player_ped_process_control),
+        reinterpret_cast<void**>(&g_orig_player_ped_process_control));
+    if (g_stub_player_ped_process_control) LOGI("✅ Hooked CPlayerPed::ProcessControl");
+    else LOGE("❌ Failed to hook CPlayerPed::ProcessControl: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CPedIntelligence::ProcessStaticCounter (防止更新静态计数器时对零填充任务解引用闪退)
     g_stub_process_static_counter = shadowhook_hook_sym_name(
         TARGET_LIB,
