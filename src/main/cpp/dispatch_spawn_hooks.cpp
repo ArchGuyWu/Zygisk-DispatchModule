@@ -173,23 +173,27 @@ fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
 void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (!is_mod_dispatch_paused()) {
-        if (is_police_vehicle_model(model)) {
-            if (!g_is_generating_custom_dispatch.load()) {
-                if (!relocate_police_car_spawn(model, pos)) {
-                    return; // Intercept and block
-                }
-            }
-        }
+    // Tombstone_23/24: passthrough CALL_PREV during load still spawns vehicles whose
+    // AI/tasks race UE hydration — drop the spawn entirely while dispatch is paused.
+    if (is_mod_dispatch_paused()) {
+        return;
+    }
 
-        if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
-            if (!g_is_generating_custom_dispatch.load()) {
-                LOGI("🚫 [ModEMS] Blocked native emergency spawn (model=%u) — mod dispatch handles ambulance/firetruck",
-                     model);
+    if (is_police_vehicle_model(model)) {
+        if (!g_is_generating_custom_dispatch.load()) {
+            if (!relocate_police_car_spawn(model, pos)) {
                 return;
             }
-            pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(pos, pos);
         }
+    }
+
+    if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
+        if (!g_is_generating_custom_dispatch.load()) {
+            LOGI("🚫 [ModEMS] Blocked native emergency spawn (model=%u) — mod dispatch handles ambulance/firetruck",
+                 model);
+            return;
+        }
+        pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(pos, pos);
     }
 
     SHADOWHOOK_CALL_PREV(proxy_generate_one_emergency_car, model, pos);
@@ -200,6 +204,10 @@ fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nullptr;
 
 void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
+
+    if (is_mod_dispatch_paused()) {
+        return;
+    }
 
     // We do NOT block or relocate scripted police cars to ensure 100% mission compatibility
 

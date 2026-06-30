@@ -146,10 +146,18 @@ static void end_save_load_session(const char* reason) {
 void poll_save_load_hydration_state() {
     static bool prev_ms_loading = false;
     static bool prev_settled = false;
+    static uint8_t prev_game_state = kGameStateFrontendIdle;
 
     const bool ms_loading = read_ms_b_loading();
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
+
+    if (have_game_state &&
+        prev_game_state == kGameStateFrontendIdle &&
+        game_state != kGameStateFrontendIdle) {
+        begin_save_load_session();
+        LOGI("💾 [SaveLoad] Left frontend idle — gameState=%u", game_state);
+    }
 
     if (ms_loading || (have_game_state && game_state == kGameStateLoadingStarted)) {
         begin_save_load_session();
@@ -198,6 +206,10 @@ void poll_save_load_hydration_state() {
         prev_settled = false;
     }
 
+    if (have_game_state) {
+        prev_game_state = game_state;
+    }
+
     prev_ms_loading = ms_loading;
 }
 
@@ -205,6 +217,15 @@ bool is_player_world_active() {
     if (!g_FindPlayerPed) return false;
     CPlayerPed* player = g_FindPlayerPed(0);
     return player && is_ped_pointer_valid_safe(reinterpret_cast<CPed*>(player));
+}
+
+static bool is_gameplay_world_stable() {
+    if (!is_player_world_active()) return false;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state != kGameStateIdle) {
+        return false;
+    }
+    return true;
 }
 
 bool is_scene_transition_active() {
@@ -224,18 +245,14 @@ bool is_save_load_active() {
 }
 
 bool is_mod_dispatch_paused() {
-    return is_scene_transition_active() || is_save_load_active() || !is_player_world_active();
+    return is_scene_transition_active() || is_save_load_active() || !is_gameplay_world_stable();
 }
 
 // Sanitize mutates task slots only when the player is in a stable in-game world.
-// Frontend idle / save-load / scene warp: CALL_PREV only (tombstone_21 menu wait, #22 load).
+// Frontend idle / save-load / scene warp: CALL_PREV only (tombstone_21–24 load/menu).
 static bool is_gameplay_world_stable_for_sanitize() {
-    if (!is_player_world_active()) return false;
-    uint8_t game_state = 0;
-    if (read_game_state(&game_state) && game_state != kGameStateIdle) {
-        return false;
-    }
-    return true;
+    if (is_save_load_active()) return false;
+    return is_gameplay_world_stable();
 }
 
 inline bool is_stability_sanitize_paused() {
