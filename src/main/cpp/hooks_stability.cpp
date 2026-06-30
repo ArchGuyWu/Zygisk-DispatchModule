@@ -453,18 +453,16 @@ inline bool is_stability_sanitize_paused() {
            !is_gameplay_world_stable_for_sanitize();
 }
 
-// ManageTasks hot path: pause post-load hydration (gameState 9) — allow on loading screen (state 8).
+// ManageTasks hot path: hard-stop only during post-load hydration (session + gameState 9).
+// ms_bLoading and gameState 7/8 must always run ManageTasks or the loading screen hangs.
 static inline bool is_task_manager_hotpath_paused() {
+    if (read_ms_b_loading()) return false;
+    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
     uint8_t game_state = 0;
-    const bool have_game_state = read_game_state(&game_state);
-    if (have_game_state && game_state == kGameStateLoadingStarted) {
+    if (!read_game_state(&game_state) || game_state != kGameStateIdle) {
         return false;
     }
-    if (read_ms_b_loading()) {
-        return true;
-    }
-    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
-    // Post-skip: resume scripts so right-side action widgets get re-enabled.
+    // gameState==9 + active session: hydration window (tombstone 29–32 crash zone).
     const int64_t skip_cleared =
         g_skip_pipeline_cleared_ms.load(std::memory_order_acquire);
     if (skip_cleared > 0 &&
@@ -734,8 +732,8 @@ void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_stability_sanitize_paused()) {
-        // Layered gate (tombstone 29–32): hot path skips CALL_PREV during ms_bLoading
-        // and post-load hydration session; post-skip exception re-enables for touch HUD.
+        // Layered gate (tombstone 29–32): skip CALL_PREV only during session+gameState 9
+        // hydration; ms_bLoading / state 7–8 always CALL_PREV (loading screen progress).
         if (is_task_manager_hotpath_paused()) return;
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
