@@ -496,6 +496,9 @@ static inline bool is_task_manager_query_paused() {
     do { \
         if (is_stability_sanitize_paused()) { \
             if (!self || !is_pointer_readable(self)) return nullptr; \
+            /* Save-load: half-hydrated subtask/other-ped chains crash (#37, #39). */ \
+            if (is_task_manager_query_paused()) return nullptr; \
+            if (ped && !is_pointer_readable(ped)) return nullptr; \
             return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped); \
         } \
     } while (0)
@@ -1057,23 +1060,22 @@ fn_FacialDtor_t g_orig_facial_dtor = nullptr;
 
 void proxy_facial_dtor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (!self || !is_pointer_readable(self)) return;
-        SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
-        return;
-    }
     if (!self || !is_pointer_readable(self)) return;
 
-    if (self) {
-        void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (is_pointer_readable(p_sub)) {
-            void* sub = *p_sub;
-            if (sub && !is_task_vtable_safe(sub)) {
-                LOGW("⚠️ [Facial Dtor] Clearing unsafe subtask %p inside facial task %p before destruction", sub, self);
-                *p_sub = nullptr;
-            }
+    void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (is_pointer_readable(p_sub)) {
+        void* sub = *p_sub;
+        if (sub && !is_task_vtable_safe(sub)) {
+            LOGW("⚠️ [Facial Dtor] Clearing unsafe subtask %p inside facial task %p before destruction",
+                 sub, self);
+            *p_sub = nullptr;
         }
     }
+
+    // Save-load teardown: engine dtor walks vtable+0x8 on stale facial tasks (#38).
+    if (is_task_manager_query_paused()) return;
+    if (!is_task_vtable_safe(self)) return;
+
     SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
 }
 
