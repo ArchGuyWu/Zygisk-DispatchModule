@@ -106,7 +106,7 @@ void proxy_register_kill(const CPed* dead_ped,
         }
 
         // 犯罪 NPC 被杀 → 并案逻辑处理与事件解决判定
-        {
+        if (!is_mod_dispatch_paused()) {
             std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
             for (auto& crime : g_active_crimes) {
                 if (crime && !crime->cancelled) {
@@ -156,19 +156,21 @@ void proxy_register_kill(const CPed* dead_ped,
                     }
                 }
             }
-        }
 
-        // 警察被杀 → 仅案犯亲手所杀才计入 cops_killed；车辆肇事逃逸进待通缉列表
-        if (dead_type == PED_TYPE_COP) {
-            CVector cop_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
-            dispatch_hit_and_run::handle_cop_death_near_case(
-                dead_ped, killer, weapon, cop_pos);
+            // 警察被杀 → 仅案犯亲手所杀才计入 cops_killed；车辆肇事逃逸进待通缉列表
+            if (dead_type == PED_TYPE_COP) {
+                CVector cop_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
+                dispatch_hit_and_run::handle_cop_death_near_case(
+                    dead_ped, killer, weapon, cop_pos);
+            }
         }
     }
 
     if (dead_ped && is_ped_pointer_valid_safe(const_cast<CPed*>(dead_ped))) {
-        CVector death_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
-        dispatch_emergency_services::on_civilian_casualty_near_crime(dead_ped, death_pos);
+        if (!is_mod_dispatch_paused()) {
+            CVector death_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
+            dispatch_emergency_services::on_civilian_casualty_near_crime(dead_ped, death_pos);
+        }
         ecs::EventDispatcher::get().dispatch(ecs::EntityCleanupEvent(const_cast<CPed*>(dead_ped), true));
     }
 
@@ -312,6 +314,7 @@ bool proxy_generate_damage_event(CPed* victim,
                 }
             }
 
+            if (!is_mod_dispatch_paused()) {
             // 1b. 警员受击自卫事件驱动：如果受害者是执勤警员，且攻击者是普通市民/黑帮NPC（非警察/非玩家），且伤害大于0
             if (victim_type == PED_TYPE_COP && perpetrator && perp_type != PED_TYPE_COP && perp_type != PED_TYPE_PLAYER && damage > 0) {
                 ecs::EventDispatcher::get().dispatch(ecs::DamageEvent(victim, perpetrator, (int)weaponType, false, now_ms()));
@@ -355,6 +358,7 @@ bool proxy_generate_damage_event(CPed* victim,
                     ecs::EventDispatcher::get().dispatch(ecs::CrimeReportEvent(reinterpret_cast<CPed*>(perpetrator), victim, crime_pos, firearm, weap_cat, now_ms()));
                 }
             }
+            }
         }
     }
 
@@ -362,6 +366,7 @@ bool proxy_generate_damage_event(CPed* victim,
 }
 
 static void handle_damage_event(CEntity* damageSource, eWeaponType weaponType) {
+    if (is_mod_dispatch_paused()) return;
     if (!damageSource || !g_GetPedType || !g_FindPlayerPed) return;
 
     if (is_ped_pointer_valid_safe(damageSource)) {
@@ -435,7 +440,7 @@ void proxy_event_damage_ctor_c2(void* event_this,
 void proxy_SetCurrentWeapon(CPed* ped, eWeaponType weaponType) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (ped && is_ped_pointer_valid_safe(ped)) {
+    if (ped && is_ped_pointer_valid_safe(ped) && !is_mod_dispatch_paused()) {
         int prev_weap = 0;
         auto* combat = ecs::EntityManager::get().get_component<ecs::CombatComponent>(ped);
         if (combat) {

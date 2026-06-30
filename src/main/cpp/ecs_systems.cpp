@@ -53,6 +53,7 @@ void init_ecs_systems() {
 
     // 2. CopDispatchSystem: 监听犯罪通报事件 & 伤害事件
     ecs::EventDispatcher::get().subscribe<ecs::CrimeReportEvent>("CrimeReportEvent", [](const ecs::CrimeReportEvent& ev) {
+        if (is_mod_dispatch_paused()) return;
         auto* criminal = static_cast<CPed*>(ev.criminal);
         if (!criminal || !is_ped_pointer_valid_safe(criminal)) return;
 
@@ -142,6 +143,7 @@ void init_ecs_systems() {
     });
 
     ecs::EventDispatcher::get().subscribe<ecs::DamageEvent>("DamageEvent", [](const ecs::DamageEvent& ev) {
+        if (is_mod_dispatch_paused()) return;
         auto* victim_cop = static_cast<CPed*>(ev.victim);
         auto* attacker_perp = static_cast<CPed*>(ev.attacker);
         if (victim_cop && is_ped_pointer_valid_safe(victim_cop) &&
@@ -167,6 +169,7 @@ void init_ecs_systems() {
 
     // 3. CopWeaponSelectionSystem: 监听武器切换事件 & 周期性 Tick 事件
     ecs::EventDispatcher::get().subscribe<ecs::WeaponSwitchEvent>("WeaponSwitchEvent", [](const ecs::WeaponSwitchEvent& ev) {
+        if (is_mod_dispatch_paused()) return;
         auto* ped = static_cast<CPed*>(ev.ped);
         if (!ped || !is_ped_pointer_valid_safe(ped)) return;
 
@@ -249,6 +252,7 @@ void init_ecs_systems() {
 
     // 4. CopStuckAndWeaponSelectionSystem: 周期性 Tick 事件
     ecs::EventDispatcher::get().subscribe<ecs::TickEvent>("TickEvent", [](const ecs::TickEvent& ev) {
+        if (is_mod_dispatch_paused()) return;
         int64_t cur_time = ev.current_time_ms;
 
         dispatch_hit_and_run::tick_pending_wanted(cur_time);

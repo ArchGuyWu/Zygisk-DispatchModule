@@ -56,7 +56,7 @@ fn_AddPed_t g_orig_add_ped = nullptr;
 CPed* proxy_add_ped(int pedType, unsigned int modelIndex, const CVector& pos, bool bUnknown) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (pedType == 6 && g_in_wanted_update.load()) { // PED_TYPE_COP = 6
+    if (!is_mod_dispatch_paused() && pedType == 6 && g_in_wanted_update.load()) { // PED_TYPE_COP = 6
         LOGI("🚫 [trueDispatch] Intercepted and blocked wanted-system forced cop spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", modelIndex, pos.x, pos.y, pos.z);
         return nullptr;
     }
@@ -173,21 +173,23 @@ fn_GenOneEmergencyCar_t g_orig_generate_one_emergency_car = nullptr;
 void proxy_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (is_police_vehicle_model(model)) {
-        if (!g_is_generating_custom_dispatch.load()) {
-            if (!relocate_police_car_spawn(model, pos)) {
-                return; // Intercept and block
+    if (!is_mod_dispatch_paused()) {
+        if (is_police_vehicle_model(model)) {
+            if (!g_is_generating_custom_dispatch.load()) {
+                if (!relocate_police_car_spawn(model, pos)) {
+                    return; // Intercept and block
+                }
             }
         }
-    }
 
-    if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
-        if (!g_is_generating_custom_dispatch.load()) {
-            LOGI("🚫 [ModEMS] Blocked native emergency spawn (model=%u) — mod dispatch handles ambulance/firetruck",
-                 model);
-            return;
+        if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
+            if (!g_is_generating_custom_dispatch.load()) {
+                LOGI("🚫 [ModEMS] Blocked native emergency spawn (model=%u) — mod dispatch handles ambulance/firetruck",
+                     model);
+                return;
+            }
+            pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(pos, pos);
         }
-        pos = dispatch_emergency_services::clamp_spawn_to_streaming_range(pos, pos);
     }
 
     SHADOWHOOK_CALL_PREV(proxy_generate_one_emergency_car, model, pos);
@@ -213,7 +215,9 @@ fn_TellOccupantsToLeaveCar_t g_orig_tell_occupants_leave_car = nullptr;
 
 void proxy_tell_occupants_leave_car(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
-    bind_vehicle_occupants(vehicle); // Bind them here before they leave!
-    record_exit_start_for_occupants(vehicle);
+    if (!is_mod_dispatch_paused()) {
+        bind_vehicle_occupants(vehicle); // Bind them here before they leave!
+        record_exit_start_for_occupants(vehicle);
+    }
     SHADOWHOOK_CALL_PREV(proxy_tell_occupants_leave_car, vehicle);
 }

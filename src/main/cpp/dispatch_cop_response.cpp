@@ -499,6 +499,7 @@ void command_vehicle_ai(void* vehicle, const CVector& crime_loc, float dist_to_c
 
 // 调度行驶的统一入口：有司机才让车开过去，没司机尝试再加人，若依旧没司机则拦截，防止幽灵车行驶
 void command_cop_vehicle_to_scene(void* vehicle, const CVector& target_loc) {
+    if (is_mod_dispatch_paused()) return;
     if (!vehicle) return;
 
     if (!is_vehicle_occupied_by_driver(vehicle)) {
@@ -662,6 +663,7 @@ bool is_swat_van_nearby(CVector pos, float radius) {
 }
 
 void bind_vehicle_occupants(void* vehicle) {
+    if (is_mod_dispatch_paused()) return;
     if (!vehicle || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType || !g_IsDriver || !g_IsPassenger) return;
     void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
     if (!pool) return;
@@ -825,6 +827,7 @@ int dispatch_nearby_available_cops_to_crime(
     const std::shared_ptr<CrimeEvent>& crime,
     int max_cops,
     float search_radius) {
+    if (is_mod_dispatch_paused()) return 0;
     if (!crime || crime->cancelled || max_cops <= 0) return 0;
 
     CPed* criminal = crime->criminal;
@@ -1163,6 +1166,7 @@ bool apply_cop_weapon_for_combat(CPed* cop, CPed* criminal, bool force_update) {
 }
 
 bool force_cop_native_redispatch(CPed* cop, CPed* criminal) {
+    if (is_mod_dispatch_paused()) return false;
     if (!cop || !is_ped_pointer_valid_safe(cop) || !criminal || !is_ped_pointer_valid_safe(criminal)) {
         return false;
     }
@@ -1183,6 +1187,7 @@ bool force_cop_native_redispatch(CPed* cop, CPed* criminal) {
 }
 
 void make_single_cop_attack_criminal(CPed* cop, CPed* criminal, bool force_weapon_update) {
+    if (is_mod_dispatch_paused()) return;
     if (!cop || !is_ped_pointer_valid_safe(cop) || !criminal || !is_ped_pointer_valid_safe(criminal)) return;
     if (g_IsAlive && !g_IsAlive(cop)) return;
     if (g_GetPedType && g_GetPedType(cop) != PED_TYPE_COP) return;
