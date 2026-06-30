@@ -1539,9 +1539,9 @@ void proxy_process_buoyancy(void* self) {
 void* g_stub_player_ped_process_control = nullptr;
 fn_PlayerPedProcessControl_t g_orig_player_ped_process_control = nullptr;
 
-static inline bool player_ped_control_unsafe(void* ped) {
+// tombstone_31: engine reads ped+0x44 without null guard — not a task-manager query hook.
+static inline bool player_ped_control_crash_unsafe(void* ped) {
     if (!ped || !is_pointer_readable(ped)) return true;
-    if (!player_ped_world_query_ready(ped)) return true;
     if (!ped_field_range_readable(ped, 0x44, 8)) return true;
     if (ped_intel_slot_unsafe(ped)) return true;
     return ped_intel_physical_tick_unsafe(ped);
@@ -1550,9 +1550,16 @@ static inline bool player_ped_control_unsafe(void* ped) {
 void proxy_player_ped_process_control(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
-    if (is_task_manager_query_paused()) return;
-    if (is_manage_tasks_execution_paused()) return;
-    if (player_ped_control_unsafe(self)) {
+    if (is_stability_sanitize_paused()) {
+        // ms_bLoading / gameState 7-8 must CALL_PREV or load screen hangs (ManageTasks rule).
+        if (is_manage_tasks_execution_paused() && player_ped_control_crash_unsafe(self)) {
+            LOGW("⚠️ [ProcessControl] unsafe player %p — skip hydration (tombstone_31)", self);
+            return;
+        }
+        SHADOWHOOK_CALL_PREV(proxy_player_ped_process_control, self);
+        return;
+    }
+    if (player_ped_control_crash_unsafe(self)) {
         LOGW("⚠️ [ProcessControl] unsafe player %p — skip (tombstone_31)", self);
         return;
     }
