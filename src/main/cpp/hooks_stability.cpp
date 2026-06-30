@@ -51,16 +51,54 @@ inline void sanitize_unsafe_subtask_at(void* task, size_t offset) {
     }
 }
 
-inline void sanitize_task_manager_slots(void* task_mgr, const char* log_tag) {
+// Engine often cbnz task slots but dereferences vtable+N without null guard (tombstone_41/42).
+inline bool task_vtable_fn_at_unsafe(void* task, size_t vtable_offset) {
+    if (!task || !is_pointer_readable(task)) return true;
+    void** vtable_slot = reinterpret_cast<void**>(task);
+    if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return true;
+    void** fn_slot = reinterpret_cast<void**>(
+        reinterpret_cast<char*>(*vtable_slot) + vtable_offset);
+    return !is_pointer_readable(fn_slot) || !*fn_slot || !is_pointer_readable(*fn_slot);
+}
+
+inline bool task_slot_unsafe_for_vtable_call(void* task, size_t vtable_offset) {
+    if (!task) return false;
+    return !is_task_vtable_safe(task) || task_vtable_fn_at_unsafe(task, vtable_offset);
+}
+
+inline void sanitize_task_manager_slots(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18) {
     if (!task_mgr || !is_pointer_readable(task_mgr)) return;
     for (int i = 0; i < 11; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
         if (!is_pointer_readable(task_slot)) continue;
         void* task = *task_slot;
-        if (task && !is_task_vtable_safe(task)) {
+        if (task && task_slot_unsafe_for_vtable_call(task, vtable_fn_offset)) {
             LOGW("⚠️ [%s] Clearing unsafe task %p at slot %d", log_tag, task, i);
             *task_slot = nullptr;
         }
+    }
+}
+
+inline bool task_manager_has_unsafe_slot(void* task_mgr, int max_slots, size_t vtable_fn_offset) {
+    if (!task_mgr || !is_pointer_readable(task_mgr)) return false;
+    for (int i = 0; i < max_slots; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_slot_unsafe_for_vtable_call(task, vtable_fn_offset)) return true;
+    }
+    return false;
+}
+
+inline void sanitize_event_script_command_task_slot(void* self, const char* log_tag) {
+    if (!self || !is_pointer_readable(self)) return;
+    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (!is_pointer_readable(task_slot)) return;
+    void* task = *task_slot;
+    // RE: task at +0x18 null → cbz 54ce69c; vtable+0x8 null → no cbz 54ce6a4 (tombstone_43).
+    if (task && task_slot_unsafe_for_vtable_call(task, 0x8)) {
+        LOGW("⚠️ [%s] Clearing unsafe task %p at +0x18", log_tag, task);
+        *task_slot = nullptr;
     }
 }
 
@@ -828,15 +866,72 @@ bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index) {
 }
 
 // --- CTaskManager::GetSimplestActiveTask Hook ---
-// Primary slots may hold zero-filled tasks; vtable+0x18 call crashes (tombstone_20, fault 0x18).
+// RE: slot null → cbnz 57aaa98; vtable+0x18 null → no cbz 57aaac4 (tombstone_41, fault 0x18).
 void* g_stub_get_simplest_active_task = nullptr;
 fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    sanitize_task_manager_slots(self, "GetSimplestActiveTask");
+    sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
+    if (task_manager_has_unsafe_slot(self, 5, 0x18)) {
+        LOGW("⚠️ [GetSimplestActiveTask] stale primary slot after sanitize — return nullptr");
+        return nullptr;
+    }
     return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
+}
+
+// --- CTaskManager::GetSimplestTaskEi Hook ---
+// RE: indexed slot null → cbz 57aaaf8; vtable+0x18 null → no cbz 57aab04 (same pattern as 41).
+void* g_stub_get_simplest_task_ei = nullptr;
+fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
+
+void* proxy_get_simplest_task_ei(void* self, int index) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return nullptr;
+    if (index < 0 || index > 10) return nullptr;
+    sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
+    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
+    if (is_pointer_readable(task_slot)) {
+        void* task = *task_slot;
+        if (task && task_slot_unsafe_for_vtable_call(task, 0x18)) {
+            LOGW("⚠️ [GetSimplestTaskEi] unsafe task %p at slot %d — return nullptr", task, index);
+            return nullptr;
+        }
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
+}
+
+// --- CEventScriptCommand destructor hooks (D0/D1) ---
+void* g_stub_event_script_command_d0 = nullptr;
+fn_EventScriptCommandDtor_t g_orig_event_script_command_d0 = nullptr;
+void* g_stub_event_script_command_d1 = nullptr;
+fn_EventScriptCommandDtor_t g_orig_event_script_command_d1 = nullptr;
+
+void proxy_event_script_command_d0(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return;
+    sanitize_event_script_command_task_slot(self, "CEventScriptCommand::D0");
+    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (is_pointer_readable(task_slot) && *task_slot &&
+        task_slot_unsafe_for_vtable_call(*task_slot, 0x8)) {
+        LOGW("⚠️ [CEventScriptCommand::D0] stale task after sanitize — skip original");
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_event_script_command_d0, self);
+}
+
+void proxy_event_script_command_d1(void* self) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return;
+    sanitize_event_script_command_task_slot(self, "CEventScriptCommand::D1");
+    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (is_pointer_readable(task_slot) && *task_slot &&
+        task_slot_unsafe_for_vtable_call(*task_slot, 0x8)) {
+        LOGW("⚠️ [CEventScriptCommand::D1] stale task after sanitize — skip original");
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_event_script_command_d1, self);
 }
 
 // --- CEventScriptCommand::GetEventPriority Hook ---
@@ -846,15 +941,7 @@ fn_EventScriptCommandGetPriority_t g_orig_event_script_command_get_priority = nu
 int proxy_event_script_command_get_priority(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (self && is_pointer_readable(self)) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
-        if (is_pointer_readable(task_slot)) {
-            void* task = *task_slot;
-            if (task && !is_task_vtable_safe(task)) {
-                LOGW("⚠️ [CEventScriptCommand::GetEventPriority] clearing unsafe task %p", task);
-                *task_slot = nullptr;
-            }
-            // Engine cbz at +0x18 task (54ce890) handles nullptr — let CALL_PREV run.
-        }
+        sanitize_event_script_command_task_slot(self, "CEventScriptCommand::GetEventPriority");
     }
     return SHADOWHOOK_CALL_PREV(proxy_event_script_command_get_priority, self);
 }
@@ -1219,7 +1306,7 @@ bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority
 }
 
 // --- CPedIntelligence::ProcessAfterProcCol Hook ---
-// RE: task slots null → cbnz/cbz 55debf8–55dec18; stale non-null task → vtable+0x18 fault 55dec24 (tombstone_37).
+// RE: task slots null → cbnz/cbz 55debf8–55dec18; vtable+0x18 null → no cbz 55dec24 (tombstone_37/42).
 void* g_stub_process_after_proc_col = nullptr;
 fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
 
@@ -1227,7 +1314,12 @@ void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     // RE: self null → no cbz 55debf4; zero-filled vtable → no cbz.
     if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
-    sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessAfterProcCol");
+    void* task_mgr = reinterpret_cast<char*>(self) + 8;
+    sanitize_task_manager_slots(task_mgr, "ProcessAfterProcCol", 0x18);
+    if (task_manager_has_unsafe_slot(task_mgr, 5, 0x18)) {
+        LOGW("⚠️ [ProcessAfterProcCol] stale primary slot after sanitize — skip original");
+        return;
+    }
     SHADOWHOOK_CALL_PREV(proxy_process_after_proc_col, self);
 }
 

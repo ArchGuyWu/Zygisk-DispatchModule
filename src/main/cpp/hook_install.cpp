@@ -576,6 +576,15 @@ void hook_thread_func() {
     if (g_stub_get_simplest_active_task) LOGI("✅ Hooked CTaskManager::GetSimplestActiveTask");
     else LOGE("❌ Failed to hook CTaskManager::GetSimplestActiveTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CTaskManager::GetSimplestTaskEi (indexed slot → vtable+0x18, tombstone_41 pattern)
+    g_stub_get_simplest_task_ei = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK12CTaskManager15GetSimplestTaskEi",
+        reinterpret_cast<void*>(proxy_get_simplest_task_ei),
+        reinterpret_cast<void**>(&g_orig_get_simplest_task_ei));
+    if (g_stub_get_simplest_task_ei) LOGI("✅ Hooked CTaskManager::GetSimplestTaskEi");
+    else LOGE("❌ Failed to hook CTaskManager::GetSimplestTaskEi: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CEventScriptCommand::GetEventPriority (事件优先级查询时对零填充任务调 vtable+0x28 闪退)
     g_stub_event_script_command_get_priority = shadowhook_hook_sym_name(
         TARGET_LIB,
@@ -584,6 +593,23 @@ void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_event_script_command_get_priority));
     if (g_stub_event_script_command_get_priority) LOGI("✅ Hooked CEventScriptCommand::GetEventPriority");
     else LOGE("❌ Failed to hook CEventScriptCommand::GetEventPriority: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CEventScriptCommand D0/D1 (析构 +0x18 task → vtable+0x8, tombstone_43)
+    g_stub_event_script_command_d0 = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN19CEventScriptCommandD0Ev",
+        reinterpret_cast<void*>(proxy_event_script_command_d0),
+        reinterpret_cast<void**>(&g_orig_event_script_command_d0));
+    if (g_stub_event_script_command_d0) LOGI("✅ Hooked CEventScriptCommand::D0");
+    else LOGE("❌ Failed to hook CEventScriptCommand::D0: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_event_script_command_d1 = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN19CEventScriptCommandD1Ev",
+        reinterpret_cast<void*>(proxy_event_script_command_d1),
+        reinterpret_cast<void**>(&g_orig_event_script_command_d1));
+    if (g_stub_event_script_command_d1) LOGI("✅ Hooked CEventScriptCommand::D1");
+    else LOGE("❌ Failed to hook CEventScriptCommand::D1: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CCam::Process_FollowPed_SA
     g_stub_process_follow_ped_sa = shadowhook_hook_sym_name(
