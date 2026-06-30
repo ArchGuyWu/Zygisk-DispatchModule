@@ -60,6 +60,10 @@ bool is_mod_dispatch_paused() {
     return is_scene_transition_active() || is_save_load_active();
 }
 
+inline bool is_stability_sanitize_paused() {
+    return is_save_load_active();
+}
+
 // =====================================================================
 // Stability hook helpers
 // =====================================================================
@@ -70,6 +74,7 @@ inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
 }
 
 inline void sanitize_unsafe_subtask_at(void* task, size_t offset) {
+    if (is_stability_sanitize_paused()) return;
     if (!task || !is_pointer_readable(task)) return;
     void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task) + offset);
     if (!is_pointer_readable(sub_slot)) return;
@@ -96,6 +101,7 @@ inline bool task_slot_unsafe_for_vtable_call(void* task, size_t vtable_offset) {
 }
 
 inline void sanitize_task_manager_slots(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18) {
+    if (is_stability_sanitize_paused()) return;
     if (!task_mgr || !is_pointer_readable(task_mgr)) return;
     for (int i = 0; i < 11; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
@@ -120,6 +126,7 @@ inline bool task_manager_has_unsafe_slot(void* task_mgr, int max_slots, size_t v
 }
 
 inline void sanitize_event_script_command_task_slot(void* self, const char* log_tag) {
+    if (is_stability_sanitize_paused()) return;
     if (!self || !is_pointer_readable(self)) return;
     void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
     if (!is_pointer_readable(task_slot)) return;
@@ -162,6 +169,7 @@ inline void* simplest_in_task_chain(void* task, size_t vtable_offset = 0x18) {
 }
 
 inline void sanitize_task_manager_primary_chains(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18) {
+    if (is_stability_sanitize_paused()) return;
     if (!task_mgr || !is_pointer_readable(task_mgr)) return;
     for (int i = 0; i < 5; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
@@ -277,6 +285,10 @@ void sanitize_task_chain(void* task, int depth = 0) {
 void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_stability_sanitize_paused()) {
+        SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
+        return;
+    }
 
     sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x18);
     sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x18);
@@ -308,6 +320,7 @@ void proxy_scan_for_attractors_in_range(void* self, void* ped) {
 
 // --- CTaskComplexGangFollower::ControlSubTask Hook ---
 inline void sanitize_task_tree(void* task) {
+    if (is_stability_sanitize_paused()) return;
     if (!task || !is_pointer_readable(task)) return;
     
     // Only CTaskComplex has m_pSubTask at offset 16 (0x10).
@@ -329,9 +342,7 @@ inline void sanitize_task_tree(void* task) {
 }
 
 inline void sanitize_ped_tasks(void* ped) {
-    // During save/load, ped/intel/task slots are torn down asynchronously — clearing
-    // slots here races the loader and causes null vtable dispatch (tombstone_12–14).
-    if (is_save_load_active()) return;
+    if (is_stability_sanitize_paused()) return;
     if (!ped || !is_pointer_readable(ped)) return;
     void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
     if (!is_pointer_readable(intel_slot)) return;
@@ -499,6 +510,9 @@ fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 
 void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
+    }
     if (!self || !is_pointer_readable(self)) return nullptr;
 
     if (self) {
@@ -522,6 +536,7 @@ void* g_stub_intel_find_task_by_type = nullptr;
 fn_IntelFindTaskByType_t g_orig_intel_find_task_by_type = nullptr;
 
 inline void sanitize_intel_for_task_lookup(void* intel) {
+    if (is_stability_sanitize_paused()) return;
     if (!intel || !is_pointer_readable(intel)) return;
     sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "Intel::FindTaskByType", 0x28);
     sanitize_task_manager_primary_chains(reinterpret_cast<char*>(intel) + 8, "Intel::FindTaskByType", 0x28);
@@ -538,6 +553,9 @@ inline void sanitize_intel_for_task_lookup(void* intel) {
 
 void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
+    }
     if (!self || !is_pointer_readable(self)) return nullptr;
     sanitize_intel_for_task_lookup(self);
     for (size_t off : {0x20u, 0x28u}) {
@@ -1004,6 +1022,9 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
+    }
     if (!self || !is_pointer_readable(self)) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
     sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
@@ -1026,6 +1047,9 @@ fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
 
 void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
+    }
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (index < 0 || index > 10) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
@@ -1153,12 +1177,20 @@ inline bool make_abortable_subtask_tailcall_unsafe(void* self, size_t vtable_off
     return task_subtask_vtable_fn_unsafe(self, 0x10, vtable_offset);
 }
 
+#define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
+    do { \
+        if (is_stability_sanitize_paused()) { \
+            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
+        } \
+    } while (0)
+
 // --- CTaskComplexLeaveCar::MakeAbortable Hook ---
 void* g_stub_leave_car_make_abortable = nullptr;
 fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
 
 bool proxy_leave_car_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_leave_car_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1175,6 +1207,7 @@ fn_GoToPointMakeAbortable_t g_orig_goto_point_make_abortable = nullptr;
 
 bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_goto_point_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1194,6 +1227,7 @@ fn_AchieveHeadingMakeAbortable_t g_orig_achieve_heading_make_abortable = nullptr
 
 bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_achieve_heading_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1217,6 +1251,7 @@ fn_FollowPointRouteMakeAbortable_t g_orig_follow_point_route_make_abortable = nu
 
 bool proxy_follow_point_route_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_follow_point_route_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) {
@@ -1250,6 +1285,7 @@ inline bool kill_criminal_task_target_unsafe(void* self) {
 
 bool proxy_kill_criminal_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_kill_criminal_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1284,6 +1320,7 @@ fn_FallAndGetUpMakeAbortable_t g_orig_fall_and_get_up_make_abortable = nullptr;
 
 bool proxy_fall_and_get_up_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fall_and_get_up_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1319,6 +1356,7 @@ fn_KillPedOnFootMakeAbortable_t g_orig_kill_ped_on_foot_make_abortable = nullptr
 
 bool proxy_kill_ped_on_foot_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_kill_ped_on_foot_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1345,6 +1383,7 @@ fn_KillPedOnFootArmedMakeAbortable_t g_orig_kill_ped_on_foot_armed_make_abortabl
 
 bool proxy_kill_ped_on_foot_armed_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_kill_ped_on_foot_armed_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1367,6 +1406,7 @@ fn_SimpleAnimMakeAbortable_t g_orig_simple_anim_make_abortable = nullptr;
 
 bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_simple_anim_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) {
@@ -1516,6 +1556,7 @@ fn_SimpleArrestPedMakeAbortable_t g_orig_simple_arrest_ped_make_abortable = null
 
 bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_simple_arrest_ped_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     // event == nullptr: engine cbz 57bed74 — do not intercept.
@@ -1534,6 +1575,7 @@ fn_BeInGroupMakeAbortable_t g_orig_be_in_group_make_abortable = nullptr;
 
 bool proxy_be_in_group_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_be_in_group_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
@@ -1559,6 +1601,7 @@ fn_ComplexArrestPedMakeAbortable_t g_orig_complex_arrest_ped_make_abortable = nu
 
 bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event) {
     SHADOWHOOK_STACK_SCOPE();
+    MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_complex_arrest_ped_make_abortable, self, ped, priority, event);
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
     if (event && make_abortable_event_unsafe(event)) return false;
