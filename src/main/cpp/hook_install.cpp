@@ -676,6 +676,24 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskComplexKillPedOnFoot::MakeAbortable: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_kill_ped_on_foot_armed_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN30CTaskComplexKillPedOnFootArmed13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_kill_ped_on_foot_armed_make_abortable),
+        reinterpret_cast<void**>(&g_orig_kill_ped_on_foot_armed_make_abortable));
+    if (g_stub_kill_ped_on_foot_armed_make_abortable) LOGI("✅ Hooked CTaskComplexKillPedOnFootArmed::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexKillPedOnFootArmed::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_event_walk_into_vehicle_affects_ped = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZNK30CEventPotentialWalkIntoVehicle10AffectsPedEP4CPed",
+        reinterpret_cast<void*>(proxy_event_walk_into_vehicle_affects_ped),
+        reinterpret_cast<void**>(&g_orig_event_walk_into_vehicle_affects_ped));
+    if (g_stub_event_walk_into_vehicle_affects_ped) LOGI("✅ Hooked CEventPotentialWalkIntoVehicle::AffectsPed");
+    else LOGE("❌ Failed to hook CEventPotentialWalkIntoVehicle::AffectsPed: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     g_stub_kill_criminal_make_abortable = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN24CTaskComplexKillCriminal13MakeAbortableEP4CPediPK6CEvent",

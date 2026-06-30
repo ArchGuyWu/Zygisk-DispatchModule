@@ -204,6 +204,8 @@ extern void* g_stub_goto_point_make_abortable;
 extern void* g_stub_achieve_heading_make_abortable;
 extern void* g_stub_follow_point_route_make_abortable;
 extern void* g_stub_kill_ped_on_foot_make_abortable;
+extern void* g_stub_kill_ped_on_foot_armed_make_abortable;
+extern void* g_stub_event_walk_into_vehicle_affects_ped;
 extern void* g_stub_kill_criminal_make_abortable;
 extern void* g_stub_fall_and_get_up_make_abortable;
 extern void* g_stub_play_hand_signal_control_sub_task;

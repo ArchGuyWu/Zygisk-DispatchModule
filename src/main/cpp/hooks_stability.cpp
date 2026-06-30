@@ -1058,6 +1058,14 @@ inline bool task_subtask_vtable_fn_unsafe(void* self, size_t subtask_offset, siz
     return !is_pointer_readable(fn_slot) || !*fn_slot || !is_pointer_readable(*fn_slot);
 }
 
+// Complex task MakeAbortable often tailcalls subtask+0x10 → vtable+0x38 with no null cbz.
+inline bool make_abortable_subtask_tailcall_unsafe(void* self, size_t vtable_offset = 0x38) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) return true;
+    return task_subtask_vtable_fn_unsafe(self, 0x10, vtable_offset);
+}
+
 // --- CTaskComplexLeaveCar::MakeAbortable Hook ---
 void* g_stub_leave_car_make_abortable = nullptr;
 fn_LeaveCarMakeAbortable_t g_orig_leave_car_make_abortable = nullptr;
@@ -1170,8 +1178,13 @@ bool proxy_kill_criminal_make_abortable(void* self, void* ped, int priority, voi
         }
     }
     sanitize_unsafe_subtask_at(self, 0x10);
-    // Subtask vtable still broken after sanitize — engine path would fault; short-circuit only here.
-    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x28)) {
+    // RE: subtask at +0x10 null → no cbz 57c2910; tailcall vtable+0x38 57c292c (tombstone_49).
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [KillCriminal::MakeAbortable] null subtask — return true");
+        return true;
+    }
+    if (make_abortable_subtask_tailcall_unsafe(self, 0x38)) {
         LOGW("⚠️ [KillCriminal::MakeAbortable] unsafe subtask after sanitize — return true");
         return true;
     }
@@ -1228,9 +1241,37 @@ bool proxy_kill_ped_on_foot_make_abortable(void* self, void* ped, int priority, 
     }
     if (self) {
         sanitize_unsafe_subtask_at(self, 0x10);
-        if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x38)) return true;
+        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+        if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+            LOGW("⚠️ [KillPedOnFoot::MakeAbortable] null subtask — return true");
+            return true;
+        }
+        if (make_abortable_subtask_tailcall_unsafe(self, 0x38)) return true;
     }
     return SHADOWHOOK_CALL_PREV(proxy_kill_ped_on_foot_make_abortable, self, ped, priority, event);
+}
+
+// --- CTaskComplexKillPedOnFootArmed::MakeAbortable Hook ---
+// RE: subtask at +0x10 null → no cbz 56e9308; tailcall vtable+0x38 56e9324 (tombstone_47).
+void* g_stub_kill_ped_on_foot_armed_make_abortable = nullptr;
+fn_KillPedOnFootArmedMakeAbortable_t g_orig_kill_ped_on_foot_armed_make_abortable = nullptr;
+
+bool proxy_kill_ped_on_foot_armed_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    sanitize_unsafe_subtask_at(self, 0x10);
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [KillPedOnFootArmed::MakeAbortable] null subtask — return true");
+        return true;
+    }
+    if (make_abortable_subtask_tailcall_unsafe(self, 0x38)) return true;
+    return SHADOWHOOK_CALL_PREV(proxy_kill_ped_on_foot_armed_make_abortable, self, ped, priority, event);
 }
 
 // --- CTaskSimpleAnim::MakeAbortable Hook ---
@@ -1301,6 +1342,40 @@ inline void sanitize_intel_tasks_if_present(void* ped, const char* tag) {
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (!intel || intelligence_zero_filled(intel)) return;
     sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, tag);
+}
+
+inline bool ped_intel_primary_tasks_unsafe_for_event(void* ped, size_t vtable_fn_offset = 0x18) {
+    if (!ped || !is_ped_pointer_valid_safe(ped)) return true;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return true;
+    void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+    sanitize_task_manager_slots(task_mgr, "ped_intel_primary_tasks", vtable_fn_offset);
+    sanitize_task_manager_primary_chains(task_mgr, "ped_intel_primary_tasks", vtable_fn_offset);
+    for (int i = 0; i < 5; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_chain_walk_unsafe(task, vtable_fn_offset)) return true;
+        if (task_slot_unsafe_for_vtable_call(task, 0x28)) return true;
+    }
+    return false;
+}
+
+// --- CEventPotentialWalkIntoVehicle::AffectsPed Hook ---
+// RE: ped intel task chain vtable+0x18/0x28; null task deref 54ca9e8 (tombstone_48).
+void* g_stub_event_walk_into_vehicle_affects_ped = nullptr;
+fn_EventPotentialWalkIntoVehicleAffectsPed_t g_orig_event_walk_into_vehicle_affects_ped = nullptr;
+
+bool proxy_event_walk_into_vehicle_affects_ped(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return false;
+    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x18)) {
+        LOGW("⚠️ [WalkIntoVehicle::AffectsPed] unsafe ped %p task chain — return false", ped);
+        return false;
+    }
+    return SHADOWHOOK_CALL_PREV(proxy_event_walk_into_vehicle_affects_ped, self, ped);
 }
 
 // RE: ComputePedCollision — no cbz on event* before 54d6fd0.

@@ -45,6 +45,8 @@ typedef bool (*fn_GoToPointMakeAbortable_t)(void* self, void* ped, int priority,
 typedef bool (*fn_AchieveHeadingMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef bool (*fn_FollowPointRouteMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef bool (*fn_KillPedOnFootMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_KillPedOnFootArmedMakeAbortable_t)(void* self, void* ped, int priority, void* event);
+typedef bool (*fn_EventPotentialWalkIntoVehicleAffectsPed_t)(void* self, void* ped);
 typedef bool (*fn_KillCriminalMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef bool (*fn_FallAndGetUpMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void* (*fn_PlayHandSignalControlSubTask_t)(void* self, void* ped);
@@ -104,6 +106,8 @@ extern fn_GoToPointMakeAbortable_t g_orig_goto_point_make_abortable;
 extern fn_AchieveHeadingMakeAbortable_t g_orig_achieve_heading_make_abortable;
 extern fn_FollowPointRouteMakeAbortable_t g_orig_follow_point_route_make_abortable;
 extern fn_KillPedOnFootMakeAbortable_t g_orig_kill_ped_on_foot_make_abortable;
+extern fn_KillPedOnFootArmedMakeAbortable_t g_orig_kill_ped_on_foot_armed_make_abortable;
+extern fn_EventPotentialWalkIntoVehicleAffectsPed_t g_orig_event_walk_into_vehicle_affects_ped;
 extern fn_KillCriminalMakeAbortable_t g_orig_kill_criminal_make_abortable;
 extern fn_FallAndGetUpMakeAbortable_t g_orig_fall_and_get_up_make_abortable;
 extern fn_PlayHandSignalControlSubTask_t g_orig_play_hand_signal_control_sub_task;
@@ -160,6 +164,8 @@ bool proxy_goto_point_make_abortable(void* self, void* ped, int priority, void* 
 bool proxy_achieve_heading_make_abortable(void* self, void* ped, int priority, void* event);
 bool proxy_follow_point_route_make_abortable(void* self, void* ped, int priority, void* event);
 bool proxy_kill_ped_on_foot_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_kill_ped_on_foot_armed_make_abortable(void* self, void* ped, int priority, void* event);
+bool proxy_event_walk_into_vehicle_affects_ped(void* self, void* ped);
 bool proxy_kill_criminal_make_abortable(void* self, void* ped, int priority, void* event);
 bool proxy_fall_and_get_up_make_abortable(void* self, void* ped, int priority, void* event);
 void* proxy_play_hand_signal_control_sub_task(void* self, void* ped);
