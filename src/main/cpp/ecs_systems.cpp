@@ -45,6 +45,7 @@ void init_ecs_systems() {
 
     // 1. CleanupSystem: 监听实体销毁事件
     ecs::EventDispatcher::get().subscribe<ecs::EntityCleanupEvent>("EntityCleanupEvent", [](const ecs::EntityCleanupEvent& ev) {
+        if (is_mod_dispatch_paused()) return;
         if (ev.entity) {
             purge_dispatch_state_for_ped(static_cast<CPed*>(ev.entity));
             ecs::EntityManager::get().destroy_entity(ev.entity);

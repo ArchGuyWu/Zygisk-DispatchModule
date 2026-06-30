@@ -1008,6 +1008,9 @@ fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
 
 void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_mod_dispatch_paused()) {
+        return;
+    }
     SHADOWHOOK_CALL_PREV(proxy_add_police_occupants, vehicle, bSirenOrAlarm);
     // bind_vehicle_occupants respects in-progress LeaveCar — avoids exit/enter flicker.
     bind_vehicle_occupants(vehicle);
@@ -1831,6 +1834,7 @@ fn_KillCriminalCreateFirstSubTask_t g_orig_kill_criminal_create_first_sub_task =
 
 void* proxy_kill_criminal_create_first_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_kill_criminal_create_first_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     clear_task_ped_slot_if_stale(self, 0x18, "KillCriminal::CreateFirstSubTask");
@@ -1854,6 +1858,11 @@ fn_EventPotentialWalkIntoVehicleAffectsPed_t g_orig_event_walk_into_vehicle_affe
 
 bool proxy_event_walk_into_vehicle_affects_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return false;
+        if (!ped || !is_pointer_readable(ped)) return false;
+        return SHADOWHOOK_CALL_PREV(proxy_event_walk_into_vehicle_affects_ped, self, ped);
+    }
     if (!self || !is_pointer_readable(self)) return false;
     if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return false;
     if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x18)) {
@@ -1997,6 +2006,9 @@ fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with_ped_re
 void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
+    if (is_stability_sanitize_paused()) {
+        return SHADOWHOOK_CALL_PREV(proxy_compute_ped_collision_with_ped_response, self, event, task, task2);
+    }
     if (compute_collision_event_unreadable(event)) return nullptr;
     clear_ped_slot_if_stale(event, 0x18, "ComputePedCollision");
     void** ped_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(event) + 0x18);

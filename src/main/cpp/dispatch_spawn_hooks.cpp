@@ -56,7 +56,11 @@ fn_AddPed_t g_orig_add_ped = nullptr;
 CPed* proxy_add_ped(int pedType, unsigned int modelIndex, const CVector& pos, bool bUnknown) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (!is_mod_dispatch_paused() && pedType == 6 && g_in_wanted_update.load()) { // PED_TYPE_COP = 6
+    // Wanted-system cop spawns during load/menu hydration race task teardown (tombstone_23/24).
+    if (pedType == 6 && g_in_wanted_update.load()) { // PED_TYPE_COP = 6
+        if (is_mod_dispatch_paused()) {
+            return nullptr;
+        }
         LOGI("🚫 [trueDispatch] Intercepted and blocked wanted-system forced cop spawn! Model: %u, Pos: (%.1f, %.1f, %.1f)", modelIndex, pos.x, pos.y, pos.z);
         return nullptr;
     }

@@ -170,8 +170,9 @@ void proxy_register_kill(const CPed* dead_ped,
         if (!is_mod_dispatch_paused()) {
             CVector death_pos = get_entity_pos(const_cast<CPed*>(dead_ped));
             dispatch_emergency_services::on_civilian_casualty_near_crime(dead_ped, death_pos);
+            ecs::EventDispatcher::get().dispatch(
+                ecs::EntityCleanupEvent(const_cast<CPed*>(dead_ped), true));
         }
-        ecs::EventDispatcher::get().dispatch(ecs::EntityCleanupEvent(const_cast<CPed*>(dead_ped), true));
     }
 
     SHADOWHOOK_CALL_PREV(proxy_register_kill, dead_ped, killer, weapon, unk);
