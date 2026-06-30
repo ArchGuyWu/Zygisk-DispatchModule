@@ -180,6 +180,7 @@ extern void* g_stub_u_strlen;
 extern void* g_stub_sequence_flush;
 extern void* g_stub_finish_anim_evasive_step_cb;
 extern void* g_stub_be_in_group_control_sub_task;
+extern void* g_stub_be_in_group_make_abortable;
 extern void* g_stub_ik_chain_update;
 extern void* g_stub_process_follow_ped_sa;
 extern void* g_stub_leave_car_make_abortable;

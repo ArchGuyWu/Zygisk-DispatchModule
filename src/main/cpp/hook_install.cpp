@@ -531,6 +531,15 @@ void hook_thread_func() {
     if (g_stub_be_in_group_control_sub_task) LOGI("✅ Hooked CTaskComplexBeInGroup::ControlSubTask");
     else LOGE("❌ Failed to hook CTaskComplexBeInGroup::ControlSubTask: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_be_in_group_make_abortable = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN21CTaskComplexBeInGroup13MakeAbortableEP4CPediPK6CEvent",
+        reinterpret_cast<void*>(proxy_be_in_group_make_abortable),
+        reinterpret_cast<void**>(&g_orig_be_in_group_make_abortable));
+    if (g_stub_be_in_group_make_abortable) LOGI("✅ Hooked CTaskComplexBeInGroup::MakeAbortable");
+    else LOGE("❌ Failed to hook CTaskComplexBeInGroup::MakeAbortable: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CPedGroupIntelligence::GetTaskMain (BeInGroup 在组任务虚表为 null 时解引用 vtable+0x28 闪退)
     g_stub_get_task_main = shadowhook_hook_sym_name(
         TARGET_LIB,

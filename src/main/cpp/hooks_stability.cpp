@@ -102,6 +102,50 @@ inline void sanitize_event_script_command_task_slot(void* self, const char* log_
     }
 }
 
+using TaskVtableWalkFn_t = void* (*)(void*);
+
+inline void* call_task_vtable_fn_at(void* task, size_t vtable_offset) {
+    if (!task || task_slot_unsafe_for_vtable_call(task, vtable_offset)) return nullptr;
+    void** vtable = reinterpret_cast<void**>(task);
+    auto fn = reinterpret_cast<TaskVtableWalkFn_t>(
+        *reinterpret_cast<void**>(reinterpret_cast<char*>(*vtable) + vtable_offset));
+    return fn(task);
+}
+
+inline bool task_chain_walk_unsafe(void* task, size_t vtable_offset, int max_depth = 32) {
+    for (int depth = 0; task && depth < max_depth; ++depth) {
+        if (task_slot_unsafe_for_vtable_call(task, vtable_offset)) return true;
+        task = call_task_vtable_fn_at(task, vtable_offset);
+    }
+    return false;
+}
+
+inline void* simplest_in_task_chain(void* task, size_t vtable_offset = 0x18) {
+    if (!task || task_slot_unsafe_for_vtable_call(task, vtable_offset)) return nullptr;
+    void* current = task;
+    for (int depth = 0; depth < 32; ++depth) {
+        void* sub = call_task_vtable_fn_at(current, vtable_offset);
+        if (!sub) return current;
+        if (task_slot_unsafe_for_vtable_call(sub, vtable_offset)) return current;
+        current = sub;
+    }
+    return current;
+}
+
+inline void sanitize_task_manager_primary_chains(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18) {
+    if (!task_mgr || !is_pointer_readable(task_mgr)) return;
+    for (int i = 0; i < 5; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_chain_walk_unsafe(task, vtable_fn_offset)) {
+            LOGW("⚠️ [%s] Clearing primary chain at slot %d (unsafe subtask node)", log_tag, i);
+            *task_slot = nullptr;
+        }
+    }
+}
+
 // --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---
 
 void* g_stub_set_ped_pos = nullptr;
@@ -558,6 +602,7 @@ fn_AddPoliceOccupants_t g_orig_add_police_occupants = nullptr;
 void proxy_add_police_occupants(CVehicle* vehicle, bool bSirenOrAlarm) {
     SHADOWHOOK_STACK_SCOPE();
     SHADOWHOOK_CALL_PREV(proxy_add_police_occupants, vehicle, bSirenOrAlarm);
+    // bind_vehicle_occupants respects in-progress LeaveCar — avoids exit/enter flicker.
     bind_vehicle_occupants(vehicle);
 }
 
@@ -874,11 +919,17 @@ void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
-    if (task_manager_has_unsafe_slot(self, 5, 0x18)) {
-        LOGW("⚠️ [GetSimplestActiveTask] stale primary slot after sanitize — return nullptr");
-        return nullptr;
+    sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
+    // RE: walks subtask chain via vtable+0x18 loop 57aaabc — unsafe child node crashes 57aaac4 (tombstone_44).
+    for (int i = 0; i < 5; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        void* simplest = simplest_in_task_chain(task, 0x18);
+        if (simplest) return simplest;
     }
-    return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
+    return nullptr;
 }
 
 // --- CTaskManager::GetSimplestTaskEi Hook ---
@@ -891,15 +942,14 @@ void* proxy_get_simplest_task_ei(void* self, int index) {
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (index < 0 || index > 10) return nullptr;
     sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
-    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
-    if (is_pointer_readable(task_slot)) {
-        void* task = *task_slot;
-        if (task && task_slot_unsafe_for_vtable_call(task, 0x18)) {
-            LOGW("⚠️ [GetSimplestTaskEi] unsafe task %p at slot %d — return nullptr", task, index);
-            return nullptr;
-        }
+    if (index < 5) {
+        sanitize_task_manager_primary_chains(self, "GetSimplestTaskEi", 0x18);
     }
-    return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
+    void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + index * 8);
+    if (!is_pointer_readable(task_slot)) return nullptr;
+    void* task = *task_slot;
+    if (!task) return nullptr;
+    return simplest_in_task_chain(task, 0x18);
 }
 
 // --- CEventScriptCommand destructor hooks (D0/D1) ---
@@ -1276,6 +1326,31 @@ bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority,
     return SHADOWHOOK_CALL_PREV(proxy_simple_arrest_ped_make_abortable, self, ped, priority, event);
 }
 
+// --- CTaskComplexBeInGroup::MakeAbortable Hook ---
+// RE: subtask at +0x10 null → no cbz 5708650 (tombstone_45, fault 0x0).
+void* g_stub_be_in_group_make_abortable = nullptr;
+fn_BeInGroupMakeAbortable_t g_orig_be_in_group_make_abortable = nullptr;
+
+bool proxy_be_in_group_make_abortable(void* self, void* ped, int priority, void* event) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return false;
+    if (ped && !is_pointer_readable(ped)) return false;
+    if (event && make_abortable_event_unsafe(event)) return false;
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    sanitize_unsafe_subtask_at(self, 0x10);
+    sanitize_unsafe_task_slot_at(self, 0x28, "BeInGroup secondary");
+    sanitize_unsafe_task_slot_at(self, 0x38, "BeInGroup tertiary");
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [BeInGroup::MakeAbortable] null subtask (no cbz) — return false");
+        return false;
+    }
+    if (task_subtask_vtable_fn_unsafe(self, 0x10, 0x38)) return false;
+    return SHADOWHOOK_CALL_PREV(proxy_be_in_group_make_abortable, self, ped, priority, event);
+}
+
 // --- CTaskComplexArrestPed::MakeAbortable Hook ---
 // RE: ctor stores ped at task+0x20 (57bf210); subtask at +0x10 tailcalled (57bf3b8).
 void* g_stub_complex_arrest_ped_make_abortable = nullptr;
@@ -1316,9 +1391,16 @@ void proxy_process_after_proc_col(void* self) {
     if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
     void* task_mgr = reinterpret_cast<char*>(self) + 8;
     sanitize_task_manager_slots(task_mgr, "ProcessAfterProcCol", 0x18);
-    if (task_manager_has_unsafe_slot(task_mgr, 5, 0x18)) {
-        LOGW("⚠️ [ProcessAfterProcCol] stale primary slot after sanitize — skip original");
-        return;
+    sanitize_task_manager_primary_chains(task_mgr, "ProcessAfterProcCol", 0x18);
+    // RE: primary + secondary loops walk vtable+0x18 chain 55dec1c/55dec70 (tombstone_46).
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_chain_walk_unsafe(task, 0x18)) {
+            LOGW("⚠️ [ProcessAfterProcCol] unsafe chain at slot %d — skip original", i);
+            return;
+        }
     }
     SHADOWHOOK_CALL_PREV(proxy_process_after_proc_col, self);
 }

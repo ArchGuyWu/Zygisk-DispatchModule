@@ -145,6 +145,29 @@ bool is_cop_currently_exiting(CPed* cop) {
     return false;
 }
 
+static bool vehicle_has_cop_exiting(void* vehicle) {
+    if (!vehicle || !g_ms_pPedPool || !g_GetPoolPed || !g_GetPedType || !g_IsDriver || !g_IsPassenger) {
+        return false;
+    }
+    void* pool = *reinterpret_cast<void**>(g_ms_pPedPool);
+    if (!pool) return false;
+
+    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(pool) + 8);
+    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(pool) + 16);
+    if (!byte_map) return false;
+
+    for (int i = 0; i < size; i++) {
+        signed char flag = byte_map[i];
+        if (flag < 0) continue;
+        int handle = (i << 8) | flag;
+        CPed* ped = g_GetPoolPed(handle);
+        if (!ped || g_GetPedType(ped) != PED_TYPE_COP) continue;
+        if (!g_IsDriver(vehicle, ped) && !g_IsPassenger(vehicle, ped)) continue;
+        if (is_cop_currently_exiting(ped)) return true;
+    }
+    return false;
+}
+
 bool should_block_cop_reenter_vehicle(CPed* cop) {
     if (!cop || !is_ped_pointer_valid_safe(cop)) return true;
     if (is_cop_currently_exiting(cop)) return true;
@@ -479,10 +502,14 @@ void command_cop_vehicle_to_scene(void* vehicle, const CVector& target_loc) {
     if (!vehicle) return;
 
     if (!is_vehicle_occupied_by_driver(vehicle)) {
-        LOGW("⚠️ Dispatched vehicle %p has no driver yet. Re-running AddPoliceCarOccupants", vehicle);
-        if (g_AddPoliceOccupants) {
-            g_AddPoliceOccupants(reinterpret_cast<CVehicle*>(vehicle), true);
-            bind_vehicle_occupants(vehicle);
+        if (vehicle_has_cop_exiting(vehicle)) {
+            LOGW("⚠️ Vehicle %p has cops exiting — defer AddPoliceCarOccupants refill", vehicle);
+        } else {
+            LOGW("⚠️ Dispatched vehicle %p has no driver yet. Re-running AddPoliceCarOccupants", vehicle);
+            if (g_AddPoliceOccupants) {
+                g_AddPoliceOccupants(reinterpret_cast<CVehicle*>(vehicle), true);
+                bind_vehicle_occupants(vehicle);
+            }
         }
     }
 
@@ -660,8 +687,13 @@ void bind_vehicle_occupants(void* vehicle) {
                             cop_comp = ecs::EntityManager::get().add_component<ecs::CopComponent>(ped, ped);
                         }
                         if (cop_comp) {
-                            cop_comp->is_in_vehicle = true;
-                            cop_comp->has_exited_vehicle = false;
+                            bool exiting = is_cop_currently_exiting(ped);
+                            cop_comp->is_in_vehicle = !exiting;
+                            // Do not clear exit flag while LeaveCar is in progress — prevents
+                            // foot-attack/siren logic from fighting the native exit animation.
+                            if (!exiting) {
+                                cop_comp->has_exited_vehicle = false;
+                            }
                         }
 
                         if (is_driver) {
@@ -754,11 +786,10 @@ void setup_dispatched_cops(void* vehicle, CPed* criminal) {
     bind_vehicle_occupants(vehicle);
     
     // 2. 分配警员与司乘关系（检测到没司机时自动为其分配普通警员乘员，确保绝无空车幽灵车）
-    if (!is_vehicle_occupied_by_driver(vehicle)) {
+    if (!is_vehicle_occupied_by_driver(vehicle) && !vehicle_has_cop_exiting(vehicle)) {
         if (g_AddPoliceOccupants) {
             LOGI("setup_dispatched_cops: Adding occupants to vehicle %p natively", vehicle);
             g_AddPoliceOccupants(reinterpret_cast<CVehicle*>(vehicle), true);
-            // 重新刷新乘员绑定
             bind_vehicle_occupants(vehicle);
         }
     }
