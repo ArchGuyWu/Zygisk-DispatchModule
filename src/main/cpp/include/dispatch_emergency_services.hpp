@@ -19,6 +19,12 @@ struct EmergencyServiceRecord {
     int64_t last_reroute_ms = 0;
 };
 
+struct EmergencyVehicleTickTarget {
+    void* vehicle = nullptr;
+    unsigned int model = 0;
+    CVector target_anchor{};
+};
+
 CVector clamp_spawn_to_streaming_range(CVector incident_anchor, CVector proposed_spawn);
 
 void on_civilian_casualty_near_crime(const CPed* dead_ped, CVector death_pos);
@@ -49,6 +55,8 @@ void refresh_enroute_emergency_vehicles(
     bool do_reroute_refresh);
 
 void unregister_emergency_vehicle(void* vehicle);
+bool is_registered_emergency_vehicle(void* vehicle);
+void collect_active_emergency_vehicles_for_tick(std::vector<EmergencyVehicleTickTarget>& out);
 void clear_case_emergency_records(uint64_t case_id);
 void clear_all_emergency_records();
 

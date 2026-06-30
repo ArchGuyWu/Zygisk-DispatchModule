@@ -33,6 +33,8 @@
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
 #include "dispatch_cop_attack_vehicle_internal.hpp"
+#include "dispatch_timing.hpp"
+#include "dispatch_vehicle_escaper.hpp"
 
 
 void cop_attack_vehicle_stuck_monitor(
@@ -141,8 +143,8 @@ void cop_attack_vehicle_stuck_monitor(
                                                 float dz_vc = target_crime_pos.z - session.current_pos.z;
                                                 float dist_vc = sqrtf(dx_vc * dx_vc + dy_vc * dy_vc + dz_vc * dz_vc);
 
-                                                if (dist_vc < 60.0f) {
-                                                    // A. Close range: stop fully then exit on foot
+                                                if (dispatch_vehicle_escaper::anti_spin_should_bulk_exit(dist_vc, veh)) {
+                                                    // A. Close range (outside staging): stop fully then exit on foot
                                                     if (!ctx.vector_contains(ctx.vehicles_emptied_snapshot, veh)) {
                                                         vehicle_stop_for_exit(veh);
                                                         if (g_TellOccupantsToLeaveCar) {

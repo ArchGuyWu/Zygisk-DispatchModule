@@ -8,6 +8,7 @@
 #include "dispatch_tick_internal.hpp"
 #include "dispatch_threat.hpp"
 #include "dispatch_timing.hpp"
+#include "dispatch_vehicle_escaper.hpp"
 #include "game_config.hpp"
 #include "mod_shared.hpp"
 
@@ -693,7 +694,29 @@ void refresh_enroute_emergency_vehicles(
         }
 
         record.last_reroute_ms = cur_time;
+        dispatch_vehicle_escaper::clear_vehicle_stuck_trackers(record.vehicle);
         command_emergency_vehicle_to_scene(record.vehicle, record.model, target);
+    }
+}
+
+bool is_registered_emergency_vehicle(void* vehicle) {
+    if (!vehicle) return false;
+    std::lock_guard<std::mutex> lock(g_spawned_emergency_services_mutex);
+    for (const auto& record : g_spawned_emergency_services) {
+        if (record.vehicle == vehicle) return true;
+    }
+    return false;
+}
+
+void collect_active_emergency_vehicles_for_tick(std::vector<EmergencyVehicleTickTarget>& out) {
+    out.clear();
+    std::lock_guard<std::mutex> lock(g_spawned_emergency_services_mutex);
+    prune_invalid_records_locked();
+    out.reserve(g_spawned_emergency_services.size());
+    for (const auto& record : g_spawned_emergency_services) {
+        if (!record.vehicle || !is_vehicle_pointer_valid(record.vehicle)) continue;
+        if (is_vehicle_emptied(record.vehicle)) continue;
+        out.push_back({record.vehicle, record.model, record.target_anchor});
     }
 }
 

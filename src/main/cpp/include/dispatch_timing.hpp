@@ -96,6 +96,24 @@ constexpr float VEHICLE_BIKE_STAGING_OFFSET_M = 20.0f;
 constexpr int64_t VEHICLE_STUCK_EXIT_MS = 8000;
 constexpr int64_t VEHICLE_MAX_APPROACH_MS = 15000;
 
+// --- 载具脱困 / 反画圆 / 临时封路 ---
+constexpr int64_t VEHICLE_STUCK_STAGE1_MS = 3500;
+constexpr int64_t VEHICLE_STUCK_STAGE2_MS = 7000;
+constexpr int64_t VEHICLE_STAGE2_LONG_STUCK_MS = 12000;
+constexpr int64_t VEHICLE_STUCK_INTERVENTION_COOLDOWN_MS = 6000;
+constexpr float VEHICLE_STAGE2_MIN_DIST_M = 40.0f;
+constexpr float ANTI_SPIN_CLOSE_RANGE_M = 60.0f;
+constexpr float TEMP_CLOSURE_RADIUS_M = 20.0f;
+constexpr float TEMP_CLOSURE_DEDUP_M = 15.0f;
+constexpr int64_t TEMP_CLOSURE_TTL_MS = 15000;
+constexpr float TRAFFIC_OBSTACLE_CLEAR_RADIUS_M = 15.0f;
+constexpr float TRAFFIC_SIDELINE_SHIFT_M = 6.0f;
+
+// --- 平民避让场 ---
+constexpr int64_t CIVILIAN_PANIC_COOLDOWN_MS = 2500;
+constexpr float CIVILIAN_AVOIDANCE_WEAKEN_SCENE_M = 45.0f;
+constexpr float CIVILIAN_AVOIDANCE_WEAKEN_FACTOR = 0.35f;
+
 // --- 步行转场 / 司乘 / 下车接战 ---
 constexpr float NEARBY_FOOT_PREFER_DIST_M = 55.0f;
 constexpr float ACTIVE_CRIME_FOOT_DUTY_RADIUS_M = 80.0f;

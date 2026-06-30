@@ -31,6 +31,9 @@
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
+#include "dispatch_emergency_services.hpp"
+#include "dispatch_timing.hpp"
+#include "dispatch_vehicle_escaper.hpp"
 
 
 // =====================================================================
@@ -40,15 +43,6 @@ std::map<void*, StuckTracker> g_emergency_stuck_vehicles;
 std::mutex g_emergency_stuck_vehicles_mutex;
 
 void emergency_vehicles_tick() {
-    if (!g_ms_pVehiclePool || !g_GetPoolVehicle) return;
-
-    void* v_pool = *reinterpret_cast<void**>(g_ms_pVehiclePool);
-    if (!v_pool) return;
-
-    char* byte_map = *reinterpret_cast<char**>(reinterpret_cast<char*>(v_pool) + 8);
-    int size = *reinterpret_cast<int*>(reinterpret_cast<char*>(v_pool) + 16);
-    if (!byte_map) return;
-
     int64_t now_time = now_ms();
 
     {
@@ -62,14 +56,16 @@ void emergency_vehicles_tick() {
         }
     }
 
-    for (int i = 0; i < size; i++) {
-        signed char flag = byte_map[i];
-        if (flag >= 0) {
-            int handle = (i << 8) | flag;
-            void* veh = g_GetPoolVehicle(handle);
-            if (veh && is_vehicle_pointer_valid(veh)) {
-                unsigned int model = get_entity_model_index(veh);
-                if (model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK) {
+    dispatch_vehicle_escaper::prune_sideline_traffic_vehicles();
+
+    std::vector<dispatch_emergency_services::EmergencyVehicleTickTarget> tick_targets;
+    dispatch_emergency_services::collect_active_emergency_vehicles_for_tick(tick_targets);
+    if (tick_targets.empty()) return;
+
+    for (const auto& tick_target : tick_targets) {
+        void* veh = tick_target.vehicle;
+        unsigned int model = tick_target.model;
+        CVector scene_target = tick_target.target_anchor;
 
                             CVector current_pos = get_entity_pos(veh);
                             
@@ -364,11 +360,18 @@ void emergency_vehicles_tick() {
                             bool trigger_stage2 = false;
 
                             bool is_seen = is_cop_visible_to_player(veh, current_pos.x, current_pos.y, current_pos.z);
+                            bool warp_visible = dispatch_vehicle_escaper::is_warp_visible_to_player(current_pos);
+                            float dx_scene = scene_target.x - current_pos.x;
+                            float dy_scene = scene_target.y - current_pos.y;
+                            float dz_scene = scene_target.z - current_pos.z;
+                            float dist_scene = sqrtf(dx_scene * dx_scene + dy_scene * dy_scene + dz_scene * dz_scene);
 
-                            if (stuck_duration >= 7000 && !is_seen) {
+                            if (dispatch_vehicle_escaper::should_trigger_stage2_warp(
+                                    stuck_duration, warp_visible, dist_scene)) {
                                 trigger_stage2 = true;
-                            } else if (stuck_duration > 3500) {
-                                if (now_time - tracker.last_intervention_time > 6000) {
+                            } else if (stuck_duration > dispatch_timing::VEHICLE_STUCK_STAGE1_MS) {
+                                if (now_time - tracker.last_intervention_time >
+                                    dispatch_timing::VEHICLE_STUCK_INTERVENTION_COOLDOWN_MS) {
                                     trigger_stage1 = true;
                                 }
                             }
@@ -389,6 +392,8 @@ void emergency_vehicles_tick() {
                                     current_pos.z + dir_z * 20.0f + 0.80f // 加上安全防陷落高度
                                 };
                                 set_entity_pos(veh, warp_pos);
+                                dispatch_emergency_services::command_emergency_vehicle_to_scene(
+                                    veh, model, scene_target);
                                 LOGI("🚒🚑 [Emergency Escaper - Stage 2 Warp] Unseen warped vehicle %p forward 20m", veh);
                             }
                             // STAGE 1: 3.5秒以上卡死：温柔物理推开 / 看不见时中等跃迁 12m
@@ -401,16 +406,15 @@ void emergency_vehicles_tick() {
 
                                 LOGI("🚒🚑 [Emergency Escaper - Stage 1 Nudge] Initiated rescue for %p...", veh);
 
-                                // 1. 临时关闭路段 20m，强迫 AI 避开当前卡住的死路规划新路线
-                                if (g_ThePaths && g_SwitchRoadsOffInArea) {
-                                    g_SwitchRoadsOffInArea(
-                                        g_ThePaths,
-                                        current_pos.x - 20.0f, current_pos.y - 20.0f, current_pos.z - 8.0f,
-                                        current_pos.x + 20.0f, current_pos.y + 20.0f, current_pos.z + 8.0f,
-                                        true, true, false
-                                    );
-                                    std::lock_guard<std::mutex> temp_lock(g_temp_closures_mutex);
-                                    g_temp_road_closures.push_back({current_pos, 20.0f, now_time + 15000});
+                                // 1. 临时关闭路段（去重），强迫 AI 避开当前卡住的死路规划新路线
+                                {
+                                    std::vector<TemporaryRoadClosure> pending;
+                                    dispatch_vehicle_escaper::queue_deduped_temp_closure(current_pos, pending);
+                                    if (!pending.empty()) {
+                                        std::lock_guard<std::mutex> temp_lock(g_temp_closures_mutex);
+                                        g_temp_road_closures.insert(
+                                            g_temp_road_closures.end(), pending.begin(), pending.end());
+                                    }
                                 }
 
                                 // 2. 地下掩埋清除 15m 内阻碍的非紧急平民车辆
@@ -434,11 +438,10 @@ void emergency_vehicles_tick() {
                                                             float ov_dz = other_pos.z - current_pos.z;
                                                             float ov_dist = sqrtf(ov_dx * ov_dx + ov_dy * ov_dy + ov_dz * ov_dz);
 
-                                                            if (ov_dist < 15.0f) {
-                                                                if (!is_pos_visible_to_player_camera(other_pos)) {
-                                                                    CVector underground = {other_pos.x, other_pos.y, other_pos.z - 50.0f};
-                                                                    set_entity_pos(other_veh, underground);
-                                                                    LOGI("   +- Trapped road blockage %p buried underground", other_veh);
+                                                            if (ov_dist < dispatch_timing::TRAFFIC_OBSTACLE_CLEAR_RADIUS_M) {
+                                                                if (!dispatch_vehicle_escaper::is_warp_visible_to_player(other_pos)) {
+                                                                    dispatch_vehicle_escaper::sideline_traffic_obstacle(other_veh, current_pos);
+                                                                    LOGI("   +- Trapped road blockage %p sideline shifted", other_veh);
                                                                 }
                                                             }
                                                         }
@@ -464,8 +467,5 @@ void emergency_vehicles_tick() {
                                 set_entity_pos(veh, nudged_pos);
                                 LOGI("   +- Applied Stage 1 Nudge (seen=%d)", is_seen);
                             }
-                }
-            }
-        }
     }
 }

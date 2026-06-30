@@ -33,6 +33,8 @@
 #include "ecs_engine.hpp"
 #include "dispatch_cop_attack_internal.hpp"
 #include "dispatch_cop_attack_vehicle_internal.hpp"
+#include "dispatch_timing.hpp"
+#include "dispatch_vehicle_escaper.hpp"
 
 
 void cop_attack_vehicle_unstuck_intervene(
@@ -72,11 +74,14 @@ void cop_attack_vehicle_unstuck_intervene(
                                     bool trigger_stage2 = false;
 
                                     bool cop_visible = is_cop_visible_to_player(veh, session.current_pos.x, session.current_pos.y, session.current_pos.z);
+                                    bool warp_visible = dispatch_vehicle_escaper::is_warp_visible_to_player(session.current_pos);
 
-                                    if (stuck_duration >= 7000 && !cop_visible && dist_v > 40.0f) {
+                                    if (dispatch_vehicle_escaper::should_trigger_stage2_warp(
+                                            stuck_duration, warp_visible, dist_v)) {
                                         trigger_stage2 = true;
-                                    } else if (stuck_duration > 3500) {
-                                        if (session.now_time - session.tracker.last_intervention_time > 6000) {
+                                    } else if (stuck_duration > dispatch_timing::VEHICLE_STUCK_STAGE1_MS) {
+                                        if (session.now_time - session.tracker.last_intervention_time >
+                                            dispatch_timing::VEHICLE_STUCK_INTERVENTION_COOLDOWN_MS) {
                                             trigger_stage1 = true;
                                         }
                                     }
@@ -108,7 +113,7 @@ void cop_attack_vehicle_unstuck_intervene(
                                             session.current_pos.z + dz_v * warp_factor + height_offset
                                         };
                                         
-                                        if (!is_bike || !cop_visible) {
+                                        if (!is_bike || !warp_visible) {
                                             set_entity_pos(veh, warp_pos);
                                         }
                                         if (is_bike) {
@@ -117,8 +122,8 @@ void cop_attack_vehicle_unstuck_intervene(
                                             zero_entity_velocity(veh);
                                         }
                                         command_vehicle_ai(veh, target_crime_pos, dist_v);
-                                        LOGI("[dispatchCenter - Stage 2 Warp] Teleported vehicle %p forward 25m to break deadlock. (visible=%d, stuck_duration=%lld ms)", 
-                                             veh, cop_visible, (long long)stuck_duration);
+                                        LOGI("[dispatchCenter - Stage 2 Warp] Teleported vehicle %p forward 25m to break deadlock. (warp_visible=%d, stuck_duration=%lld ms)", 
+                                             veh, warp_visible, (long long)stuck_duration);
                                     }
                                     else if (trigger_stage1) {
                                         session.tracker.last_intervention_time = session.now_time;
@@ -137,16 +142,9 @@ void cop_attack_vehicle_unstuck_intervene(
 
                                         LOGI("[dispatchCenter - Stage 1 Nudge] Stuck rescue (Stage 1) initiated for %p (stuck_duration=%lld ms)...", veh, (long long)stuck_duration);
 
-                                        // 1. Temporarily disable stuck route section within 20m
-                                        if (g_ThePaths && g_SwitchRoadsOffInArea) {
-                                            g_SwitchRoadsOffInArea(
-                                                g_ThePaths,
-                                                session.current_pos.x - 20.0f, session.current_pos.y - 20.0f, session.current_pos.z - 8.0f,
-                                                session.current_pos.x + 20.0f, session.current_pos.y + 20.0f, session.current_pos.z + 8.0f,
-                                                true, true, false
-                                            );
-                                            ctx.pending_temp_closures.push_back({session.current_pos, 20.0f, session.now_time + 15000});
-                                        }
+                                        // 1. Temporarily disable stuck route section (deduped)
+                                        dispatch_vehicle_escaper::queue_deduped_temp_closure(
+                                            session.current_pos, ctx.pending_temp_closures);
 
                                         // 2. Clear traffic obstacles within 15m
                                         if (g_ms_pVehiclePool && g_GetPoolVehicle) {
@@ -171,12 +169,10 @@ void cop_attack_vehicle_unstuck_intervene(
                                                                     float ov_dz = other_pos.z - session.current_pos.z;
                                                                     float ov_dist = sqrtf(ov_dx * ov_dx + ov_dy * ov_dy + ov_dz * ov_dz);
 
-                                                                    if (ov_dist < 15.0f) {
-                                                                        bool is_visible = is_pos_visible_to_player_camera(other_pos);
-                                                                        if (!is_visible) {
-                                                                            CVector far_away = {other_pos.x, other_pos.y, other_pos.z - 50.0f};
-                                                                            set_entity_pos(other_veh, far_away);
-                                                                            LOGI("   +- Traffic Blockage Cleared (Unseen): Teleported vehicle %p underground", other_veh);
+                                                                    if (ov_dist < dispatch_timing::TRAFFIC_OBSTACLE_CLEAR_RADIUS_M) {
+                                                                        if (!dispatch_vehicle_escaper::is_warp_visible_to_player(other_pos)) {
+                                                                            dispatch_vehicle_escaper::sideline_traffic_obstacle(other_veh, session.current_pos);
+                                                                            LOGI("   +- Traffic Blockage Cleared (Unseen): Sideline shifted vehicle %p", other_veh);
                                                                         } else {
                                                                             LOGI("   +- Traffic Blockage Skipped (Seen): Avoid visible popping, waiting for player to look away");
                                                                         }

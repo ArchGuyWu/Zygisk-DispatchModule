@@ -32,6 +32,8 @@
 #include "mod_shared.hpp"
 #include "ecs_engine.hpp"
 #include "dispatch_tick_internal.hpp"
+#include "dispatch_timing.hpp"
+#include "dispatch_vehicle_escaper.hpp"
 
 
 // =====================================================================
@@ -138,7 +140,31 @@ void apply_civilian_avoidance_field() {
 
                 unsigned int model = get_entity_model_index(veh);
                 if (!is_emergency_vehicle_model(model) && is_vehicle_occupied_by_driver(veh)) {
+                    if (dispatch_vehicle_escaper::is_sideline_traffic_vehicle(veh)) continue;
+
+                    auto panic_it = g_civilian_panic_timers.find(veh);
+                    if (panic_it != g_civilian_panic_timers.end() && now < panic_it->second) {
+                        continue;
+                    }
+
                     CVector civ_pos = get_entity_pos(veh);
+
+                    float scene_weaken = 1.0f;
+                    {
+                        std::lock_guard<std::recursive_mutex> lock(g_crime_mutex);
+                        for (const auto& crime : g_active_crimes) {
+                            if (!crime || crime->cancelled) continue;
+                            CVector anchor = get_crime_dispatch_position(*crime);
+                            float sdx = civ_pos.x - anchor.x;
+                            float sdy = civ_pos.y - anchor.y;
+                            float sdz = civ_pos.z - anchor.z;
+                            float scene_dist = sqrtf(sdx * sdx + sdy * sdy + sdz * sdz);
+                            if (scene_dist < dispatch_timing::CIVILIAN_AVOIDANCE_WEAKEN_SCENE_M) {
+                                scene_weaken = dispatch_timing::CIVILIAN_AVOIDANCE_WEAKEN_FACTOR;
+                                break;
+                            }
+                        }
+                    }
                     
                     // 寻找最近且可能产生阻碍的应急车辆
                     for (const auto& ev : active_evs) {
@@ -160,7 +186,7 @@ void apply_civilian_avoidance_field() {
                                 float avoid_sign = (dot_right >= 0.0f) ? 1.0f : -1.0f;
                                 
                                 // 平民车越近，避让力度越强。使用渐进的平滑系数
-                                float intensity = (22.0f - dot_forward) / 22.0f; // 0.0 -> 1.0
+                                float intensity = ((22.0f - dot_forward) / 22.0f) * scene_weaken;
                                 
                                 // 每帧微小的平滑偏移（高频更新，杜绝瞬移感与悬空）
                                 float side_shove = intensity * 0.035f; 
@@ -201,6 +227,8 @@ void apply_civilian_avoidance_field() {
                                 }
 
                                 set_entity_pos(veh, new_civ_pos);
+                                g_civilian_panic_timers[veh] =
+                                    now + dispatch_timing::CIVILIAN_PANIC_COOLDOWN_MS;
                                 break; // 响应最近的一个避让源即可
                             }
                         }

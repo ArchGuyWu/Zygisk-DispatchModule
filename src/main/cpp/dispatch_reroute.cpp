@@ -6,6 +6,7 @@
 #include "ecs_engine.hpp"
 #include "dispatch_threat.hpp"
 #include "dispatch_timing.hpp"
+#include "dispatch_vehicle_escaper.hpp"
 #include "mod_shared.hpp"
 
 namespace dispatch_reroute {
@@ -151,6 +152,7 @@ void apply_enroute_vehicle_reroutes(const std::vector<std::shared_ptr<CrimeEvent
              veh, (unsigned long long)case_a->case_id, get_case_threat_tier(*case_a),
              (unsigned long long)case_b->case_id, get_case_threat_tier(*case_b), record.distance);
 
+        dispatch_vehicle_escaper::clear_vehicle_stuck_trackers(veh);
         command_cop_vehicle_to_scene(veh, get_crime_dispatch_position(*case_b));
         setup_dispatched_cops(veh, case_b->criminal);
     }

@@ -85,6 +85,7 @@ add_library(policemod SHARED
     dispatch_tick_state_cleanup.cpp
     dispatch_emergency.cpp
     dispatch_emergency_services.cpp
+    dispatch_vehicle_escaper.cpp
     dispatch_police_spawn.cpp
     dispatch_heli_support.cpp
     dispatch_hit_and_run.cpp
