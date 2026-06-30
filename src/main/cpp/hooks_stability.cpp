@@ -1420,10 +1420,16 @@ fn_u_strlen_t g_orig_u_strlen = nullptr;
 int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
     if (!s) return 0;
-    // Save-load / UI teardown: stale ICU string pointers (tombstone_48/49).
-    if (is_save_load_active()) return 0;
+    // Save-load / post-load: stale ICU string pointers (tombstone_01/48/49).
+    if (is_task_manager_query_paused() || is_save_load_active()) return 0;
     if (!is_userspace_address(s) || !is_pointer_readable(s)) {
         LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
+        return 0;
+    }
+    // Freed-but-mapped pages: strict probe before UTF-16 scan (0x....10d0 pattern).
+    if (!is_pointer_readable_strict(s) ||
+        !is_pointer_readable(reinterpret_cast<const char*>(s) + 4)) {
+        LOGW("⚠️ [u_strlen_64] stale string %p — return 0", s);
         return 0;
     }
     return SHADOWHOOK_CALL_PREV(proxy_u_strlen, s);
@@ -2161,15 +2167,12 @@ fn_WanderCopLookForCriminals_t g_orig_wander_cop_look_for_criminals = nullptr;
 
 void proxy_wander_cop_look_for_criminals(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (!self || !is_pointer_readable(self)) return;
-        SHADOWHOOK_CALL_PREV(proxy_wander_cop_look_for_criminals, self, ped);
-        return;
-    }
     if (!self || !is_pointer_readable(self)) return;
-    if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
+    if (!ped || !is_pointer_readable(ped)) return;
+    if (is_task_manager_query_paused()) return;
+    if (!is_ped_pointer_valid_safe(ped)) return;
     if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
-        LOGW("⚠️ [WanderCop::LookForCriminals] unsafe ped %p tasks — skip original", ped);
+        LOGW("⚠️ [WanderCop::LookForCriminals] unsafe ped %p tasks — skip (tombstone_01)", ped);
         return;
     }
     SHADOWHOOK_CALL_PREV(proxy_wander_cop_look_for_criminals, self, ped);
@@ -2331,25 +2334,35 @@ void proxy_process_after_proc_col(void* self) {
 void* g_stub_scan_for_events = nullptr;
 fn_ScanForEvents_t g_orig_scan_for_events = nullptr;
 
-void proxy_scan_for_events(void* self, void* ped) {
-    SHADOWHOOK_STACK_SCOPE();
-    if (!ped || !is_pointer_readable(ped)) return;
-    if (is_task_manager_query_paused()) return;
-    if (is_stability_sanitize_paused()) {
-        SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
-        return;
-    }
-    if (!is_ped_pointer_valid_safe(ped)) return;
-    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
-    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForEvents", 0x28);
-    sanitize_task_manager_primary_chains(reinterpret_cast<char*>(intel) + 8, "ScanForEvents", 0x28);
+inline bool intel_task_chains_safe_for_scan(void* intel, size_t vtable_offset) {
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return false;
     void* task_mgr = reinterpret_cast<char*>(intel) + 8;
     for (int i = 0; i < 11; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
         if (!is_pointer_readable(task_slot)) continue;
         void* task = *task_slot;
-        if (task && task_chain_walk_unsafe(task, 0x28)) return;
+        if (task && task_chain_walk_unsafe(task, vtable_offset)) return false;
+    }
+    for (size_t off : {0x20u, 0x28u}) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + off);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_chain_walk_unsafe(task, vtable_offset)) return false;
+    }
+    return true;
+}
+
+void proxy_scan_for_events(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_pointer_readable(ped)) return;
+    if (is_task_manager_query_paused()) return;
+    if (!is_ped_pointer_valid_safe(ped)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
+    sanitize_intel_for_task_lookup(intel);
+    if (!intel_task_chains_safe_for_scan(intel, 0x28)) {
+        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel chains — skip (tombstone_00)", ped);
+        return;
     }
     SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
 }
@@ -2363,15 +2376,11 @@ void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
     SHADOWHOOK_STACK_SCOPE();
     if (!ped || !is_pointer_readable(ped)) return;
     if (is_task_manager_query_paused()) return;
-    if (is_stability_sanitize_paused()) {
-        SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
-        return;
-    }
-    // RE: ped null → no cbz before 55da968; ped+0x5e8 intel null → no cbz 55da968.
-    if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
+    if (!is_ped_pointer_valid_safe(ped)) return;
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
-    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForCollisionEvents");
+    sanitize_intel_for_task_lookup(intel);
+    if (!intel_task_chains_safe_for_scan(intel, 0x18)) return;
     SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
 }
 
