@@ -38,15 +38,91 @@ static std::atomic<bool> g_mod_interior_transition{false};
 bool* g_entry_exit_ms_bWarping = nullptr;
 fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition = nullptr;
 bool* g_generic_game_storage_ms_bLoading = nullptr;
-static std::atomic<int64_t> g_save_load_quiesce_until_ms{0};
 
-void mark_save_load_quiesce(int64_t duration_ms) {
-    const int64_t until = now_ms() + duration_ms;
-    int64_t prev = g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
-    while (until > prev &&
-           !g_save_load_quiesce_until_ms.compare_exchange_weak(
-               prev, until, std::memory_order_release, std::memory_order_acquire)) {
+// Save/load quiesce is session-based, not a fixed timer from Load():
+//   ms_bLoading true  → hold for as long as the engine is loading (menu dwell OK)
+//   ms_bLoading false → keep holding until player spawns, then post-spawn hydration
+//   abandoned         → ms_bLoading cleared but no player for kAbandonedSessionMs
+static std::atomic<bool> g_save_load_session{false};
+static std::atomic<int64_t> g_session_started_ms{0};
+static std::atomic<int64_t> g_ms_b_loading_cleared_ms{0};
+static std::atomic<int64_t> g_post_spawn_hydration_until_ms{0};
+
+static constexpr int64_t kPostSpawnHydrationMs = 45000;
+static constexpr int64_t kAbandonedSessionMs = 120000;
+
+static bool read_ms_b_loading() {
+    return g_generic_game_storage_ms_bLoading &&
+           is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
+           *g_generic_game_storage_ms_bLoading;
+}
+
+void begin_save_load_session() {
+    const bool was_active = g_save_load_session.exchange(true, std::memory_order_acq_rel);
+    if (!was_active) {
+        const int64_t t = now_ms();
+        g_session_started_ms.store(t, std::memory_order_release);
+        g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
+        g_post_spawn_hydration_until_ms.store(0, std::memory_order_release);
     }
+}
+
+void mark_save_load_quiesce(int64_t /*duration_ms*/) {
+    begin_save_load_session();
+}
+
+static void end_save_load_session(const char* reason) {
+    if (!g_save_load_session.exchange(false, std::memory_order_acq_rel)) return;
+    g_session_started_ms.store(0, std::memory_order_release);
+    g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
+    g_post_spawn_hydration_until_ms.store(0, std::memory_order_release);
+    LOGI("💾 [SaveLoad] Session end — %s", reason);
+}
+
+void poll_save_load_hydration_state() {
+    static bool prev_ms_loading = false;
+    static bool prev_player_world = false;
+
+    const bool ms_loading = read_ms_b_loading();
+    const bool player_world = is_player_world_active();
+
+    if (ms_loading) {
+        begin_save_load_session();
+    } else if (prev_ms_loading && g_save_load_session.load(std::memory_order_acquire)) {
+        g_ms_b_loading_cleared_ms.store(now_ms(), std::memory_order_release);
+        LOGI("💾 [SaveLoad] ms_bLoading cleared — awaiting spawn/hydration");
+        if (player_world) {
+            g_post_spawn_hydration_until_ms.store(
+                now_ms() + kPostSpawnHydrationMs, std::memory_order_release);
+            LOGI("💾 [SaveLoad] Player already present — hydration %llds",
+                 (long long)(kPostSpawnHydrationMs / 1000));
+        }
+    }
+
+    if (player_world && !prev_player_world && g_save_load_session.load(std::memory_order_acquire)) {
+        g_post_spawn_hydration_until_ms.store(
+            now_ms() + kPostSpawnHydrationMs, std::memory_order_release);
+        LOGI("💾 [SaveLoad] Player spawned — post-spawn hydration %llds",
+             (long long)(kPostSpawnHydrationMs / 1000));
+    }
+
+    if (g_save_load_session.load(std::memory_order_acquire)) {
+        const int64_t hydration_until =
+            g_post_spawn_hydration_until_ms.load(std::memory_order_acquire);
+        if (hydration_until > 0 && now_ms() >= hydration_until && player_world) {
+            end_save_load_session("post-spawn hydration complete");
+        } else if (!ms_loading && !player_world) {
+            const int64_t cleared =
+                g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+            const int64_t anchor = cleared > 0 ? cleared : g_session_started_ms.load(std::memory_order_acquire);
+            if (anchor > 0 && now_ms() - anchor >= kAbandonedSessionMs) {
+                end_save_load_session("no player after load window");
+            }
+        }
+    }
+
+    prev_ms_loading = ms_loading;
+    prev_player_world = player_world;
 }
 
 bool is_player_world_active() {
@@ -67,23 +143,16 @@ bool is_scene_transition_active() {
 }
 
 bool is_save_load_active() {
-    bool loading = g_generic_game_storage_ms_bLoading &&
-                   is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
-                   *g_generic_game_storage_ms_bLoading;
-    if (loading) {
-        mark_save_load_quiesce(90000);
-        return true;
-    }
-    return now_ms() < g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
+    if (read_ms_b_loading()) return true;
+    return g_save_load_session.load(std::memory_order_acquire);
 }
 
 bool is_mod_dispatch_paused() {
     return is_scene_transition_active() || is_save_load_active() || !is_player_world_active();
 }
 
-// Sanitize must stay off for the full save/load hydration window. Do not tie it to
-// is_player_world_active(): player spawns ~20–25s in while tasks are still tearing down
-// (tombstone_19–20: sanitize_unsafe_subtask_at vs async task destruction).
+// Sanitize stays off for the save/load session (ms_bLoading + post-spawn hydration).
+// Session is anchor-based, not a fixed timer from Load() — menu dwell is safe.
 inline bool is_stability_sanitize_paused() {
     return is_save_load_active();
 }
@@ -416,15 +485,15 @@ fn_GenericGameStorageLoadGame_t g_orig_generic_game_storage_load_game = nullptr;
 
 void proxy_generic_game_storage_load(void* self, bool flag) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_save_load_quiesce(90000);
-    LOGI("💾 [SaveLoad] CGenericGameStorage::Load — stability quiesce 90s");
+    begin_save_load_session();
+    LOGI("💾 [SaveLoad] CGenericGameStorage::Load — begin session");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load, self, flag);
 }
 
 void proxy_generic_game_storage_load_game(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    mark_save_load_quiesce(90000);
-    LOGI("💾 [SaveLoad] CGenericGameStorage::LoadGame — stability quiesce 90s");
+    begin_save_load_session();
+    LOGI("💾 [SaveLoad] CGenericGameStorage::LoadGame — begin session");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load_game, self);
 }
 
