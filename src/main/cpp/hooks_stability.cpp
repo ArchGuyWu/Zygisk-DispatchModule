@@ -1644,11 +1644,13 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_task_manager_lookup_paused()) return;
     if (is_manage_tasks_execution_paused()) return;
     if (is_ped_physics_hotpath_paused()) return;
+    if (is_post_load_hydration_paused()) return;
     if (!ped_physics_tick_ready(self)) return;
     if (ped_buoyancy_unsafe(self)) {
-        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p — skip (tombstone_30)", self);
+        LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p — skip (tombstone_44)", self);
         return;
     }
     if (!is_stability_sanitize_paused()) {
@@ -1714,6 +1716,8 @@ fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return false;
+    if (is_task_manager_lookup_paused()) return false;
+    if (is_post_load_hydration_paused()) return false;
     if (is_ped_physics_hotpath_paused()) return false;
     if (physical && !is_pointer_readable(physical)) return false;
     // vec2 write at 57ff744 (tombstone_13) — reject wild output pointers from caller stack.
@@ -1722,7 +1726,7 @@ bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void
     if (physical) {
         if (!ped_physics_tick_ready(physical)) return false;
         if (ped_buoyancy_unsafe(physical)) {
-            LOGW("⚠️ [cBuoyancy::ProcessBuoyancy] unsafe physical %p — skip (tombstone_29)", physical);
+            LOGW("⚠️ [cBuoyancy::ProcessBuoyancy] unsafe physical %p — skip (tombstone_46)", physical);
             return false;
         }
         if (!is_stability_sanitize_paused()) {
@@ -2587,8 +2591,30 @@ inline bool gang_follower_control_unsafe(void* self, void* ped) {
 
 inline bool ped_buoyancy_unsafe(void* ped) {
     if (!ped || !is_pointer_readable(ped)) return true;
+    if (!ped_physics_tick_ready(ped)) return true;
     if (!ped_field_range_readable(ped, 0x18, 8)) return true;
-    return ped_intel_physical_tick_unsafe(ped);
+    void** slot18 = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x18);
+    if (is_pointer_readable(slot18) && *slot18 && !is_pointer_readable(*slot18)) return true;
+    void* intel = get_ped_intelligence_safe(ped);
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return true;
+    void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_slot_unsafe_for_vtable_call(task, 0x18)) return true;
+        if (task_subtask_chain_field_unsafe(task, 0x10)) return true;
+    }
+    for (size_t off : {0x20u, 0x28u}) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + off);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_slot_unsafe_for_vtable_call(task, 0x18)) return true;
+        if (task_subtask_chain_field_unsafe(task, 0x10)) return true;
+    }
+    return intelligence_ik_node_target_unsafe(intel);
 }
 
 // ProcessStaticCounter reads [intel+0x18] then [obj+0x18] without null guard (#28).
@@ -2807,20 +2833,24 @@ void proxy_process_after_proc_col(void* self) {
 void* g_stub_scan_for_events = nullptr;
 fn_ScanForEvents_t g_orig_scan_for_events = nullptr;
 
-inline bool intel_task_chains_safe_for_scan(void* intel, size_t vtable_offset) {
+inline bool intel_task_chains_safe_for_scan_readonly(void* intel, size_t vtable_offset) {
     if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return false;
     void* task_mgr = reinterpret_cast<char*>(intel) + 8;
     for (int i = 0; i < 11; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
         if (!is_pointer_readable(task_slot)) continue;
         void* task = *task_slot;
-        if (task && task_chain_walk_unsafe(task, vtable_offset)) return false;
+        if (!task) continue;
+        if (task_slot_unsafe_for_vtable_call(task, vtable_offset)) return false;
+        if (task_subtask_chain_field_unsafe(task, 0x10)) return false;
     }
     for (size_t off : {0x20u, 0x28u}) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + off);
         if (!is_pointer_readable(task_slot)) continue;
         void* task = *task_slot;
-        if (task && task_chain_walk_unsafe(task, vtable_offset)) return false;
+        if (!task) continue;
+        if (task_slot_unsafe_for_vtable_call(task, vtable_offset)) return false;
+        if (task_subtask_chain_field_unsafe(task, 0x10)) return false;
     }
     return true;
 }
@@ -2828,15 +2858,20 @@ inline bool intel_task_chains_safe_for_scan(void* intel, size_t vtable_offset) {
 void proxy_scan_for_events(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!ped || !is_pointer_readable(ped)) return;
-    if (is_task_manager_query_paused()) return;
-    if (!is_ped_pointer_valid_safe(ped)) return;
-    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
-    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
-    sanitize_intel_for_task_lookup(intel);
-    if (!intel_task_chains_safe_for_scan(intel, 0x28)) {
-        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel chains — skip (tombstone_00)", ped);
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return;
+    if (is_save_load_active() || is_post_load_hydration_paused()) return;
+    if (!ped_physics_tick_ready(ped)) return;
+    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
+        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel tasks — skip (tombstone_45)", ped);
         return;
     }
+    void* intel = get_ped_intelligence_safe(ped);
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
+    if (!intel_task_chains_safe_for_scan_readonly(intel, 0x28)) {
+        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel chains — skip (tombstone_45)", ped);
+        return;
+    }
+    sanitize_intel_for_task_lookup(intel);
     SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
 }
 
@@ -2853,7 +2888,7 @@ void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
     sanitize_intel_for_task_lookup(intel);
-    if (!intel_task_chains_safe_for_scan(intel, 0x18)) return;
+    if (!intel_task_chains_safe_for_scan_readonly(intel, 0x18)) return;
     SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
 }
 
