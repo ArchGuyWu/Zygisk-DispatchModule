@@ -172,23 +172,26 @@ bool is_pointer_readable(const void* ptr) {
     return false;
 }
 
+bool safe_read_u16(const void* addr, uint16_t* out) {
+    if (!addr || !out) return false;
+    if (!is_userspace_address(addr)) return false;
+    const uintptr_t a = reinterpret_cast<uintptr_t>(addr);
+    if (!pipe_probe_readable(reinterpret_cast<const void*>(a))) return false;
+    if (!pipe_probe_readable(reinterpret_cast<const void*>(a + 1))) return false;
+    *out = *reinterpret_cast<const uint16_t*>(addr);
+    return true;
+}
+
 int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units) {
     if (!s || max_units <= 0) return 0;
-    if (!is_userspace_address(s) || !is_pointer_readable(s)) return 0;
-
-    const auto* p = static_cast<const uint16_t*>(s);
+    if (!is_userspace_address(s)) return 0;
 
     for (int32_t i = 0; i < max_units; ++i) {
-        const uintptr_t addr = reinterpret_cast<uintptr_t>(p + i);
-        const uintptr_t page_off = addr & 0xFFF;
-        if (page_off == 0 || page_off == 0xFFF) {
-            if (!is_pointer_readable(reinterpret_cast<const void*>(addr))) return 0;
-            if (page_off == 0xFFF &&
-                !is_pointer_readable(reinterpret_cast<const void*>(addr + 1))) {
-                return 0;
-            }
-        }
-        if (p[i] == 0) return i;
+        const void* unit_addr =
+            reinterpret_cast<const uint16_t*>(s) + i;
+        uint16_t ch = 0;
+        if (!safe_read_u16(unit_addr, &ch)) return 0;
+        if (ch == 0) return i;
     }
     return 0;
 }

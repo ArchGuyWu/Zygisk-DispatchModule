@@ -1420,17 +1420,21 @@ fn_u_strlen_t g_orig_u_strlen = nullptr;
 int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
     if (!s) return 0;
-    // Save-load / post-load: stale ICU string pointers (tombstone_01–04/48/49).
-    if (is_task_manager_query_paused() || is_save_load_active()) return 0;
-    if (!is_userspace_address(s) || !is_pointer_readable(s)) {
+    // Save-load / post-load / hydration: stale ICU string pointers (tombstone_01–07/48/49).
+    if (is_task_manager_query_paused() ||
+        is_save_load_active() ||
+        is_manage_tasks_execution_paused()) {
+        return 0;
+    }
+    if (!is_userspace_address(s)) {
         LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
         return 0;
     }
-    // Never CALL_PREV into ICU scan — bounded page-probed UTF-16 walk only.
+    // Never CALL_PREV — pipe-probed bounded UTF-16 walk only.
     const int32_t len = safe_utf16_strlen_bounded(s);
-    if (len == 0 && is_pointer_readable_strict(s)) {
-        const auto* p = static_cast<const uint16_t*>(s);
-        if (p[0] != 0) {
+    if (len == 0) {
+        uint16_t first = 0;
+        if (safe_read_u16(s, &first) && first != 0) {
             LOGW("⚠️ [u_strlen_64] stale/unterminated string %p — return 0", s);
         }
     }
@@ -2539,17 +2543,40 @@ inline void sanitize_wander_chat_partner_cache(void* ped) {
     sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "WanderLookForChatPartners");
 }
 
+inline bool wander_chat_partner_cache_unsafe(void* ped) {
+    if (!ped || !is_ped_pointer_valid_safe(ped)) return true;
+    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) return true;
+
+    void** intel_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x5e8);
+    if (!is_pointer_readable(intel_slot)) return false;
+    void* intel = *intel_slot;
+    if (!intel || !is_pointer_readable(intel)) return false;
+
+    for (int i = 0; i < 16; ++i) {
+        void** partner_slot =
+            reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + 0x228 + i * 8);
+        if (!is_pointer_readable(partner_slot)) continue;
+        void* partner = *partner_slot;
+        if (!partner) continue;
+        if (!is_ped_pointer_valid_safe(partner) ||
+            ped_intel_primary_tasks_unsafe_for_event(partner, 0x28)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void proxy_wander_look_for_chat_partners(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (!self || !is_pointer_readable(self)) return;
-        SHADOWHOOK_CALL_PREV(proxy_wander_look_for_chat_partners, self, ped);
-        return;
-    }
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
-
-    if (ped && is_ped_pointer_valid_safe(ped)) {
+    if (is_task_manager_query_paused()) return;
+    if (ped && !is_ped_pointer_valid_safe(ped)) return;
+    if (ped && wander_chat_partner_cache_unsafe(ped)) {
+        LOGW("⚠️ [WanderStandard::LookForChatPartners] unsafe ped/partner tasks — skip (tombstone_05) ped=%p", ped);
+        return;
+    }
+    if (!is_stability_sanitize_paused() && ped) {
         sanitize_wander_chat_partner_cache(ped);
         sanitize_ped_tasks(ped);
     }
