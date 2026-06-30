@@ -1247,23 +1247,29 @@ void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
 void* g_stub_facial_dtor = nullptr;
 fn_FacialDtor_t g_orig_facial_dtor = nullptr;
 
+static inline void clear_facial_subtask_if_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return;
+    void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(p_sub)) return;
+    void* sub = *p_sub;
+    if (!sub) return;
+    if (!is_task_vtable_safe(sub) || task_slot_unsafe_for_vtable_call(sub, 0x8)) {
+        LOGW("⚠️ [Facial Dtor] Clearing unsafe subtask %p inside facial task %p", sub, self);
+        *p_sub = nullptr;
+    }
+}
+
 void proxy_facial_dtor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
 
-    void** p_sub = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-    if (is_pointer_readable(p_sub)) {
-        void* sub = *p_sub;
-        if (sub && !is_task_vtable_safe(sub)) {
-            LOGW("⚠️ [Facial Dtor] Clearing unsafe subtask %p inside facial task %p before destruction",
-                 sub, self);
-            *p_sub = nullptr;
-        }
-    }
+    clear_facial_subtask_if_unsafe(self);
 
     // Save-load teardown: engine dtor walks vtable+0x8 on stale facial tasks (#38).
-    if (is_task_manager_query_paused()) return;
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return;
     if (!is_task_vtable_safe(self)) return;
+    if (task_slot_unsafe_for_vtable_call(self, 0x8)) return;
+    clear_facial_subtask_if_unsafe(self);
 
     SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
 }
@@ -1454,6 +1460,23 @@ void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_CALL_PREV(proxy_play_loaded_sound, self);
 }
 
+// RE: 5813984 reads through ped+0x84 pointer — null base → fault 0x84 (tombstone_36).
+static inline bool car_generator_player_slot84_ready(void* ped) {
+    if (!ped || !player_ped_world_query_ready(ped)) return false;
+    void** slot84 = reinterpret_cast<void**>(reinterpret_cast<char*>(ped) + 0x84);
+    if (!is_pointer_readable(slot84) || !*slot84) return false;
+    return is_pointer_readable(*slot84);
+}
+
+static inline bool car_generator_player_proximity_ready() {
+    if (!g_FindPlayerPed) return false;
+    void* player = g_FindPlayerPed(0);
+    if (!player || !car_generator_player_slot84_ready(player)) return false;
+    void* player1 = g_FindPlayerPed(1);
+    if (player1 && !car_generator_player_slot84_ready(player1)) return false;
+    return true;
+}
+
 // --- CCarGenerator::CheckIfWithinRangeOfAnyPlayers Hook ---
 void* g_stub_check_if_within_range = nullptr;
 fn_CheckIfWithinRange_t g_orig_check_if_within_range = nullptr;
@@ -1461,23 +1484,12 @@ bool proxy_check_if_within_range(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return false;
 
-    // Save-load / transition / non-idle: player slot and ped+0x84 not trustworthy (tombstone_36).
+    // Save-load / transition / hydration: ped+0x84 not trustworthy (tombstone_36).
     if (is_save_load_active() || is_scene_transition_active()) return false;
-    uint8_t game_state = 0;
-    if (read_game_state(&game_state) && game_state != kGameStateIdle) {
-        return false;
-    }
-
-    if (!g_FindPlayerPed) {
-        return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
-    }
-
-    void* player = g_FindPlayerPed(0);
-    if (!player) return false;
-    if (!player_ped_world_query_ready(player)) return false;
-
-    void* player1 = g_FindPlayerPed(1);
-    if (player1 && !player_ped_world_query_ready(player1)) return false;
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return false;
+    if (is_post_load_hydration_paused()) return false;
+    if (!is_gameplay_world_stable()) return false;
+    if (!car_generator_player_proximity_ready()) return false;
 
     return SHADOWHOOK_CALL_PREV(proxy_check_if_within_range, self);
 }
@@ -1486,12 +1498,40 @@ bool proxy_check_if_within_range(void* self) {
 void* g_stub_avoid_ped_control = nullptr;
 fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
 
+static inline bool avoid_other_ped_control_unsafe(void* self, void* ped) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) return true;
+    if (task_slot_unsafe_for_vtable_call(*sub_slot, 0x18)) return true;
+
+    void** other_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
+    if (is_pointer_readable(other_slot) && *other_slot) {
+        void* other = *other_slot;
+        if (!is_ped_pointer_valid_safe(other)) return true;
+        if (!ped_field_range_readable(other, 0x18, 8)) return true;
+        if (ped_intel_slot_unsafe(other)) return true;
+        if (ped_intel_primary_tasks_unsafe_for_event(other, 0x18)) return true;
+    }
+
+    if (ped) {
+        if (!is_ped_pointer_valid_safe(ped) || ped_intel_slot_unsafe(ped)) return true;
+    }
+    return false;
+}
+
 void* proxy_avoid_ped_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
+    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return nullptr;
 
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_avoid_ped_control, self, ped);
+    if (is_stability_sanitize_paused()) {
+        if (avoid_other_ped_control_unsafe(self, ped)) {
+            LOGW("⚠️ [AvoidOtherPed] unsafe task/ped chain — skip (tombstone_37)");
+            return nullptr;
+        }
+        if (ped && !is_pointer_readable(ped)) return nullptr;
+        return SHADOWHOOK_CALL_PREV(proxy_avoid_ped_control, self, ped);
+    }
 
     void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
     if (is_pointer_readable(subtask_ptr)) {
@@ -1503,27 +1543,24 @@ void* proxy_avoid_ped_control(void* self, void* ped) {
     }
     if (!is_pointer_readable(subtask_ptr) || !*subtask_ptr) return nullptr;
 
-    // Other ped at +0x18: engine walks intel task slots → vtable+0x18 (tombstone_37/39).
     void** other_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
     if (is_pointer_readable(other_slot) && *other_slot) {
         void* other = *other_slot;
         if (!is_ped_pointer_valid_safe(other)) {
             LOGW("⚠️ [AvoidOtherPed] Clearing stale other-ped %p at +0x18", other);
             *other_slot = nullptr;
+        } else if (avoid_other_ped_control_unsafe(self, ped)) {
+            LOGW("⚠️ [AvoidOtherPed] unsafe other-ped %p task chain — skip (tombstone_37)", other);
+            return nullptr;
         } else {
             sanitize_ped_tasks(other);
-            void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(other));
-            if (intel && is_pointer_readable(intel) &&
-                task_manager_has_unsafe_slot(reinterpret_cast<char*>(intel) + 8, 11, 0x18)) {
-                LOGW("⚠️ [AvoidOtherPed] unsafe other-ped %p task chain — skip", other);
-                return nullptr;
-            }
         }
     }
 
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
+    if (avoid_other_ped_control_unsafe(self, ped)) return nullptr;
     return SHADOWHOOK_CALL_PREV(proxy_avoid_ped_control, self, ped);
 }
 
