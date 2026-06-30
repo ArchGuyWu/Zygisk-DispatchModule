@@ -146,16 +146,6 @@ inline void sanitize_task_manager_primary_chains(void* task_mgr, const char* log
     }
 }
 
-inline int task_manager_first_primary_slot(void* task_mgr) {
-    if (!task_mgr || !is_pointer_readable(task_mgr)) return -1;
-    for (int i = 0; i < 5; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
-        if (!is_pointer_readable(task_slot)) continue;
-        if (*task_slot) return i;
-    }
-    return -1;
-}
-
 // --- CTaskSimpleHoldEntity::SetPedPosition Hooks ---
 
 void* g_stub_set_ped_pos = nullptr;
@@ -252,42 +242,26 @@ void sanitize_task_chain(void* task, int depth = 0) {
     }
 }
 
-// RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–05, scene switch).
-// RE: 57ab15c/57ab274 mov x20,xzr → ldr [x20] at 57ab160/57ab278 — no cbz.
-// RE: all primary slots 0–4 null → cbz 57ab058 → 57ab3b0 safe return.
+// RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–08, scene switch).
+// RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — in-body, entry guard cannot help.
+// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — same pattern.
+// Full replacement (no CALL_PREV), same strategy as GetSimplestActiveTask.
 void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
 
     sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x18);
     sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x18);
-
-    int first_primary = task_manager_first_primary_slot(self);
-    if (first_primary < 0) {
-        LOGW("⚠️ [CTaskManager::ManageTasks] all primary slots empty — skip (57ab3b0 path)");
-        return;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_chain_walk_unsafe(task, 0x18)) {
+            LOGW("⚠️ [CTaskManager::ManageTasks] clearing unsafe chain at slot %d", i);
+            *task_slot = nullptr;
+        }
     }
-
-    void** active_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + first_primary * 8);
-    if (!is_pointer_readable(active_slot)) return;
-    void* active_task = *active_slot;
-    if (!active_task) {
-        LOGW("⚠️ [CTaskManager::ManageTasks] primary slot %d null after sanitize — skip (57ab160 path)", first_primary);
-        return;
-    }
-
-    if (task_chain_walk_unsafe(active_task, 0x18)) {
-        LOGW("⚠️ [CTaskManager::ManageTasks] unsafe vtable+0x18 chain at slot %d — skip original", first_primary);
-        return;
-    }
-
-    void* simplest = simplest_in_task_chain(active_task, 0x18);
-    if (!simplest || task_vtable_fn_at_unsafe(simplest, 0x20)) {
-        LOGW("⚠️ [CTaskManager::ManageTasks] unsafe simplest vtable+0x20 — skip (57ab160 path)");
-        return;
-    }
-
-    SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
 }
 
 void* g_stub_scan_for_attractors_in_range = nullptr;
