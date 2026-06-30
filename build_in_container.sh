@@ -238,6 +238,7 @@ add_library(policemod SHARED
     dispatch_hit_and_run.cpp
     dispatch_spawn_hooks.cpp
     hooks_stability.cpp
+    manage_tasks_guard.cpp
     pointer_sanitizer_vma.cpp
     ecs_systems.cpp
 )

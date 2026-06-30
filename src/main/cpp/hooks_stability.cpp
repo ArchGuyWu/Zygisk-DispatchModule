@@ -32,6 +32,24 @@
 #include "ecs_engine.hpp"
 
 // =====================================================================
+// Scene transition / interior entry state (yellow marker warp UX)
+// =====================================================================
+static std::atomic<bool> g_mod_interior_transition{false};
+bool* g_entry_exit_ms_bWarping = nullptr;
+fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition = nullptr;
+
+bool is_scene_transition_active() {
+    if (g_mod_interior_transition.load(std::memory_order_acquire)) return true;
+    if (g_entry_exit_ms_bWarping && is_pointer_readable(g_entry_exit_ms_bWarping) && *g_entry_exit_ms_bWarping) {
+        return true;
+    }
+    if (g_we_are_in_interior_transition) {
+        return g_we_are_in_interior_transition();
+    }
+    return false;
+}
+
+// =====================================================================
 // Stability hook helpers
 // =====================================================================
 inline void sanitize_task_pointers(void* task, int max_size_bytes = 256) {
@@ -243,9 +261,8 @@ void sanitize_task_chain(void* task, int depth = 0) {
 }
 
 // RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–08, scene switch).
-// RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — in-body, entry guard cannot help.
-// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — same pattern.
-// Full replacement (no CALL_PREV), same strategy as GetSimplestActiveTask.
+// RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — patched in manage_tasks_guard.cpp.
+// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — patched in manage_tasks_guard.cpp.
 void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
@@ -262,6 +279,7 @@ void proxy_manage_tasks(void* self) {
             *task_slot = nullptr;
         }
     }
+    SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
 }
 
 void* g_stub_scan_for_attractors_in_range = nullptr;
@@ -321,6 +339,30 @@ inline void sanitize_ped_tasks(void* ped) {
             }
         }
     }
+}
+
+// --- CEntryExit transition hooks (pause mod dispatch during interior warp/fade) ---
+void* g_stub_entry_exit_transition_started = nullptr;
+fn_EntryExitTransitionStarted_t g_orig_entry_exit_transition_started = nullptr;
+void* g_stub_entry_exit_transition_finished = nullptr;
+fn_EntryExitTransitionFinished_t g_orig_entry_exit_transition_finished = nullptr;
+
+void proxy_entry_exit_transition_started(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    g_mod_interior_transition.store(true, std::memory_order_release);
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    SHADOWHOOK_CALL_PREV(proxy_entry_exit_transition_started, self, ped);
+}
+
+void proxy_entry_exit_transition_finished(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (ped && is_ped_pointer_valid_safe(ped)) {
+        sanitize_ped_tasks(ped);
+    }
+    g_mod_interior_transition.store(false, std::memory_order_release);
+    SHADOWHOOK_CALL_PREV(proxy_entry_exit_transition_finished, self, ped);
 }
 
 inline void sanitize_optional_ped_at_slot(void** slot, const char* label) {

@@ -67,6 +67,10 @@ void on_main_thread_tick() {
     }
     g_last_tick_time_ms = cur_time;
 
+    if (is_scene_transition_active()) {
+        return;
+    }
+
     ecs::EventDispatcher::get().dispatch(ecs::TickEvent(cur_time));
 
     if (!g_FindPlayerPed || !g_FindPlayerPed(0)) {

@@ -161,6 +161,8 @@ void proxy_tell_occupants_leave_car(void* vehicle);
 // Stability hook stubs (defined in hooks_stability.cpp)
 extern void* g_stub_set_ped_pos;
 extern void* g_stub_manage_tasks;
+extern void* g_stub_entry_exit_transition_started;
+extern void* g_stub_entry_exit_transition_finished;
 extern void* g_stub_scan_for_attractors_in_range;
 extern void* g_stub_ccgf_control;
 extern void* g_stub_paired_attractor_create_next_sub_task;
@@ -277,6 +279,7 @@ int count_criminals_near(CVector pos, float radius);
 CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radius);
 
 bool is_ped_pointer_valid_safe(void* target_ped);
+bool is_scene_transition_active();
 bool is_task_vtable_safe(void* task);
 bool is_vehicle_pointer_valid(void* target_veh);
 bool is_entity_pointer_valid(void* entity);

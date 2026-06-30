@@ -7,6 +7,9 @@
 // Stability-hook callback typedefs (shared by hooks_stability.cpp and hook_install.cpp)
 typedef void (*fn_SetPedPosition_t)(void* self, void* ped);
 typedef void (*fn_ManageTasks_t)(void* self);
+typedef void (*fn_EntryExitTransitionStarted_t)(void* self, void* ped);
+typedef void (*fn_EntryExitTransitionFinished_t)(void* self, void* ped);
+typedef bool (*fn_WeAreInInteriorTransition_t)();
 typedef bool (*fn_IsSimple_t)(void* self);
 typedef void (*fn_ScanForAttractorsInRange_t)(void* self, void* ped);
 typedef void* (*fn_ControlSubTask_t)(void* self, void* ped);
@@ -66,6 +69,10 @@ typedef bool (*fn_GetNearestCarDoor_t)(void* ped, void* vehicle, void* out_vec, 
 
 extern fn_SetPedPosition_t g_orig_set_ped_pos;
 extern fn_ManageTasks_t g_orig_manage_tasks;
+extern fn_EntryExitTransitionStarted_t g_orig_entry_exit_transition_started;
+extern fn_EntryExitTransitionFinished_t g_orig_entry_exit_transition_finished;
+extern fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition;
+extern bool* g_entry_exit_ms_bWarping;
 extern fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range;
 extern fn_ControlSubTask_t g_orig_ccgf_control;
 extern fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next_sub_task;
@@ -127,6 +134,8 @@ extern fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
 void proxy_manage_tasks(void* self);
+void proxy_entry_exit_transition_started(void* self, void* ped);
+void proxy_entry_exit_transition_finished(void* self, void* ped);
 void proxy_scan_for_attractors_in_range(void* self, void* ped);
 void* proxy_ccgf_control(void* self, void* ped);
 void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped);

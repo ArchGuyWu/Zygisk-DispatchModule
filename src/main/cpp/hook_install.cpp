@@ -20,6 +20,7 @@
 #include "game_types.hpp"
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
+#include "manage_tasks_guard.hpp"
 
 // =====================================================================
 // Pure Virtual Function Safe Patching
@@ -319,6 +320,22 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskSimpleHoldEntity::SetPedPosition: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
+
+    // Scene transition globals (interior warp / yellow marker entry)
+    RESOLVE_SYM(lib, g_entry_exit_ms_bWarping, "_ZN10CEntryExit11ms_bWarpingE", bool*);
+    RESOLVE_SYM(lib, g_we_are_in_interior_transition,
+                "_ZN17CEntryExitManager25WeAreInInteriorTransitionEv", fn_WeAreInInteriorTransition_t);
+
+    void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
+    if (manage_tasks_sym) {
+        if (install_manage_tasks_inbody_guards(manage_tasks_sym)) {
+            LOGI("✅ Patched ManageTasks in-body null guards @ +0x168/+0x278");
+        } else {
+            LOGE("❌ Failed to patch ManageTasks in-body null guards");
+        }
+    } else {
+        LOGE("❌ ManageTasks symbol not found for in-body guard patch");
+    }
 
     // Hook CTaskManager::ManageTasks (防止各种任务生命周期、清理或零值野指针导致的任务管理闪退)
     g_stub_manage_tasks = shadowhook_hook_sym_name(
@@ -646,6 +663,25 @@ void hook_thread_func() {
         reinterpret_cast<void**>(&g_orig_event_script_command_d1));
     if (g_stub_event_script_command_d1) LOGI("✅ Hooked CEventScriptCommand::D1");
     else LOGE("❌ Failed to hook CEventScriptCommand::D1: %s", shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    // Hook CEntryExit transitions (interior warp — gate mod dispatch, sanitize player tasks)
+    g_stub_entry_exit_transition_started = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN10CEntryExit17TransitionStartedEP4CPed",
+        reinterpret_cast<void*>(proxy_entry_exit_transition_started),
+        reinterpret_cast<void**>(&g_orig_entry_exit_transition_started));
+    if (g_stub_entry_exit_transition_started) LOGI("✅ Hooked CEntryExit::TransitionStarted");
+    else LOGE("❌ Failed to hook CEntryExit::TransitionStarted: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
+    g_stub_entry_exit_transition_finished = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN10CEntryExit18TransitionFinishedEP4CPed",
+        reinterpret_cast<void*>(proxy_entry_exit_transition_finished),
+        reinterpret_cast<void**>(&g_orig_entry_exit_transition_finished));
+    if (g_stub_entry_exit_transition_finished) LOGI("✅ Hooked CEntryExit::TransitionFinished");
+    else LOGE("❌ Failed to hook CEntryExit::TransitionFinished: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
 
     // Hook CCam::Process_FollowPed_SA
     g_stub_process_follow_ped_sa = shadowhook_hook_sym_name(
