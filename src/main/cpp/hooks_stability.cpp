@@ -521,23 +521,6 @@ static inline bool is_manage_tasks_execution_paused() {
     return true;
 }
 
-// Task-manager queries / ControlSubTask reads: pause for full save-load + post-load tail.
-// CALL_PREV on half-hydrated slots crashes (#32–34, #39–40).
-static inline bool is_task_manager_query_paused() {
-    if (read_ms_b_loading()) return true;
-    if (g_save_load_session.load(std::memory_order_acquire)) return true;
-    const int64_t quiesce_until =
-        g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
-    if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
-    const int64_t loading_cleared =
-        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (loading_cleared > 0 &&
-        now_ms() - loading_cleared < kMinPostLoadingHoldMs) {
-        return true;
-    }
-    return false;
-}
-
 // Shared post-load tail: gameState==9 + streaming==0 (+ short dwell after settle).
 static inline bool is_post_load_hydration_paused() {
     const int64_t loading_cleared =
@@ -551,6 +534,24 @@ static inline bool is_post_load_hydration_paused() {
         now_ms() - ready_since < kUstrlenPostLoadDwellMs) {
         return true;
     }
+    return false;
+}
+
+// Task-manager queries / ControlSubTask reads: pause for full save-load + post-load tail.
+// CALL_PREV on half-hydrated slots crashes (#14–16, #32–34, #39–40).
+static inline bool is_task_manager_query_paused() {
+    if (read_ms_b_loading()) return true;
+    if (g_save_load_session.load(std::memory_order_acquire)) return true;
+    const int64_t quiesce_until =
+        g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
+    if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kMinPostLoadingHoldMs) {
+        return true;
+    }
+    if (is_post_load_hydration_paused()) return true;
     return false;
 }
 
@@ -576,7 +577,7 @@ static inline bool is_buoyancy_execution_paused() {
     if (g_save_load_session.load(std::memory_order_acquire)) return true;
     if (is_task_manager_query_paused()) return true;
     if (is_manage_tasks_execution_paused()) return true;
-    return is_post_load_hydration_paused();
+    return false;
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
@@ -1184,6 +1185,10 @@ void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_task_manager_query_paused()) return nullptr;
+    if (task_manager_has_unsafe_slot(self, 11, 0x28)) {
+        LOGW("⚠️ [FindActiveTaskByType] unsafe task mgr %p — skip (tombstone_14)", self);
+        return nullptr;
+    }
 
     sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
     sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
@@ -2525,19 +2530,25 @@ fn_FacialControlSubTask_t g_orig_facial_control_sub_task = nullptr;
 
 void* proxy_facial_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_facial_control_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
+    if (is_task_manager_query_paused()) return nullptr;
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_facial_control_sub_task, self, ped);
 
-    if (self) {
+    if (!is_stability_sanitize_paused()) {
         sanitize_unsafe_subtask_at(self, 0x10);
-        // Original dereferences [self+0x10] without null check (tombstone_07, fault 0x0).
-        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
-        if (!is_pointer_readable(sub_slot) || !*sub_slot) {
-            LOGW("⚠️ [Facial::ControlSubTask] no subtask after sanitize — skip original");
-            return nullptr;
-        }
     }
+    // Original dereferences [self+0x10] without null check (tombstone_16, fault 0x0).
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [Facial::ControlSubTask] no subtask — skip (tombstone_16)");
+        return nullptr;
+    }
+    if (task_slot_unsafe_for_vtable_call(*sub_slot, 0x28)) {
+        LOGW("⚠️ [Facial::ControlSubTask] unsafe subtask %p — skip (tombstone_16)", *sub_slot);
+        return nullptr;
+    }
+    if (ped && !is_ped_pointer_valid_safe(ped)) return nullptr;
     return SHADOWHOOK_CALL_PREV(proxy_facial_control_sub_task, self, ped);
 }
 
@@ -2658,9 +2669,13 @@ void proxy_wander_look_for_chat_partners(void* self, void* ped) {
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
     if (is_task_manager_query_paused()) return;
+    if (task_chain_walk_unsafe(self, 0x28)) {
+        LOGW("⚠️ [WanderStandard::LookForChatPartners] unsafe wander task %p — skip (tombstone_15)", self);
+        return;
+    }
     if (ped && !is_ped_pointer_valid_safe(ped)) return;
     if (ped && wander_chat_partner_cache_unsafe(ped)) {
-        LOGW("⚠️ [WanderStandard::LookForChatPartners] unsafe ped/partner tasks — skip (tombstone_05) ped=%p", ped);
+        LOGW("⚠️ [WanderStandard::LookForChatPartners] unsafe ped/partner tasks — skip (tombstone_15) ped=%p", ped);
         return;
     }
     if (!is_stability_sanitize_paused() && ped) {
