@@ -38,6 +38,7 @@ static std::atomic<bool> g_mod_interior_transition{false};
 bool* g_entry_exit_ms_bWarping = nullptr;
 fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition = nullptr;
 bool* g_generic_game_storage_ms_bLoading = nullptr;
+bool* g_generic_game_storage_ms_b_failed = nullptr;
 uint8_t* g_cgame_logic_game_state = nullptr;
 uint32_t* g_streaming_ms_num_models_requested = nullptr;
 uint32_t* g_cgame_logic_skip_state = nullptr;
@@ -62,6 +63,12 @@ static bool read_ms_b_loading() {
     return g_generic_game_storage_ms_bLoading &&
            is_pointer_readable(g_generic_game_storage_ms_bLoading) &&
            *g_generic_game_storage_ms_bLoading;
+}
+
+static bool read_ms_b_load_failed() {
+    return g_generic_game_storage_ms_b_failed &&
+           is_pointer_readable(g_generic_game_storage_ms_b_failed) &&
+           *g_generic_game_storage_ms_b_failed;
 }
 
 static bool read_game_state(uint8_t* out) {
@@ -151,6 +158,10 @@ void poll_save_load_hydration_state() {
              read_skip_pipeline_active() ? 1 : 0);
     }
 
+    if (read_ms_b_load_failed() && g_save_load_session.load(std::memory_order_acquire)) {
+        end_save_load_session("ms_bFailed");
+    }
+
     if (g_save_load_session.load(std::memory_order_acquire)) {
         const int64_t started = g_session_started_ms.load(std::memory_order_acquire);
         const bool settled = save_load_hydration_signals_settled();
@@ -224,6 +235,15 @@ inline bool is_stability_sanitize_paused() {
         if (is_stability_sanitize_paused()) { \
             if (!self || !is_pointer_readable(self)) return nullptr; \
             return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped); \
+        } \
+    } while (0)
+
+#define STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_fn, self) \
+    do { \
+        if (is_stability_sanitize_paused()) { \
+            if (!self || !is_pointer_readable(self)) return; \
+            SHADOWHOOK_CALL_PREV(proxy_fn, self); \
+            return; \
         } \
     } while (0)
 
@@ -473,6 +493,11 @@ fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
 
 void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!ped || !is_pointer_readable(ped)) return;
+        SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
+        return;
+    }
     if (!ped || !is_pointer_readable(ped)) return;
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (intel && is_pointer_readable(intel)) {
@@ -529,14 +554,26 @@ inline void sanitize_ped_tasks(void* ped) {
     }
 }
 
-// --- CGenericGameStorage load hooks (arm quiesce before async world hydration) ---
+// --- CGenericGameStorage / CGameLogic load lifecycle hooks ---
 typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
 typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
+typedef void (*fn_GenericGameStorageRestoreForStartLoad_t)();
+typedef void (*fn_GenericGameStorageGenericLoad_t)(int slot, bool* out);
+typedef void (*fn_GenericGameStorageAfterSuccessLoad_t)();
+typedef void (*fn_CGameLogicInitAtStartOfGame_t)();
 
 void* g_stub_generic_game_storage_load = nullptr;
 fn_GenericGameStorageLoad_t g_orig_generic_game_storage_load = nullptr;
 void* g_stub_generic_game_storage_load_game = nullptr;
 fn_GenericGameStorageLoadGame_t g_orig_generic_game_storage_load_game = nullptr;
+void* g_stub_generic_game_storage_restore_for_start_load = nullptr;
+fn_GenericGameStorageRestoreForStartLoad_t g_orig_generic_game_storage_restore_for_start_load = nullptr;
+void* g_stub_generic_game_storage_generic_load = nullptr;
+fn_GenericGameStorageGenericLoad_t g_orig_generic_game_storage_generic_load = nullptr;
+void* g_stub_generic_game_storage_after_success_load = nullptr;
+fn_GenericGameStorageAfterSuccessLoad_t g_orig_generic_game_storage_after_success_load = nullptr;
+void* g_stub_cgame_logic_init_at_start_of_game = nullptr;
+fn_CGameLogicInitAtStartOfGame_t g_orig_cgame_logic_init_at_start_of_game = nullptr;
 
 void proxy_generic_game_storage_load(void* self, bool flag) {
     SHADOWHOOK_STACK_SCOPE();
@@ -550,6 +587,33 @@ void proxy_generic_game_storage_load_game(void* self) {
     begin_save_load_session();
     LOGI("💾 [SaveLoad] CGenericGameStorage::LoadGame — begin session");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_load_game, self);
+}
+
+void proxy_generic_game_storage_restore_for_start_load() {
+    SHADOWHOOK_STACK_SCOPE();
+    begin_save_load_session();
+    LOGI("💾 [SaveLoad] RestoreForStartLoad — begin session");
+    SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_restore_for_start_load);
+}
+
+void proxy_generic_game_storage_generic_load(int slot, bool* out) {
+    SHADOWHOOK_STACK_SCOPE();
+    begin_save_load_session();
+    LOGI("💾 [SaveLoad] GenericLoad(slot=%d) — begin session", slot);
+    SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
+}
+
+void proxy_generic_game_storage_after_success_load() {
+    SHADOWHOOK_STACK_SCOPE();
+    begin_save_load_session();
+    LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
+    SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_after_success_load);
+}
+
+void proxy_cgame_logic_init_at_start_of_game() {
+    SHADOWHOOK_STACK_SCOPE();
+    LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame");
+    SHADOWHOOK_CALL_PREV(proxy_cgame_logic_init_at_start_of_game);
 }
 
 // --- CEntryExit transition hooks (pause mod dispatch during interior warp/fade) ---
@@ -592,6 +656,7 @@ inline void sanitize_optional_ped_at_slot(void** slot, const char* label) {
 // Do not clear merely because the ped is absent from the pool — that can false-positive
 // and leave nullptr at task+0x18, which the original reads at +0x498 without a null check.
 inline void sanitize_unsafe_task_slot_at(void* obj, size_t offset, const char* label) {
+    if (is_stability_sanitize_paused()) return;
     if (!obj || !is_pointer_readable(obj)) return;
     void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(obj) + offset);
     if (!is_pointer_readable(slot)) return;
@@ -661,6 +726,7 @@ fn_PairedAttractorCreateNextSubTask_t g_orig_paired_attractor_create_next_sub_ta
 
 void* proxy_paired_attractor_create_next_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_paired_attractor_create_next_sub_task, self, ped);
     if (ped && !is_pointer_readable(ped)) {
         return nullptr;
     }
@@ -676,6 +742,11 @@ fn_FacialDtor_t g_orig_facial_dtor = nullptr;
 
 void proxy_facial_dtor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return;
+        SHADOWHOOK_CALL_PREV(proxy_facial_dtor, self);
+        return;
+    }
     if (!self || !is_pointer_readable(self)) return;
 
     if (self) {
@@ -767,6 +838,11 @@ fn_TaskManagerDestructor_t g_orig_task_manager_destructor = nullptr;
 
 void proxy_task_manager_destructor(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return;
+        SHADOWHOOK_CALL_PREV(proxy_task_manager_destructor, self);
+        return;
+    }
     if (!self || !is_pointer_readable(self)) return;
 
     if (self) {
@@ -868,7 +944,7 @@ fn_AvoidPedControl_t g_orig_avoid_ped_control = nullptr;
 void* proxy_avoid_ped_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_avoid_ped_control, self, ped);
-    if (self && is_pointer_readable(self)) {
+    if (self && is_pointer_readable(self) && !is_stability_sanitize_paused()) {
         void** subtask_ptr = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
         if (is_pointer_readable(subtask_ptr)) {
             void* subtask = *subtask_ptr;
@@ -924,6 +1000,7 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_buoyancy, self);
     if (!self || !is_pointer_readable(self)) return;
     sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
@@ -935,6 +1012,7 @@ fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
 
 void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_static_counter, self);
     if (!self || !is_pointer_readable(self)) return;
     if (self) {
         sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessStaticCounter");
@@ -948,6 +1026,10 @@ fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 
 bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return false;
+        return SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
+    }
     if (!self || !is_pointer_readable(self)) return false;
     if (physical && !is_pointer_readable(physical)) return false;
     // vec2 write at 57ff744 (tombstone_13) — reject wild output pointers from caller stack.
@@ -979,6 +1061,7 @@ void* g_stub_sequence_flush = nullptr;
 fn_SequenceFlush_t g_orig_sequence_flush = nullptr;
 
 inline void sanitize_sequence_task_slots(void* self) {
+    if (is_stability_sanitize_paused()) return;
     if (!self || !is_pointer_readable(self)) return;
     for (int i = 0; i < 8; ++i) {
         void** slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8 + 0x20);
@@ -993,6 +1076,7 @@ inline void sanitize_sequence_task_slots(void* self) {
 
 void proxy_sequence_flush(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_sequence_flush, self);
     if (!self || !is_pointer_readable(self)) return;
     if (self) {
         sanitize_sequence_task_slots(self);
@@ -1006,6 +1090,7 @@ fn_SequenceCreateNextSubTask_t g_orig_sequence_create_next_sub_task = nullptr;
 
 void* proxy_sequence_create_next_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_sequence_create_next_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     if (self) {
@@ -1087,6 +1172,9 @@ fn_GetNearestCarDoor_t g_orig_get_nearest_car_door = nullptr;
 
 bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* door_index) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        return SHADOWHOOK_CALL_PREV(proxy_get_nearest_car_door, ped, vehicle, out_vec, door_index);
+    }
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
@@ -1301,6 +1389,7 @@ void* g_stub_flush_tasks = nullptr;
 fn_FlushTasks_t g_orig_flush_tasks = nullptr;
 
 inline void sanitize_ped_task_pair_slots(void* pair) {
+    if (is_stability_sanitize_paused()) return;
     if (!pair || !is_pointer_readable(pair)) return;
     static constexpr size_t kTaskOffsets[] = {0x8, 0x28, 0x48, 0x68, 0x88, 0xa8, 0xc8, 0xe8};
     for (size_t off : kTaskOffsets) {
@@ -1316,6 +1405,10 @@ inline void sanitize_ped_task_pair_slots(void* pair) {
 
 void proxy_flush_tasks(void* self, void* pair, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        SHADOWHOOK_CALL_PREV(proxy_flush_tasks, self, pair, ped);
+        return;
+    }
     if (pair) {
         sanitize_ped_task_pair_slots(pair);
     }
@@ -1679,6 +1772,11 @@ fn_WanderCopLookForCriminals_t g_orig_wander_cop_look_for_criminals = nullptr;
 
 void proxy_wander_cop_look_for_criminals(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return;
+        SHADOWHOOK_CALL_PREV(proxy_wander_cop_look_for_criminals, self, ped);
+        return;
+    }
     if (!self || !is_pointer_readable(self)) return;
     if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
     if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
@@ -1814,6 +1912,7 @@ fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
 
 void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_after_proc_col, self);
     // RE: self null → no cbz 55debf4; zero-filled vtable → no cbz.
     if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
     void* task_mgr = reinterpret_cast<char*>(self) + 8;
@@ -1839,6 +1938,11 @@ fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events = nullptr;
 
 void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!ped || !is_pointer_readable(ped)) return;
+        SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
+        return;
+    }
     // RE: ped null → no cbz before 55da968; ped+0x5e8 intel null → no cbz 55da968.
     if (!ped || !is_pointer_readable(ped) || !is_ped_pointer_valid_safe(ped)) return;
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
@@ -1997,6 +2101,11 @@ inline void sanitize_wander_chat_partner_cache(void* ped) {
 
 void proxy_wander_look_for_chat_partners(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_stability_sanitize_paused()) {
+        if (!self || !is_pointer_readable(self)) return;
+        SHADOWHOOK_CALL_PREV(proxy_wander_look_for_chat_partners, self, ped);
+        return;
+    }
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
 

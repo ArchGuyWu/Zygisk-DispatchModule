@@ -24,12 +24,28 @@
 
 typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
 typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
+typedef void (*fn_GenericGameStorageRestoreForStartLoad_t)();
+typedef void (*fn_GenericGameStorageGenericLoad_t)(int slot, bool* out);
+typedef void (*fn_GenericGameStorageAfterSuccessLoad_t)();
+typedef void (*fn_CGameLogicInitAtStartOfGame_t)();
 extern void proxy_generic_game_storage_load(void* self, bool flag);
 extern void proxy_generic_game_storage_load_game(void* self);
+extern void proxy_generic_game_storage_restore_for_start_load();
+extern void proxy_generic_game_storage_generic_load(int slot, bool* out);
+extern void proxy_generic_game_storage_after_success_load();
+extern void proxy_cgame_logic_init_at_start_of_game();
 extern void* g_stub_generic_game_storage_load;
 extern void* g_stub_generic_game_storage_load_game;
+extern void* g_stub_generic_game_storage_restore_for_start_load;
+extern void* g_stub_generic_game_storage_generic_load;
+extern void* g_stub_generic_game_storage_after_success_load;
+extern void* g_stub_cgame_logic_init_at_start_of_game;
 extern fn_GenericGameStorageLoad_t g_orig_generic_game_storage_load;
 extern fn_GenericGameStorageLoadGame_t g_orig_generic_game_storage_load_game;
+extern fn_GenericGameStorageRestoreForStartLoad_t g_orig_generic_game_storage_restore_for_start_load;
+extern fn_GenericGameStorageGenericLoad_t g_orig_generic_game_storage_generic_load;
+extern fn_GenericGameStorageAfterSuccessLoad_t g_orig_generic_game_storage_after_success_load;
+extern fn_CGameLogicInitAtStartOfGame_t g_orig_cgame_logic_init_at_start_of_game;
 
 // =====================================================================
 // Pure Virtual Function Safe Patching
@@ -336,6 +352,8 @@ void hook_thread_func() {
                 "_ZN17CEntryExitManager25WeAreInInteriorTransitionEv", fn_WeAreInInteriorTransition_t);
     RESOLVE_SYM(lib, g_generic_game_storage_ms_bLoading,
                 "_ZN19CGenericGameStorage11ms_bLoadingE", bool*);
+    RESOLVE_SYM(lib, g_generic_game_storage_ms_b_failed,
+                "_ZN19CGenericGameStorage10ms_bFailedE", bool*);
     RESOLVE_SYM(lib, g_cgame_logic_game_state,
                 "_ZN10CGameLogic9GameStateE", uint8_t*);
     RESOLVE_SYM(lib, g_streaming_ms_num_models_requested,
@@ -368,6 +386,40 @@ void hook_thread_func() {
             LOGI("✅ Hooked CGenericGameStorage::LoadGame");
         }
     }
+
+    #define HOOK_SAVE_LOAD_SYM(mangled, proxy_fn, stub_var, orig_var, label) do { \
+        void* sym = xdl_sym(lib, (mangled), nullptr); \
+        if (!sym) { \
+            LOGW("⚠️ %s symbol not found (%s)", (label), (mangled)); \
+            break; \
+        } \
+        (stub_var) = shadowhook_hook_sym_addr(sym, reinterpret_cast<void*>(proxy_fn), \
+                                              reinterpret_cast<void**>(&(orig_var))); \
+        if (stub_var) LOGI("✅ Hooked %s", (label)); \
+        else LOGE("❌ Failed to hook %s: %s", (label), shadowhook_to_errmsg(shadowhook_get_errno())); \
+    } while (0)
+
+    HOOK_SAVE_LOAD_SYM("_ZN19CGenericGameStorage19RestoreForStartLoadEv",
+                       proxy_generic_game_storage_restore_for_start_load,
+                       g_stub_generic_game_storage_restore_for_start_load,
+                       g_orig_generic_game_storage_restore_for_start_load,
+                       "CGenericGameStorage::RestoreForStartLoad");
+    HOOK_SAVE_LOAD_SYM("_ZN19CGenericGameStorage11GenericLoadEiRb",
+                       proxy_generic_game_storage_generic_load,
+                       g_stub_generic_game_storage_generic_load,
+                       g_orig_generic_game_storage_generic_load,
+                       "CGenericGameStorage::GenericLoad");
+    HOOK_SAVE_LOAD_SYM("_ZN19CGenericGameStorage34DoGameSpecificStuffAfterSucessLoadEv",
+                       proxy_generic_game_storage_after_success_load,
+                       g_stub_generic_game_storage_after_success_load,
+                       g_orig_generic_game_storage_after_success_load,
+                       "CGenericGameStorage::DoGameSpecificStuffAfterSucessLoad");
+    HOOK_SAVE_LOAD_SYM("_ZN10CGameLogic17InitAtStartOfGameEv",
+                       proxy_cgame_logic_init_at_start_of_game,
+                       g_stub_cgame_logic_init_at_start_of_game,
+                       g_orig_cgame_logic_init_at_start_of_game,
+                       "CGameLogic::InitAtStartOfGame");
+    #undef HOOK_SAVE_LOAD_SYM
 
     void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
     if (manage_tasks_sym) {

@@ -74,6 +74,7 @@ extern fn_EntryExitTransitionFinished_t g_orig_entry_exit_transition_finished;
 extern fn_WeAreInInteriorTransition_t g_we_are_in_interior_transition;
 extern bool* g_entry_exit_ms_bWarping;
 extern bool* g_generic_game_storage_ms_bLoading;
+extern bool* g_generic_game_storage_ms_b_failed;
 extern uint8_t* g_cgame_logic_game_state;
 extern uint32_t* g_streaming_ms_num_models_requested;
 extern uint32_t* g_cgame_logic_skip_state;
