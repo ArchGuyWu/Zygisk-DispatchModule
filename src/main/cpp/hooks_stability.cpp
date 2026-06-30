@@ -57,11 +57,15 @@ static std::atomic<int64_t> g_session_started_ms{0};
 static std::atomic<int64_t> g_ms_b_loading_cleared_ms{0};
 static std::atomic<int64_t> g_hydration_ready_since_ms{0};
 static std::atomic<int64_t> g_save_load_quiesce_until_ms{0};
+static std::atomic<bool> g_skip_pipeline_was_active{false};
+static std::atomic<int64_t> g_skip_pipeline_cleared_ms{0};
 
 static constexpr int64_t kAbandonedSessionMs = 120000;
 static constexpr int64_t kSessionHardCapMs = 180000;
 static constexpr int64_t kSessionMinActiveMs = 28000;
 static constexpr int64_t kHydrationSignalDwellMs = 15000;
+static constexpr int64_t kPostSkipSessionMinActiveMs = 8000;
+static constexpr int64_t kPostSkipHydrationDwellMs = 3000;
 static constexpr int64_t kMinPostLoadingHoldMs = 5000;
 static constexpr int64_t kSaveLoadPostSessionCooldownMs = 10000;
 
@@ -138,6 +142,8 @@ void begin_save_load_session() {
         g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
         g_hydration_ready_since_ms.store(0, std::memory_order_release);
         g_save_load_quiesce_until_ms.store(0, std::memory_order_release);
+        g_skip_pipeline_was_active.store(false, std::memory_order_release);
+        g_skip_pipeline_cleared_ms.store(0, std::memory_order_release);
         LOGI("💾 [SaveLoad] Session begin");
     }
 }
@@ -151,10 +157,20 @@ static void end_save_load_session(const char* reason) {
     g_session_started_ms.store(0, std::memory_order_release);
     g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
     g_hydration_ready_since_ms.store(0, std::memory_order_release);
+    g_skip_pipeline_was_active.store(false, std::memory_order_release);
+    g_skip_pipeline_cleared_ms.store(0, std::memory_order_release);
     g_save_load_quiesce_until_ms.store(
         now_ms() + kSaveLoadPostSessionCooldownMs, std::memory_order_release);
     LOGI("💾 [SaveLoad] Session end — %s (cooldown %lldms)",
          reason, static_cast<long long>(kSaveLoadPostSessionCooldownMs));
+}
+
+static void session_timing_thresholds(int64_t* min_active_ms, int64_t* dwell_ms) {
+    const int64_t skip_cleared = g_skip_pipeline_cleared_ms.load(std::memory_order_acquire);
+    const bool post_skip_fast =
+        skip_cleared > 0 && now_ms() - skip_cleared < 120000;
+    *min_active_ms = post_skip_fast ? kPostSkipSessionMinActiveMs : kSessionMinActiveMs;
+    *dwell_ms = post_skip_fast ? kPostSkipHydrationDwellMs : kHydrationSignalDwellMs;
 }
 
 void poll_save_load_hydration_state() {
@@ -165,6 +181,13 @@ void poll_save_load_hydration_state() {
     const bool ms_loading = read_ms_b_loading();
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
+    const bool skip_active = read_skip_pipeline_active();
+    if (g_skip_pipeline_was_active.load(std::memory_order_acquire) && !skip_active) {
+        g_skip_pipeline_cleared_ms.store(now_ms(), std::memory_order_release);
+        LOGI("💾 [SaveLoad] Skip pipeline cleared — gameState=%u",
+             have_game_state ? game_state : 255u);
+    }
+    g_skip_pipeline_was_active.store(skip_active, std::memory_order_release);
 
     if (have_game_state &&
         prev_game_state == kGameStateFrontendIdle &&
@@ -190,13 +213,18 @@ void poll_save_load_hydration_state() {
     if (g_save_load_session.load(std::memory_order_acquire)) {
         const int64_t started = g_session_started_ms.load(std::memory_order_acquire);
         const bool settled = save_load_hydration_signals_settled();
+        int64_t min_active_ms = kSessionMinActiveMs;
+        int64_t dwell_ms = kHydrationSignalDwellMs;
+        session_timing_thresholds(&min_active_ms, &dwell_ms);
+
         if (settled && !prev_settled) {
             const int64_t t = now_ms();
             g_hydration_ready_since_ms.store(t, std::memory_order_release);
-            LOGI("💾 [SaveLoad] Hydration signals settled — gameState=%u streaming=%d (dwell %lldms)",
+            LOGI("💾 [SaveLoad] Hydration signals settled — gameState=%u streaming=%d (dwell %lldms min %lldms)",
                  have_game_state ? game_state : 255u,
                  read_streaming_num_requested(),
-                 static_cast<long long>(kHydrationSignalDwellMs));
+                 static_cast<long long>(dwell_ms),
+                 static_cast<long long>(min_active_ms));
         } else if (!settled) {
             g_hydration_ready_since_ms.store(0, std::memory_order_release);
         }
@@ -204,8 +232,8 @@ void poll_save_load_hydration_state() {
 
         const int64_t ready_since = g_hydration_ready_since_ms.load(std::memory_order_acquire);
         if (settled && ready_since > 0 &&
-            now_ms() - ready_since >= kHydrationSignalDwellMs &&
-            started > 0 && now_ms() - started >= kSessionMinActiveMs) {
+            now_ms() - ready_since >= dwell_ms &&
+            started > 0 && now_ms() - started >= min_active_ms) {
             end_save_load_session("engine signals settled");
         } else if (started > 0 && now_ms() - started >= kSessionHardCapMs) {
             end_save_load_session("session hard cap");
@@ -279,9 +307,10 @@ inline bool is_stability_sanitize_paused() {
            !is_gameplay_world_stable_for_sanitize();
 }
 
-// UE async task teardown during save-load hydration: do not run ManageTasks lookups (tombstone 25/26/29/30).
+// ManageTasks hot path: active session / ms_bLoading only — not post-session cooldown (touch HUD needs tasks).
 static inline bool is_task_manager_hotpath_paused() {
-    return is_save_load_active();
+    if (read_ms_b_loading()) return true;
+    return g_save_load_session.load(std::memory_order_acquire);
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
@@ -676,6 +705,9 @@ void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     begin_save_load_session();
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d) — begin session", slot);
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
+    const bool load_ok = out && is_pointer_readable(out) && *out;
+    LOGI("💾 [SaveLoad] GenericLoad(slot=%d) done — ok=%d ms_bFailed=%d",
+         slot, load_ok ? 1 : 0, read_ms_b_load_failed() ? 1 : 0);
 }
 
 void proxy_generic_game_storage_after_success_load() {
@@ -1082,7 +1114,7 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    STABILITY_VOID_SAVE_LOAD_SKIP_HOTPATH(proxy_process_buoyancy, self);
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_buoyancy, self);
     if (!self || !is_pointer_readable(self)) return;
     sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
@@ -1094,7 +1126,7 @@ fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
 
 void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    STABILITY_VOID_SAVE_LOAD_SKIP_HOTPATH(proxy_process_static_counter, self);
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_static_counter, self);
     if (!self || !is_pointer_readable(self)) return;
     if (self) {
         sanitize_task_manager_slots(reinterpret_cast<char*>(self) + 8, "ProcessStaticCounter");
@@ -1158,7 +1190,7 @@ inline void sanitize_sequence_task_slots(void* self) {
 
 void proxy_sequence_flush(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    STABILITY_VOID_SAVE_LOAD_SKIP_HOTPATH(proxy_sequence_flush, self);
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_sequence_flush, self);
     if (!self || !is_pointer_readable(self)) return;
     if (self) {
         sanitize_sequence_task_slots(self);
@@ -2005,7 +2037,7 @@ fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
 
 void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_STACK_SCOPE();
-    STABILITY_VOID_SAVE_LOAD_SKIP_HOTPATH(proxy_process_after_proc_col, self);
+    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_after_proc_col, self);
     // RE: self null → no cbz 55debf4; zero-filled vtable → no cbz.
     if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
     void* task_mgr = reinterpret_cast<char*>(self) + 8;

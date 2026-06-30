@@ -209,7 +209,7 @@ fn_ScriptGenEmergencyCar_t g_orig_script_generate_one_emergency_car = nullptr;
 void proxy_script_generate_one_emergency_car(unsigned int model, CVector pos) {
     SHADOWHOOK_STACK_SCOPE();
 
-    if (is_mod_dispatch_paused()) {
+    if (is_scene_transition_active()) {
         return;
     }
 
