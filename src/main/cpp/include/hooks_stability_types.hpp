@@ -60,6 +60,7 @@ typedef bool (*fn_SimpleAnimMakeAbortable_t)(void* self, void* ped, int priority
 typedef bool (*fn_SimpleArrestPedMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef bool (*fn_ComplexArrestPedMakeAbortable_t)(void* self, void* ped, int priority, void* event);
 typedef void (*fn_ProcessAfterProcCol_t)(void* self);
+typedef void (*fn_ScanForEvents_t)(void* self, void* ped);
 typedef void (*fn_ScanForCollisionEvents_t)(void* self, void* ped, void* event_group);
 typedef void* (*fn_ComputePedCollisionWithPedResponse_t)(void* self, void* event, void* task, void* task2);
 typedef void (*fn_UpdateCarAI_t)(void* vehicle);
@@ -137,6 +138,7 @@ extern fn_SimpleAnimMakeAbortable_t g_orig_simple_anim_make_abortable;
 extern fn_SimpleArrestPedMakeAbortable_t g_orig_simple_arrest_ped_make_abortable;
 extern fn_ComplexArrestPedMakeAbortable_t g_orig_complex_arrest_ped_make_abortable;
 extern fn_ProcessAfterProcCol_t g_orig_process_after_proc_col;
+extern fn_ScanForEvents_t g_orig_scan_for_events;
 extern fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events;
 extern fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with_ped_response;
 
@@ -200,5 +202,6 @@ bool proxy_simple_anim_make_abortable(void* self, void* ped, int priority, void*
 bool proxy_simple_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event);
 bool proxy_complex_arrest_ped_make_abortable(void* self, void* ped, int priority, void* event);
 void proxy_process_after_proc_col(void* self);
+void proxy_scan_for_events(void* self, void* ped);
 void proxy_scan_for_collision_events(void* self, void* ped, void* event_group);
 void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2);

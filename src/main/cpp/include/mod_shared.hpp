@@ -219,6 +219,7 @@ extern void* g_stub_simple_anim_make_abortable;
 extern void* g_stub_simple_arrest_ped_make_abortable;
 extern void* g_stub_complex_arrest_ped_make_abortable;
 extern void* g_stub_process_after_proc_col;
+extern void* g_stub_scan_for_events;
 extern void* g_stub_scan_for_collision_events;
 extern void* g_stub_compute_ped_collision_with_ped_response;
 

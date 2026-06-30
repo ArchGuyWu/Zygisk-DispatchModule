@@ -1373,6 +1373,11 @@ void proxy_process_buoyancy(void* self) {
     if (is_task_manager_query_paused()) return;
     STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_buoyancy, self);
     if (!is_ped_pointer_valid_safe(self)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(self));
+    if (intel && is_pointer_readable(intel) &&
+        task_manager_has_unsafe_slot(reinterpret_cast<char*>(intel) + 8, 11, 0x18)) {
+        return;
+    }
     sanitize_ped_tasks(self);
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
 }
@@ -2307,6 +2312,8 @@ fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
 
 void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) return;
+    if (is_task_manager_query_paused()) return;
     STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_after_proc_col, self);
     // RE: self null → no cbz 55debf4; zero-filled vtable → no cbz.
     if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
@@ -2326,6 +2333,34 @@ void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_CALL_PREV(proxy_process_after_proc_col, self);
 }
 
+// --- CEventScanner::ScanForEvents Hook ---
+// RE: ped intel task chain vtable+0x28; null deref 55dbd98 (tombstone_00/45).
+void* g_stub_scan_for_events = nullptr;
+fn_ScanForEvents_t g_orig_scan_for_events = nullptr;
+
+void proxy_scan_for_events(void* self, void* ped) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_pointer_readable(ped)) return;
+    if (is_task_manager_query_paused()) return;
+    if (is_stability_sanitize_paused()) {
+        SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
+        return;
+    }
+    if (!is_ped_pointer_valid_safe(ped)) return;
+    void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
+    if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
+    sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForEvents", 0x28);
+    sanitize_task_manager_primary_chains(reinterpret_cast<char*>(intel) + 8, "ScanForEvents", 0x28);
+    void* task_mgr = reinterpret_cast<char*>(intel) + 8;
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_chain_walk_unsafe(task, 0x28)) return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
+}
+
 // --- CCollisionEventScanner::ScanForCollisionEvents Hook ---
 // RE: ped+0x5e8 intel loaded with no cbz 55da968; stale task vtable+0x18 fault 55da9a0 (tombstone_38).
 void* g_stub_scan_for_collision_events = nullptr;
@@ -2333,8 +2368,9 @@ fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events = nullptr;
 
 void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_pointer_readable(ped)) return;
+    if (is_task_manager_query_paused()) return;
     if (is_stability_sanitize_paused()) {
-        if (!ped || !is_pointer_readable(ped)) return;
         SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
         return;
     }

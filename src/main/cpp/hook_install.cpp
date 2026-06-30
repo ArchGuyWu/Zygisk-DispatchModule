@@ -963,6 +963,15 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CPedIntelligence::ProcessAfterProcCol: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    g_stub_scan_for_events = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN13CEventScanner13ScanForEventsER4CPed",
+        reinterpret_cast<void*>(proxy_scan_for_events),
+        reinterpret_cast<void**>(&g_orig_scan_for_events));
+    if (g_stub_scan_for_events) LOGI("✅ Hooked CEventScanner::ScanForEvents");
+    else LOGE("❌ Failed to hook CEventScanner::ScanForEvents: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     g_stub_scan_for_collision_events = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN22CCollisionEventScanner22ScanForCollisionEventsER4CPedP11CEventGroup",
