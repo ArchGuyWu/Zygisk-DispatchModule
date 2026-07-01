@@ -73,10 +73,11 @@ static void try_restore_hud_after_skip_cutscene() {
 
 static bool touch_rehydrate_world_ready() {
     if (is_scene_transition_active()) return false;
-    if (!is_player_world_active()) return false;
     if (is_skip_cutscene_pipeline_active()) return false;
-    if (is_disk_deserialize_active()) return false;
-    return true;
+    if (is_disk_deserialize_active() || is_generic_load_in_progress()) return false;
+    // gameState 0/8 overlay: player exists but world_query_ready may still be false.
+    if (is_player_world_active()) return true;
+    return is_player_ped_present();
 }
 
 static void clear_widget_hide_flags(int widget_id) {
@@ -272,6 +273,10 @@ void vanilla_qol_on_skip_pipeline_cleared() {
 
 void vanilla_qol_on_deserialize_complete() {
     schedule_touch_rehydrate("deserialize complete");
+}
+
+void vanilla_qol_schedule_touch_rehydrate(const char* reason) {
+    schedule_touch_rehydrate(reason);
 }
 
 void install_vanilla_qol_fixes(void* lib_handle) {

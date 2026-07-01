@@ -286,6 +286,7 @@ CPed* find_best_criminal_target_for_cop(CPed* cop, CVector crime_pos, float radi
 bool is_ped_pointer_valid_safe(void* target_ped);
 bool is_scene_transition_active();
 bool is_player_world_active();
+bool is_player_ped_present();
 bool is_save_load_active();
 bool is_save_load_session_or_loading();
 bool is_disk_deserialize_active();

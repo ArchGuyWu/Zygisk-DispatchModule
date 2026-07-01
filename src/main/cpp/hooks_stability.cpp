@@ -193,6 +193,9 @@ static int16_t read_screen_fade_status() {
 
 static bool should_block_fade_cancel_during_load_transition() {
     if (!is_engine_load_transition_active()) return false;
+    // GenericLoad tail must reset/start fade — blocking (0,0,*) here stuck fadeStatus=1
+    // and leaves loading HUD over gameplay (log 001214).
+    if (is_generic_load_in_progress() || read_ms_b_loading()) return false;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return false;
     const int16_t fade_status = read_screen_fade_status();
@@ -207,13 +210,19 @@ static void try_kick_fade_in_after_black(const char* via) {
     const int64_t cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
     if (cleared <= 0 || now_ms() - cleared < 300) return;
-    if (read_screen_fade_status() != 2) return;
+    const int16_t fade_status = read_screen_fade_status();
+    if (fade_status != 2) {
+        // Overlay stall: fade-out blocked mid-flight — kick fade-in after longer dwell.
+        if (fade_status != 1 || now_ms() - cleared < 1000) return;
+    }
     fn_CCamera_Fade_t fade_fn = g_orig_ccamera_fade ? g_orig_ccamera_fade : g_ccamera_fade;
     if (!fade_fn || !g_TheCamera || !is_pointer_readable(g_TheCamera)) return;
     g_fade_in_kick_attempted.store(true, std::memory_order_release);
     fade_fn(g_TheCamera, 2.0f, 0);
-    LOGW("💾 [SaveLoad] Fade-in kick — CCamera::Fade(2.0,0) fadeStatus=2 via %s "
+    vanilla_qol_schedule_touch_rehydrate("fade-in kick");
+    LOGW("💾 [SaveLoad] Fade-in kick — CCamera::Fade(2.0,0) fadeStatus=%d via %s "
          "streaming=%d",
+         static_cast<int>(fade_status),
          via,
          read_streaming_num_requested());
 }
@@ -631,6 +640,12 @@ bool is_player_world_active() {
     if (!g_FindPlayerPed) return false;
     CPlayerPed* player = g_FindPlayerPed(0);
     return player && player_ped_world_query_ready(player);
+}
+
+bool is_player_ped_present() {
+    if (!g_FindPlayerPed) return false;
+    void* player = g_FindPlayerPed(0);
+    return player && is_pointer_readable(player);
 }
 
 static bool is_gameplay_world_stable() {
@@ -1084,7 +1099,8 @@ using TaskGetIdFn_t = int (*)(void*);
 
 inline int call_task_get_id_safe(void* task) {
     if (!task || task_slot_unsafe_for_vtable_call(task, 0x28)) return -1;
-    // Save-load / hydration: never invoke GetId vtable+0x28 (#08–10, #33/#47).
+    // Save-load / hydration: never invoke GetId vtable+0x28 (#08–10, #33/#47/#48).
+    if (is_engine_load_transition_active()) return -1;
     if (is_stability_sanitize_paused()) return -1;
     if (is_post_load_task_hotpath_paused()) return -1;
     void** vtable = reinterpret_cast<void**>(task);
@@ -1646,19 +1662,6 @@ void* proxy_find_active_task(void* self, int type) {
     if (!self || !is_pointer_readable(self)) return nullptr;
     const bool fastpath = is_load_transition_engine_fastpath();
     if (!fastpath && is_task_manager_lookup_paused()) return nullptr;
-    if (task_manager_has_unsafe_slot(self, 11, 0x28)) {
-        LOGW("⚠️ [FindActiveTaskByType] unsafe task mgr %p — skip (tombstone_47)", self);
-        return nullptr;
-    }
-    for (int i = 0; i < 11; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-        if (!is_pointer_readable(task_slot)) continue;
-        void* task = *task_slot;
-        if (task && task_subtask_chain_field_unsafe(task, 0x10)) {
-            LOGW("⚠️ [FindActiveTaskByType] unsafe chain slot %d — skip (tombstone_47)", i);
-            return nullptr;
-        }
-    }
     if (!fastpath && !is_stability_sanitize_paused()) {
         sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
         sanitize_task_manager_primary_chains(self, "CTaskManager::FindActiveTaskByType", 0x28);
@@ -1689,10 +1692,8 @@ inline void sanitize_intel_for_task_lookup(void* intel) {
 void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_load_transition_engine_fastpath()) {
-        return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
-    }
-    if (is_task_manager_lookup_paused()) return nullptr;
+    const bool fastpath = is_load_transition_engine_fastpath();
+    if (!fastpath && is_task_manager_lookup_paused()) return nullptr;
     if (is_post_load_hydration_paused()) return nullptr;
     if (intelligence_zero_filled(self) ||
         intelligence_process_hotpath_unsafe(self, 0x28)) {
@@ -1712,10 +1713,10 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
         void* task = *task_slot;
         if (task && task_chain_walk_unsafe(task, 0x28)) return nullptr;
     }
-    if (!is_stability_sanitize_paused()) {
+    if (!fastpath && !is_stability_sanitize_paused()) {
         sanitize_intel_for_task_lookup(self);
     }
-    // Never CALL_PREV — engine walks vtable+0x28 on half-hydrated slots (#05–07).
+    // Never CALL_PREV — engine walks vtable+0x28 on half-hydrated slots (#05–07/#48).
     return intel_find_task_by_type_readonly(self, type);
 }
 
@@ -2311,18 +2312,16 @@ void* proxy_get_task_main(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
-    if (is_load_transition_engine_fastpath()) {
-        return SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
-    }
-    if (is_task_manager_lookup_paused()) return nullptr;
+    const bool fastpath = is_load_transition_engine_fastpath();
+    if (!fastpath && is_task_manager_lookup_paused()) return nullptr;
     if (is_post_load_hydration_paused()) return nullptr;
     if (intelligence_zero_filled(self) ||
         intelligence_process_hotpath_unsafe(self, 0x28)) {
         LOGW("⚠️ [GetTaskMain] unsafe group intel %p — skip (tombstone_05)", self);
         return nullptr;
     }
-    // Save-load / hydration: never CALL_PREV — result vtable+0x28 deref (#05).
-    if (is_stability_sanitize_paused()) return nullptr;
+    // Save-load / hydration: never CALL_PREV — result vtable+0x28 deref (#05/#48).
+    if (fastpath || is_stability_sanitize_paused()) return nullptr;
     void* result = SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
     if (!result || !is_task_vtable_safe(result)) {
         if (result) {
