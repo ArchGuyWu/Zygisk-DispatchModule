@@ -494,24 +494,16 @@ static bool is_gameplay_world_stable() {
     return true;
 }
 
-// Brief post-deserialize tail (gameState==0) before LOADING_STARTED.
-// ms_bLoading / gameState 7-8 must keep ManageTasks on tramp path — force_safe hangs load fade.
+// Synchronous GenericLoad only — gameState==0 post-deserialize must run ManageTasks tramp
+// (force_safe safe@0x25c pursuit loop stalls LOADING_STARTED; tombstone_33/34 hang).
 static inline bool is_early_deserialize_tail_paused() {
-    if (is_generic_load_in_progress()) return true;
-    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
-    uint8_t game_state = 0;
-    if (!read_game_state(&game_state)) return true;
-    return game_state == 0;
+    return is_generic_load_in_progress();
 }
 
-// Tramp @ +0x168/+0x278 + pursuit +0x29c hook cover stale paths; force_safe only GenericLoad/+0 tail.
+// force_safe only while GenericLoad CALL_PREV is active; tramp + in-body guards cover tail.
 static void refresh_manage_tasks_force_safe() {
-    const bool want = is_early_deserialize_tail_paused();
-    const char* reason = "deserialize tail";
-    if (is_generic_load_in_progress()) {
-        reason = "GenericLoad";
-    }
-    set_manage_tasks_force_safe(want, reason);
+    const bool want = is_generic_load_in_progress();
+    set_manage_tasks_force_safe(want, want ? "GenericLoad" : "GenericLoad end");
 }
 
 bool is_scene_transition_active() {
@@ -2361,7 +2353,7 @@ void proxy_flush_tasks(void* self, void* pair, void* ped) {
 }
 
 // --- CCam::Process_FollowPed_SA Hook ---
-// Tombstone 27/28: null/stale CCam during post-deserialize session (gameState=0).
+// Tombstone 27/28: null/stale CCam during synchronous GenericLoad only.
 void* g_stub_process_follow_ped_sa = nullptr;
 fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa = nullptr;
 
