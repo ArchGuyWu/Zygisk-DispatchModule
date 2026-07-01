@@ -408,6 +408,11 @@ void poll_save_load_hydration_state() {
              have_game_state ? game_state : 255u,
              read_streaming_num_requested(),
              read_skip_pipeline_active() ? 1 : 0);
+    } else if (prev_ms_loading) {
+        g_ms_b_loading_cleared_ms.store(now_ms(), std::memory_order_release);
+        LOGI("💾 [SaveLoad] ms_bLoading cleared (pre-session) — gameState=%u streaming=%d",
+             have_game_state ? game_state : 255u,
+             read_streaming_num_requested());
     }
 
     if (read_ms_b_load_failed() && g_save_load_session.load(std::memory_order_acquire)) {
@@ -512,6 +517,13 @@ static inline bool is_engine_load_transition_active() {
     return game_state == 0 || game_state == kGameStateLoadingStarted;
 }
 
+// Fade window after ms_bLoading clears: post-load hydration gates must stay off (log 211226 hang).
+static inline bool is_fade_transition_game_state() {
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state)) return false;
+    return game_state == 0 || game_state == kGameStateLoadingStarted;
+}
+
 // 0→9 fade: run vanilla ped/intel hooks; strict unsafe gates cause permanent hang (log 202941).
 static inline bool is_load_transition_engine_fastpath() {
     return is_engine_load_transition_active() || is_generic_load_in_progress();
@@ -606,6 +618,7 @@ static inline bool is_manage_tasks_execution_paused() {
 
 // Shared post-load tail: gameState==9 + streaming==0 (+ short dwell after settle).
 static inline bool is_post_load_hydration_paused() {
+    if (is_fade_transition_game_state()) return false;
     const int64_t loading_cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
     if (loading_cleared <= 0) return false;
@@ -622,6 +635,7 @@ static inline bool is_post_load_hydration_paused() {
 
 // Post ms_bLoading tail: block task vtable walks / ProcessControl until world fully ready (#08–10).
 static inline bool is_post_load_task_hotpath_paused() {
+    if (is_fade_transition_game_state()) return false;
     const int64_t loading_cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
     if (loading_cleared <= 0) return false;
@@ -679,6 +693,7 @@ static inline bool is_task_manager_lookup_paused() {
 
 // u_strlen post-load: strict hydration only (ignore relaxed session-end shortcuts, #02–04).
 static inline bool is_u_strlen_post_load_hard_paused() {
+    if (is_fade_transition_game_state()) return false;
     const int64_t loading_cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
     if (loading_cleared <= 0) return false;
@@ -700,6 +715,7 @@ static inline bool is_u_strlen_post_load_hard_paused() {
 
 // u_strlen: pause until gameState==9 + streaming==0 (+ short dwell), not fixed timer.
 static inline bool is_u_strlen_paused() {
+    if (is_fade_transition_game_state()) return false;
     if (read_ms_b_loading()) return true;
     uint8_t game_state = 0;
     if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
