@@ -119,10 +119,30 @@ fn_CCamera_Fade_t g_ccamera_fade = nullptr;
 fn_CCamera_GetScreenFadeStatus_t g_get_screen_fade_status = nullptr;
 fn_CCamera_RunDeferredFadeIfBound_t g_orig_ccamera_run_deferred_fade_if_bound = nullptr;
 fn_CCamera_Fade_t g_orig_ccamera_fade = nullptr;
+fn_UGameterface_RunningDeferredLoadingScreenFade_t g_running_deferred_loading_screen_fade =
+    nullptr;
+fn_UGameterface_StartLoadingTransition_t g_start_loading_transition = nullptr;
+fn_CGameLogic_Update_t g_orig_cgame_logic_update = nullptr;
 void* g_stub_ccamera_run_deferred_fade_if_bound = nullptr;
 void* g_stub_ccamera_fade = nullptr;
+void* g_stub_running_deferred_loading_screen_fade = nullptr;
+void* g_stub_cgame_logic_update = nullptr;
+fn_UGameterface_RunningDeferredLoadingScreenFade_t
+    g_orig_running_deferred_loading_screen_fade = nullptr;
 
+static std::atomic<void*> g_menu_gameterface_self{nullptr};
 static std::atomic<int> g_fade_kick_attempts{0};
+
+void notify_menu_gameterface_self(void* self) {
+    if (!self || !is_pointer_readable(self)) return;
+    g_menu_gameterface_self.store(self, std::memory_order_release);
+}
+
+void* get_menu_gameterface_self() {
+    void* self = g_menu_gameterface_self.load(std::memory_order_acquire);
+    if (self && is_pointer_readable(self)) return self;
+    return nullptr;
+}
 
 void notify_menu_read_save_path(const char* via) {
     // Kind flags only — do NOT begin session here. Starting session before
@@ -162,26 +182,62 @@ static bool read_game_state(uint8_t* out) {
     return true;
 }
 
+static int16_t read_screen_fade_status() {
+    if (!g_TheCamera || !is_pointer_readable(g_TheCamera) || !g_get_screen_fade_status) {
+        return -1;
+    }
+    return g_get_screen_fade_status(g_TheCamera);
+}
+
+static void try_run_deferred_camera_fade(const char* via, int attempt_no) {
+    if (!g_run_deferred_fade_if_bound || !g_TheCamera || !is_pointer_readable(g_TheCamera)) {
+        return;
+    }
+    g_run_deferred_fade_if_bound(g_TheCamera);
+    LOGW("💾 [SaveLoad] Fade kick — RunDeferredFadeIfBound #%d fadeStatus=%d via %s",
+         attempt_no,
+         static_cast<int>(read_screen_fade_status()),
+         via);
+}
+
 static void try_kick_fade_recovery(const char* via) {
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return;
     const int attempt = g_fade_kick_attempts.fetch_add(1, std::memory_order_acq_rel);
-    if (attempt >= 6) return;
-    if (!g_TheCamera || !is_pointer_readable(g_TheCamera)) {
-        LOGW("💾 [SaveLoad] Fade kick skip — TheCamera unreadable via %s", via);
+    if (attempt >= 4) return;
+
+    void* gameterface = get_menu_gameterface_self();
+    if (!gameterface) {
+        LOGW("💾 [SaveLoad] Fade kick skip — gameterface self null via %s", via);
         return;
     }
-    const int16_t fade_status =
-        g_get_screen_fade_status ? g_get_screen_fade_status(g_TheCamera) : -1;
-    if (g_run_deferred_fade_if_bound) {
-        g_run_deferred_fade_if_bound(g_TheCamera);
-        LOGW("💾 [SaveLoad] Fade kick — RunDeferredFadeIfBound #%d fadeStatus=%d via %s",
-             attempt + 1, static_cast<int>(fade_status), via);
+
+    if (attempt == 0) {
+        // GenericLoadReturn: one deferred pass only — engine already called
+        // RunningDeferredLoadingScreenFade(0,0,true) inside DoGameSpecificStuffAfterSucessLoad.
+        try_run_deferred_camera_fade(via, 1);
+        return;
     }
-    if (attempt >= 1 && g_ccamera_fade) {
-        g_ccamera_fade(g_TheCamera, 1.0f, 0);
-        LOGW("💾 [SaveLoad] Fade kick — CCamera::Fade(1.0,0) #%d via %s",
-             attempt + 1, via);
+
+    if (attempt == 1 && g_running_deferred_loading_screen_fade) {
+        g_running_deferred_loading_screen_fade(gameterface, 0.0f, 0, true);
+        LOGW("💾 [SaveLoad] Fade kick — RunningDeferredLoadingScreenFade(0,0,true) #2 via %s",
+             via);
+        try_run_deferred_camera_fade(via, 2);
+        return;
+    }
+
+    if (attempt == 2 && g_running_deferred_loading_screen_fade) {
+        g_running_deferred_loading_screen_fade(gameterface, 1.0f, 1, true);
+        LOGW("💾 [SaveLoad] Fade kick — RunningDeferredLoadingScreenFade(1,1,true) #3 via %s",
+             via);
+        try_run_deferred_camera_fade(via, 3);
+        return;
+    }
+
+    if (attempt == 3 && g_start_loading_transition) {
+        g_start_loading_transition(gameterface);
+        LOGW("💾 [SaveLoad] Fade kick — StartLoadingTransition #4 via %s", via);
     }
 }
 
@@ -201,7 +257,6 @@ static void maybe_log_load_transition_heartbeat(const char* via) {
          read_ms_b_loading() ? 1 : 0,
          static_cast<long long>(now - cleared),
          read_streaming_num_requested());
-    try_kick_fade_recovery(via);
 }
 
 // GenericLoad blocks GameThread — poll may miss ms_bLoading true→false edge (log 221406).
@@ -2607,6 +2662,47 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
     }
     if (g_orig_ccamera_fade) {
         g_orig_ccamera_fade(self, duration, direction);
+    }
+}
+
+void proxy_running_deferred_loading_screen_fade(void* self,
+                                                float duration,
+                                                int direction,
+                                                bool flag) {
+    SHADOWHOOK_STACK_SCOPE();
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    if (is_engine_load_transition_active() || is_generic_load_in_progress()) {
+        LOGI("💾 [SaveLoad] RunningDeferredLoadingScreenFade(%.2f,%d,%d) self=%p gameState=%u",
+             duration,
+             direction,
+             flag ? 1 : 0,
+             self,
+             have_game_state ? game_state : 255u);
+    }
+    if (g_orig_running_deferred_loading_screen_fade) {
+        g_orig_running_deferred_loading_screen_fade(self, duration, direction, flag);
+    }
+}
+
+void proxy_cgame_logic_update() {
+    SHADOWHOOK_STACK_SCOPE();
+    static uint8_t prev_game_state = 255;
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    if (have_game_state && game_state != prev_game_state &&
+        (game_state <= kGameStateIdle || prev_game_state <= kGameStateIdle)) {
+        LOGI("💾 [SaveLoad] CGameLogic::Update — gameState %u→%u ms_bLoading=%d streaming=%d",
+             prev_game_state,
+             game_state,
+             read_ms_b_loading() ? 1 : 0,
+             read_streaming_num_requested());
+        prev_game_state = game_state;
+    } else if (have_game_state) {
+        prev_game_state = game_state;
+    }
+    if (g_orig_cgame_logic_update) {
+        g_orig_cgame_logic_update();
     }
 }
 

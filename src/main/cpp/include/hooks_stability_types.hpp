@@ -72,6 +72,12 @@ typedef bool (*fn_GetNearestCarDoor_t)(void* ped, void* vehicle, void* out_vec, 
 typedef void (*fn_CCamera_RunDeferredFadeIfBound_t)(void* camera);
 typedef void (*fn_CCamera_Fade_t)(void* camera, float duration, int16_t direction);
 typedef int16_t (*fn_CCamera_GetScreenFadeStatus_t)(void* camera);
+typedef void (*fn_UGameterface_RunningDeferredLoadingScreenFade_t)(void* self,
+                                                                    float duration,
+                                                                    int direction,
+                                                                    bool flag);
+typedef void (*fn_UGameterface_StartLoadingTransition_t)(void* self);
+typedef void (*fn_CGameLogic_Update_t)();
 
 extern fn_SetPedPosition_t g_orig_set_ped_pos;
 extern fn_ManageTasks_t g_orig_manage_tasks;
@@ -154,6 +160,12 @@ extern fn_CCamera_Fade_t g_ccamera_fade;
 extern fn_CCamera_GetScreenFadeStatus_t g_get_screen_fade_status;
 extern fn_CCamera_RunDeferredFadeIfBound_t g_orig_ccamera_run_deferred_fade_if_bound;
 extern fn_CCamera_Fade_t g_orig_ccamera_fade;
+extern fn_UGameterface_RunningDeferredLoadingScreenFade_t
+    g_running_deferred_loading_screen_fade;
+extern fn_UGameterface_RunningDeferredLoadingScreenFade_t
+    g_orig_running_deferred_loading_screen_fade;
+extern fn_UGameterface_StartLoadingTransition_t g_start_loading_transition;
+extern fn_CGameLogic_Update_t g_orig_cgame_logic_update;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -223,3 +235,8 @@ void proxy_scan_for_collision_events(void* self, void* ped, void* event_group);
 void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2);
 void proxy_ccamera_run_deferred_fade_if_bound(void* self);
 void proxy_ccamera_fade(void* self, float duration, int16_t direction);
+void proxy_running_deferred_loading_screen_fade(void* self,
+                                                float duration,
+                                                int direction,
+                                                bool flag);
+void proxy_cgame_logic_update();

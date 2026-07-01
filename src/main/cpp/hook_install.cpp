@@ -26,6 +26,8 @@
 
 extern void* g_stub_ccamera_fade;
 extern void* g_stub_ccamera_run_deferred_fade_if_bound;
+extern void* g_stub_running_deferred_loading_screen_fade;
+extern void* g_stub_cgame_logic_update;
 
 typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
 typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
@@ -217,6 +219,36 @@ void hook_thread_func() {
                 reinterpret_cast<void**>(&g_orig_ccamera_run_deferred_fade_if_bound));
             if (g_stub_ccamera_run_deferred_fade_if_bound) {
                 LOGI("✅ Hooked CCamera::RunDeferredFadeIfBound");
+            }
+        }
+    }
+
+    RESOLVE_SYM(lib, g_running_deferred_loading_screen_fade,
+                "_ZN12UGameterface32RunningDeferredLoadingScreenFadeEfib",
+                fn_UGameterface_RunningDeferredLoadingScreenFade_t);
+    RESOLVE_SYM(lib, g_start_loading_transition,
+                "_ZN12UGameterface22StartLoadingTransitionEv",
+                fn_UGameterface_StartLoadingTransition_t);
+    {
+        void* deferred_menu_fade_sym = xdl_sym(
+            lib, "_ZN12UGameterface32RunningDeferredLoadingScreenFadeEfib", nullptr);
+        if (deferred_menu_fade_sym) {
+            g_stub_running_deferred_loading_screen_fade = shadowhook_hook_sym_addr(
+                deferred_menu_fade_sym,
+                reinterpret_cast<void*>(proxy_running_deferred_loading_screen_fade),
+                reinterpret_cast<void**>(&g_orig_running_deferred_loading_screen_fade));
+            if (g_stub_running_deferred_loading_screen_fade) {
+                LOGI("✅ Hooked UGameterface::RunningDeferredLoadingScreenFade");
+            }
+        }
+        void* cgame_logic_update_sym = xdl_sym(lib, "_ZN10CGameLogic6UpdateEv", nullptr);
+        if (cgame_logic_update_sym) {
+            g_stub_cgame_logic_update = shadowhook_hook_sym_addr(
+                cgame_logic_update_sym,
+                reinterpret_cast<void*>(proxy_cgame_logic_update),
+                reinterpret_cast<void**>(&g_orig_cgame_logic_update));
+            if (g_stub_cgame_logic_update) {
+                LOGI("✅ Hooked CGameLogic::Update");
             }
         }
     }

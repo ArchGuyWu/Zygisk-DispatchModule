@@ -196,6 +196,7 @@ static void* g_stub_jump_to_new_game = nullptr;
 
 bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
     SHADOWHOOK_STACK_SCOPE();
+    notify_menu_gameterface_self(self);
     notify_menu_read_save_path("USanAndreasInterface::LoadDataInSlot");
     LOGI("💾 [SaveLoad] USanAndreasInterface::LoadDataInSlot(slot=%d)", slot);
     const bool ok = SHADOWHOOK_CALL_PREV(proxy_san_andreas_load_data_in_slot, self, slot);
@@ -207,6 +208,7 @@ bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
 
 void proxy_gameterface_load_data_in_slot(void* self, int slot) {
     SHADOWHOOK_STACK_SCOPE();
+    notify_menu_gameterface_self(self);
     notify_menu_read_save_path("UGameterface::LoadDataInSlot");
     LOGI("💾 [SaveLoad] UGameterface::LoadDataInSlot(slot=%d) — awaiting commit event", slot);
     SHADOWHOOK_CALL_PREV(proxy_gameterface_load_data_in_slot, self, slot);
