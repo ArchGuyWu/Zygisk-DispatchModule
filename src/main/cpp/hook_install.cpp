@@ -863,7 +863,7 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CEntryExit::TransitionFinished: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CCam::Process_FollowPed_SA
+    // Hook CCam::Process_FollowPed_SA (post-deserialize stale/null CCam, tombstone_27/28)
     g_stub_process_follow_ped_sa = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN4CCam20Process_FollowPed_SAERK7CVectorfffb",

@@ -2368,12 +2368,30 @@ void proxy_flush_tasks(void* self, void* pair, void* ped) {
 }
 
 // --- CCam::Process_FollowPed_SA Hook ---
+// Tombstone 27/28: null/stale CCam during post-deserialize session (gameState=0).
 void* g_stub_process_follow_ped_sa = nullptr;
 fn_ProcessFollowPedSA_t g_orig_process_follow_ped_sa = nullptr;
 
+static inline bool cam_process_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return true;
+    void** vtable_slot = reinterpret_cast<void**>(self);
+    if (!is_pointer_readable(vtable_slot) || !*vtable_slot) return true;
+    return false;
+}
+
 void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
     SHADOWHOOK_STACK_SCOPE();
-    if (!self || !is_pointer_readable(self)) return;
+    if (is_player_info_process_paused()) {
+        if (cam_process_unsafe(self)) {
+            LOGW("⚠️ [CCam::Process_FollowPed_SA] unsafe %p — skip load (tombstone_27/28)",
+                 self);
+        }
+        return;
+    }
+    if (cam_process_unsafe(self)) {
+        LOGW("⚠️ [CCam::Process_FollowPed_SA] unsafe %p — skip (tombstone_27/28)", self);
+        return;
+    }
     SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
 }
 
