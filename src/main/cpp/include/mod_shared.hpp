@@ -181,6 +181,7 @@ extern void* g_stub_add_police_occupants;
 extern void* g_stub_play_footsteps;
 extern void* g_stub_process_buoyancy;
 extern void* g_stub_player_ped_process_control;
+extern void* g_stub_player_info_process;
 extern void* g_stub_process_static_counter;
 extern void* g_stub_cbuoyancy_process_buoyancy;
 extern void* g_stub_u_strlen;

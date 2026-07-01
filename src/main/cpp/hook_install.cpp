@@ -667,6 +667,16 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CPlayerPed::ProcessControl: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
+    // Hook CPlayerInfo::Process (GenericLoad 期 null this / 半水合 intel 解引用, tombstone_23/24)
+    g_stub_player_info_process = shadowhook_hook_sym_name(
+        TARGET_LIB,
+        "_ZN11CPlayerInfo7ProcessEi",
+        reinterpret_cast<void*>(proxy_player_info_process),
+        reinterpret_cast<void**>(&g_orig_player_info_process));
+    if (g_stub_player_info_process) LOGI("✅ Hooked CPlayerInfo::Process");
+    else LOGE("❌ Failed to hook CPlayerInfo::Process: %s",
+              shadowhook_to_errmsg(shadowhook_get_errno()));
+
     // Hook CPedIntelligence::ProcessStaticCounter (防止更新静态计数器时对零填充任务解引用闪退)
     g_stub_process_static_counter = shadowhook_hook_sym_name(
         TARGET_LIB,

@@ -43,6 +43,7 @@ inline bool ped_intel_slot_unsafe(void* ped);
 inline bool be_in_group_control_unsafe(void* self, void* ped);
 inline bool ped_buoyancy_unsafe(void* ped);
 inline bool intelligence_static_counter_unsafe(void* intel);
+inline void* get_ped_intelligence_safe(void* ped);
 
 // =====================================================================
 // Scene transition / interior entry state (yellow marker warp UX)
@@ -1777,6 +1778,58 @@ void proxy_process_buoyancy(void* self) {
         sanitize_ped_tasks(self);
     }
     SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
+}
+
+// --- CPlayerInfo::Process Hook ---
+// RE: null this (x0=0) during GenericLoad tail — reads ped/intel before hydrate (tombstone_23/24).
+void* g_stub_player_info_process = nullptr;
+fn_PlayerInfoProcess_t g_orig_player_info_process = nullptr;
+
+static inline bool is_player_info_process_paused() {
+    if (read_ms_b_loading()) return true;
+    if (is_generic_load_in_progress()) return true;
+    if (is_disk_deserialize_active()) return true;
+    if (is_save_load_active()) return true;
+    if (g_save_load_session.load(std::memory_order_acquire)) return true;
+    if (is_ped_physics_hotpath_paused()) return true;
+    if (is_post_load_task_hotpath_paused()) return true;
+    return false;
+}
+
+static inline bool player_info_process_crash_unsafe(void* self) {
+    if (!self || !is_pointer_readable(self)) return true;
+    if (g_FindPlayerPed) {
+        void* ped = g_FindPlayerPed(0);
+        if (!ped || !player_ped_world_query_ready(ped)) return true;
+        if (ped_intel_slot_unsafe(ped)) return true;
+        void* intel = get_ped_intelligence_safe(ped);
+        if (intel && intelligence_static_counter_unsafe(intel)) return true;
+    }
+    return false;
+}
+
+void proxy_player_info_process(void* self, int player_index) {
+    SHADOWHOOK_STACK_SCOPE();
+    if (!self || !is_pointer_readable(self)) {
+        if (is_player_info_process_paused()) {
+            LOGW("⚠️ [PlayerInfo::Process] null self idx=%d — skip (tombstone_23/24)",
+                 player_index);
+        }
+        return;
+    }
+    if (is_player_info_process_paused()) {
+        if (player_info_process_crash_unsafe(self)) {
+            LOGW("⚠️ [PlayerInfo::Process] unsafe %p idx=%d — skip load (tombstone_23/24)",
+                 self, player_index);
+        }
+        return;
+    }
+    if (player_info_process_crash_unsafe(self)) {
+        LOGW("⚠️ [PlayerInfo::Process] unsafe %p idx=%d — skip (tombstone_23/24)",
+             self, player_index);
+        return;
+    }
+    SHADOWHOOK_CALL_PREV(proxy_player_info_process, self, player_index);
 }
 
 // --- CPlayerPed::ProcessControl Hook ---
