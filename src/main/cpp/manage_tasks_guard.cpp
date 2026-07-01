@@ -1,5 +1,7 @@
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -32,14 +34,31 @@ bool make_page_writable(void* addr) {
     return mprotect(reinterpret_cast<void*>(page), static_cast<size_t>(page_size), PROT_READ | PROT_WRITE | PROT_EXEC) == 0;
 }
 
+bool finalize_trampoline_page(void* page, size_t used_bytes) {
+    if (!page || page == MAP_FAILED) return false;
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return false;
+    __builtin___clear_cache(reinterpret_cast<char*>(page),
+                            reinterpret_cast<char*>(page) + static_cast<ptrdiff_t>(used_bytes));
+    // W^X: RW during write, then RX — RWX mmap is non-executable on Android 14+.
+    if (mprotect(page, static_cast<size_t>(page_size), PROT_READ | PROT_EXEC) != 0) {
+        LOGE("❌ [ManageTasksGuard] mprotect RX failed: %s", strerror(errno));
+        return false;
+    }
+    return true;
+}
+
 void* alloc_trampoline(uint32_t* out_words, size_t count) {
     const long page_size = sysconf(_SC_PAGESIZE);
-    void* page = mmap(nullptr, static_cast<size_t>(page_size), PROT_READ | PROT_WRITE | PROT_EXEC,
+    if (page_size <= 0) return nullptr;
+    void* page = mmap(nullptr, static_cast<size_t>(page_size), PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (page == MAP_FAILED) return nullptr;
     std::memcpy(page, out_words, count * sizeof(uint32_t));
-    __builtin___clear_cache(reinterpret_cast<char*>(page),
-                            reinterpret_cast<char*>(page) + static_cast<ptrdiff_t>(count * sizeof(uint32_t)));
+    if (!finalize_trampoline_page(page, count * sizeof(uint32_t))) {
+        munmap(page, static_cast<size_t>(page_size));
+        return nullptr;
+    }
     return page;
 }
 
@@ -58,8 +77,11 @@ bool install_guard_at(uintptr_t base, size_t site_off, size_t resume_off, size_t
     void* resume = reinterpret_cast<void*>(base + resume_off);
     void* safe = reinterpret_cast<void*>(base + safe_off);
 
-    void* tramp = mmap(nullptr, static_cast<size_t>(sysconf(_SC_PAGESIZE)),
-                       PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    const long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) return false;
+
+    void* tramp = mmap(nullptr, static_cast<size_t>(page_size), PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (tramp == MAP_FAILED) {
         LOGE("❌ [ManageTasksGuard] mmap failed for %s", label);
         return false;
@@ -73,8 +95,10 @@ bool install_guard_at(uintptr_t base, size_t site_off, size_t resume_off, size_t
     words[3] = arm64_b(tramp_addr + 12, reinterpret_cast<uintptr_t>(resume));
     words[4] = arm64_b(tramp_addr + 16, reinterpret_cast<uintptr_t>(safe));
     std::memcpy(tramp, words, sizeof(words));
-    __builtin___clear_cache(reinterpret_cast<char*>(tramp),
-                            reinterpret_cast<char*>(tramp) + static_cast<ptrdiff_t>(sizeof(words)));
+    if (!finalize_trampoline_page(tramp, sizeof(words))) {
+        munmap(tramp, static_cast<size_t>(page_size));
+        return false;
+    }
 
     if (!patch_branch_to(site, tramp)) {
         LOGE("❌ [ManageTasksGuard] patch failed for %s @ %p", label, site);

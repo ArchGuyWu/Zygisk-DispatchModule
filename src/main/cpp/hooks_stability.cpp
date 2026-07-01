@@ -1194,8 +1194,8 @@ void proxy_generic_game_storage_after_success_load() {
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                            std::memory_order_release);
     begin_save_load_session();
-    LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_after_success_load);
+    LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
     vanilla_qol_on_deserialize_complete();
 }
 
