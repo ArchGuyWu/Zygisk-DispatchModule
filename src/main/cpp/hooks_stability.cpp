@@ -65,6 +65,7 @@ static constexpr uint8_t kGameStateIdle = 9;
 // Session hold is signal-driven (ms_bLoading / GameState / streaming / skip), not a fixed
 // post-spawn timer. kAbandonedSessionMs / kSessionHardCapMs are safety nets only.
 static std::atomic<bool> g_save_load_session{false};
+static std::atomic<bool> g_generic_load_in_progress{false};
 static std::atomic<int64_t> g_session_started_ms{0};
 static std::atomic<int64_t> g_ms_b_loading_cleared_ms{0};
 static std::atomic<int64_t> g_hydration_ready_since_ms{0};
@@ -496,6 +497,10 @@ bool is_scene_transition_active() {
 
 bool is_disk_deserialize_active() {
     return read_ms_b_loading();
+}
+
+bool is_generic_load_in_progress() {
+    return g_generic_load_in_progress.load(std::memory_order_acquire);
 }
 
 bool is_save_load_session_or_loading() {
@@ -1192,7 +1197,9 @@ void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     SHADOWHOOK_STACK_SCOPE();
     notify_menu_read_save_path("GenericLoad");
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d)", slot);
+    g_generic_load_in_progress.store(true, std::memory_order_release);
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
+    g_generic_load_in_progress.store(false, std::memory_order_release);
     const bool load_ok = out && is_pointer_readable(out) && *out;
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d) done — ok=%d ms_bFailed=%d",
          slot, load_ok ? 1 : 0, read_ms_b_load_failed() ? 1 : 0);
@@ -1203,8 +1210,8 @@ void proxy_generic_game_storage_after_success_load() {
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                            std::memory_order_release);
-    begin_save_load_session();
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_after_success_load);
+    begin_save_load_session();
     LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
     vanilla_qol_on_deserialize_complete();
 }

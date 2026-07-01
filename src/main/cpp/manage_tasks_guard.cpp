@@ -155,13 +155,19 @@ bool install_guard_at(uintptr_t base, size_t site_off, size_t resume_off, size_t
 
 extern "C" uintptr_t manage_tasks_guard_pick_path(void* x20, uintptr_t x8, uintptr_t resume,
                                                   uintptr_t safe) {
+    // Load / GenericLoad tail: always skip vtable walk @ +0x168/+0x278 (tombstone 17–20).
+    if (is_save_load_active() || is_generic_load_in_progress() || is_disk_deserialize_active()) {
+        if (x20) {
+            LOGW("⚠️ [ManageTasksGuard] load gate x20=%p — safe path (no resume)",
+                 x20);
+        }
+        return safe;
+    }
     if (manage_tasks_x20_resume_safe(x20, x8)) {
         return resume;
     }
-    if (is_save_load_active()) {
-        LOGW("⚠️ [ManageTasksGuard] stale x20=%p x8=0x%llx — safe path (load)",
-             x20, static_cast<unsigned long long>(x8));
-    }
+    LOGW("⚠️ [ManageTasksGuard] stale x20=%p x8=0x%llx — safe path",
+         x20, static_cast<unsigned long long>(x8));
     return safe;
 }
 
