@@ -2076,7 +2076,11 @@ fn_u_strlen_t g_orig_u_strlen = nullptr;
 int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
     if (!s) return 0;
-    if (is_probable_stale_icu_string_ptr(s)) {
+    // gameState 0/8 fade + disk load: live ICU buffers match …10d0 heuristic — vm_readv walk
+    // (returning 0 here hung GameThread before CTheScripts::Process — log 222415).
+    const bool engine_passthrough =
+        is_fade_transition_game_state() || is_load_transition_engine_fastpath();
+    if (!engine_passthrough && is_probable_stale_icu_string_ptr(s)) {
         LOGW("⚠️ [u_strlen_64] stale ICU pattern %p — return 0 (tombstone_02)", s);
         return 0;
     }
@@ -2091,10 +2095,8 @@ int32_t proxy_u_strlen(const void* s) {
     if (is_u_strlen_post_load_hard_paused()) {
         return 0;
     }
-    // Load tail: vm_readv only — never CALL_PREV (#09/#11).
-    // Never CALL_PREV — bounded UTF-16 walk for all readable pointers.
-    const int32_t len = safe_utf16_strlen_bounded(s);
-    if (len == 0) {
+    const int32_t len = safe_utf16_strlen_bounded(s, 4096, engine_passthrough);
+    if (!engine_passthrough && len == 0) {
         uint16_t first = 0;
         if (safe_read_u16(s, &first) && first != 0) {
             LOGW("⚠️ [u_strlen_64] stale/unterminated string %p — return 0 (tombstone_49)", s);

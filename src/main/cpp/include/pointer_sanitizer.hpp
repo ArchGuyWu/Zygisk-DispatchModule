@@ -37,4 +37,5 @@ inline bool is_probable_stale_icu_string_ptr(const void* s) {
 }
 
 // Bounded ICU-style UTF-16 strlen: vm_readv each unit (tombstone_01–10, #48–49).
-int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units = 4096);
+int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units = 4096,
+                                  bool allow_stale_icu_pattern = false);

@@ -157,6 +157,8 @@ void proxy_the_scripts_process() {
     }
 
     poll_save_load_transition();
+    // Fade stall diag lives in poll_save_load_hydration_state — if absent after load,
+    // GameThread hung before this hook (see u_strlen ICU passthrough fix, log 222415).
     if (!is_mod_dispatch_paused()) {
         on_main_thread_tick();
     }

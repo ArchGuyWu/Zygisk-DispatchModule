@@ -198,10 +198,11 @@ bool safe_read_u16(const void* addr, uint16_t* out) {
     return true;
 }
 
-int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units) {
+int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units,
+                                  bool allow_stale_icu_pattern) {
     if (!s || max_units <= 0) return 0;
     if (!is_userspace_address(s)) return 0;
-    if (is_probable_stale_icu_string_ptr(s)) return 0;
+    if (!allow_stale_icu_pattern && is_probable_stale_icu_string_ptr(s)) return 0;
     if (!vma_is_readable(s)) return 0;
 
     for (int32_t i = 0; i < max_units; ++i) {
