@@ -551,6 +551,21 @@ static inline bool is_post_load_hydration_paused() {
     return false;
 }
 
+// Post ms_bLoading tail: block task vtable walks / ProcessControl until world fully ready (#08–10).
+static inline bool is_post_load_task_hotpath_paused() {
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared <= 0) return false;
+    if (now_ms() - loading_cleared >= kUstrlenPostLoadHardCapMs) return false;
+    if (is_post_load_hydration_paused()) return true;
+    if (!is_gameplay_world_stable()) return true;
+    if (g_FindPlayerPed) {
+        void* player = g_FindPlayerPed(0);
+        if (!player || !player_ped_world_query_ready(player)) return true;
+    }
+    return false;
+}
+
 // Task-manager queries / ControlSubTask reads: pause for full save-load + post-load tail.
 // CALL_PREV on half-hydrated slots crashes (#14–16, #32–34, #39–40).
 static inline bool is_task_manager_query_paused() {
@@ -820,8 +835,9 @@ using TaskGetIdFn_t = int (*)(void*);
 
 inline int call_task_get_id_safe(void* task) {
     if (!task || task_slot_unsafe_for_vtable_call(task, 0x28)) return -1;
-    // Save-load / hydration: never invoke GetId vtable+0x28 (#33/#47).
+    // Save-load / hydration: never invoke GetId vtable+0x28 (#08–10, #33/#47).
     if (is_stability_sanitize_paused()) return -1;
+    if (is_post_load_task_hotpath_paused()) return -1;
     void** vtable = reinterpret_cast<void**>(task);
     auto fn = reinterpret_cast<TaskGetIdFn_t>(
         *reinterpret_cast<void**>(reinterpret_cast<char*>(*vtable) + 0x28));
@@ -1042,13 +1058,14 @@ fn_ScanForAttractorsInRange_t g_orig_scan_for_attractors_in_range = nullptr;
 
 void proxy_scan_for_attractors_in_range(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (!ped || !is_pointer_readable(ped)) return;
+    if (is_task_manager_lookup_paused() || is_post_load_hydration_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
     if (is_stability_sanitize_paused()) {
         if (is_manage_tasks_execution_paused()) return;
-        if (!ped || !is_pointer_readable(ped)) return;
         SHADOWHOOK_CALL_PREV(proxy_scan_for_attractors_in_range, self, ped);
         return;
     }
-    if (!ped || !is_pointer_readable(ped)) return;
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (intel && is_pointer_readable(intel)) {
         sanitize_task_manager_slots(reinterpret_cast<char*>(intel) + 8, "ScanForAttractorsInRange");
@@ -1740,11 +1757,14 @@ void proxy_player_ped_process_control(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_stability_sanitize_paused()) {
-        // ms_bLoading / gameState 7-8 must CALL_PREV or load screen hangs (ManageTasks rule).
-        if (is_manage_tasks_execution_paused() && player_ped_control_crash_unsafe(self)) {
-            LOGW("⚠️ [ProcessControl] unsafe player %p — skip hydration (tombstone_31)", self);
+        // gameState 9 + session hydration: never CALL_PREV (#08, ped+0x44 null deref).
+        if (is_manage_tasks_execution_paused() || is_post_load_task_hotpath_paused()) {
+            if (player_ped_control_crash_unsafe(self)) {
+                LOGW("⚠️ [ProcessControl] unsafe player %p — skip hydration (tombstone_08)", self);
+            }
             return;
         }
+        // ms_bLoading / gameState 7-8 must CALL_PREV or load screen hangs.
         SHADOWHOOK_CALL_PREV(proxy_player_ped_process_control, self);
         return;
     }
@@ -1809,8 +1829,6 @@ fn_u_strlen_t g_orig_u_strlen = nullptr;
 int32_t proxy_u_strlen(const void* s) {
     SHADOWHOOK_STACK_SCOPE();
     if (!s) return 0;
-    // Save-load / post-load / hydration: stale ICU string pointers (tombstone_01–10/48/49).
-    if (is_u_strlen_paused()) return 0;
     if (is_probable_stale_icu_string_ptr(s)) {
         LOGW("⚠️ [u_strlen_64] stale ICU pattern %p — return 0 (tombstone_02)", s);
         return 0;
@@ -1823,7 +1841,8 @@ int32_t proxy_u_strlen(const void* s) {
         LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_03)", s);
         return 0;
     }
-    // Never CALL_PREV — vm_readv bounded UTF-16 walk only.
+    // Load tail: vm_readv only — blanket 0 caused engine stack_chk_fail (#09).
+    // Never CALL_PREV — bounded UTF-16 walk for all readable pointers.
     const int32_t len = safe_utf16_strlen_bounded(s);
     if (len == 0) {
         uint16_t first = 0;
@@ -2949,8 +2968,9 @@ void proxy_scan_for_events(void* self, void* ped) {
         LOGW("⚠️ [ScanForEvents] unsafe ped %p intel chains — skip (tombstone_00)", ped);
         return;
     }
-    // Save-load / hydration: never CALL_PREV — engine walks vtable+0x28 (#00).
+    // Save-load / post-load tail: never CALL_PREV — engine walks vtable+0x28 (#08–10).
     if (is_stability_sanitize_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
     sanitize_intel_for_task_lookup(intel);
     SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
 }
@@ -2963,12 +2983,15 @@ fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events = nullptr;
 void proxy_scan_for_collision_events(void* self, void* ped, void* event_group) {
     SHADOWHOOK_STACK_SCOPE();
     if (!ped || !is_pointer_readable(ped)) return;
-    if (is_task_manager_query_paused()) return;
+    if (is_task_manager_lookup_paused()) return;
+    if (is_post_load_hydration_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
     if (!is_ped_pointer_valid_safe(ped)) return;
     void* intel = get_ped_intelligence(reinterpret_cast<CPed*>(ped));
     if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
     sanitize_intel_for_task_lookup(intel);
     if (!intel_task_chains_safe_for_scan_readonly(intel, 0x18)) return;
+    if (is_stability_sanitize_paused()) return;
     SHADOWHOOK_CALL_PREV(proxy_scan_for_collision_events, self, ped, event_group);
 }
 
