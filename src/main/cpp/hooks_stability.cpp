@@ -107,6 +107,7 @@ static constexpr int64_t kUstrlenPostLoadHardCapMs = 120000;
 
 void begin_save_load_session();
 static void refresh_manage_tasks_force_safe();
+static void notify_generic_load_returned(int slot, bool load_ok);
 
 void notify_menu_read_save_path(const char* via) {
     // Kind flags only — do NOT begin session here. Starting session before
@@ -143,6 +144,25 @@ static bool read_game_state(uint8_t* out) {
     if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return false;
     *out = *g_cgame_logic_game_state;
     return true;
+}
+
+// GenericLoad blocks GameThread — poll may miss ms_bLoading true→false edge (log 221406).
+static void notify_generic_load_returned(int slot, bool load_ok) {
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    const bool ms_loading = read_ms_b_loading();
+    if (!ms_loading) {
+        g_ms_b_loading_cleared_ms.store(now_ms(), std::memory_order_release);
+        LOGI("💾 [SaveLoad] ms_bLoading cleared at GenericLoad return — gameState=%u slot=%d ok=%d",
+             have_game_state ? game_state : 255u,
+             slot,
+             load_ok ? 1 : 0);
+    } else {
+        LOGI("💾 [SaveLoad] GenericLoad return — ms_bLoading still 1 gameState=%u slot=%d",
+             have_game_state ? game_state : 255u,
+             slot);
+        begin_save_load_session();
+    }
 }
 
 void notify_ue_menu_load_committed(const char* via, int slot) {
@@ -355,6 +375,7 @@ void poll_save_load_hydration_state() {
     static bool prev_skip_active = false;
     static uint8_t prev_game_state = kGameStateFrontendIdle;
     static int64_t last_diag_ms = 0;
+    static int64_t last_fade_stall_diag_ms = 0;
 
     const bool ms_loading = read_ms_b_loading();
     uint8_t game_state = 0;
@@ -417,6 +438,24 @@ void poll_save_load_hydration_state() {
 
     if (read_ms_b_load_failed() && g_save_load_session.load(std::memory_order_acquire)) {
         end_save_load_session("ms_bFailed");
+    }
+
+    if (have_game_state && game_state == 0) {
+        const int64_t cleared =
+            g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+        const int64_t now = now_ms();
+        if (cleared > 0 && now - cleared >= 3000 &&
+            now - last_fade_stall_diag_ms >= 3000) {
+            last_fade_stall_diag_ms = now;
+            LOGW("💾 [SaveLoad] Fade stall — gameState=0 for %lldms since ms_bLoading cleared "
+                 "(ms_bLoading=%d session=%d streaming=%d)",
+                 static_cast<long long>(now - cleared),
+                 ms_loading ? 1 : 0,
+                 g_save_load_session.load(std::memory_order_acquire) ? 1 : 0,
+                 read_streaming_num_requested());
+        }
+    } else {
+        last_fade_stall_diag_ms = 0;
     }
 
     if (g_save_load_session.load(std::memory_order_acquire)) {
@@ -1297,6 +1336,7 @@ void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     const bool load_ok = out && is_pointer_readable(out) && *out;
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d) done — ok=%d ms_bFailed=%d",
          slot, load_ok ? 1 : 0, read_ms_b_load_failed() ? 1 : 0);
+    notify_generic_load_returned(slot, load_ok);
 }
 
 void proxy_generic_game_storage_after_success_load() {

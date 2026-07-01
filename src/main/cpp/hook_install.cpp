@@ -460,16 +460,10 @@ void hook_thread_func() {
                        "CGameLogic::InitAtStartOfGame");
     #undef HOOK_SAVE_LOAD_SYM
 
-    void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
-    if (manage_tasks_sym) {
-        if (install_manage_tasks_inbody_guards(manage_tasks_sym)) {
-            LOGI("✅ Patched ManageTasks in-body null guards @ +0x168/+0x248/+0x280");
-        } else {
-            LOGW("⚠️ ManageTasks in-body guards failed — shadowhook proxy only");
-        }
-    } else {
-        LOGE("❌ ManageTasks symbol not found for in-body guard patch");
-    }
+    // In-body cbz-x20 tramps stall gameState=0→8 fade (null x20 skips every BLR — log 221406).
+    // Null-deref risk handled by proxy_manage_tasks fastpath; re-enable after x20 validity RE.
+    (void)xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
+    LOGI("ℹ️ ManageTasks in-body guards skipped — shadowhook proxy only");
 
     // Hook CTaskManager::ManageTasks (防止各种任务生命周期、清理或零值野指针导致的任务管理闪退)
     g_stub_manage_tasks = shadowhook_hook_sym_name(
