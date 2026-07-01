@@ -500,23 +500,9 @@ static inline bool is_early_deserialize_tail_paused() {
     return is_generic_load_in_progress();
 }
 
-// BLR-skip window: GenericLoad + brief gameState==0 (Continue/Load Game share this tail).
-// ms_bLoading/gameState 7-8 use tramp only so loading fade can run.
-static inline bool is_manage_tasks_blr_skip_window_active() {
-    if (is_generic_load_in_progress()) return true;
-    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
-    uint8_t game_state = 0;
-    if (!read_game_state(&game_state)) return true;
-    return game_state == 0;
-}
-
+// In-body tramps (null→after-BLR, non-null→vtable ldr) replace force_safe patches.
 static void refresh_manage_tasks_force_safe() {
-    const bool want = is_manage_tasks_blr_skip_window_active();
-    const char* reason = "deserialize tail";
-    if (is_generic_load_in_progress()) {
-        reason = "GenericLoad";
-    }
-    set_manage_tasks_force_safe(want, reason);
+    set_manage_tasks_force_safe(false, "tramp only");
 }
 
 bool is_scene_transition_active() {
