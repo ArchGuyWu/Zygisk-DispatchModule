@@ -577,6 +577,27 @@ static inline bool is_task_manager_lookup_paused() {
     return false;
 }
 
+// u_strlen post-load: strict hydration only (ignore relaxed session-end shortcuts, #02–04).
+static inline bool is_u_strlen_post_load_hard_paused() {
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared <= 0) return false;
+    if (now_ms() - loading_cleared >= kUstrlenPostLoadHardCapMs) return false;
+    if (!u_strlen_post_load_hydration_settled()) return true;
+    const int64_t ready_since =
+        g_u_strlen_hydration_ready_since_ms.load(std::memory_order_acquire);
+    if (ready_since <= 0 ||
+        now_ms() - ready_since < kUstrlenPostLoadDwellMs) {
+        return true;
+    }
+    if (!is_gameplay_world_stable()) return true;
+    if (g_FindPlayerPed) {
+        void* player = g_FindPlayerPed(0);
+        if (!player || !player_ped_world_query_ready(player)) return true;
+    }
+    return false;
+}
+
 // u_strlen: pause until gameState==9 + streaming==0 (+ short dwell), not fixed timer.
 static inline bool is_u_strlen_paused() {
     if (read_ms_b_loading()) return true;
@@ -592,14 +613,7 @@ static inline bool is_u_strlen_paused() {
     if (is_manage_tasks_execution_paused()) return true;
     if (is_task_manager_query_paused()) return true;
     if (is_post_load_hydration_paused()) return true;
-    // Post ms_bLoading clear: stale ICU pointers until world fully stable (#01).
-    const int64_t loading_cleared =
-        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (loading_cleared > 0 &&
-        now_ms() - loading_cleared < kUstrlenPostLoadHardCapMs &&
-        !is_gameplay_world_stable()) {
-        return true;
-    }
+    if (is_u_strlen_post_load_hard_paused()) return true;
     return false;
 }
 
@@ -1773,12 +1787,16 @@ int32_t proxy_u_strlen(const void* s) {
     if (!s) return 0;
     // Save-load / post-load / hydration: stale ICU string pointers (tombstone_01–10/48/49).
     if (is_u_strlen_paused()) return 0;
+    if (is_probable_stale_icu_string_ptr(s)) {
+        LOGW("⚠️ [u_strlen_64] stale ICU pattern %p — return 0 (tombstone_02)", s);
+        return 0;
+    }
     if (!is_userspace_address(s)) {
         LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
         return 0;
     }
     if (!is_pointer_readable(s) || !vma_is_readable(s) || !is_pointer_readable_strict(s)) {
-        LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_01)", s);
+        LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_03)", s);
         return 0;
     }
     // Never CALL_PREV — vm_readv bounded UTF-16 walk only.

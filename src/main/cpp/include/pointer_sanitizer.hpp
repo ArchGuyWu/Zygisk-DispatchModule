@@ -29,5 +29,12 @@ bool is_pointer_readable_strict(const void* ptr);
 // process_vm_readv UTF-16 unit read (never dereferences remote memory).
 bool safe_read_u16(const void* addr, uint16_t* out);
 
+// Freed ICU chunk reuse pattern seen in tombstone_01–04 (…10d0).
+inline bool is_probable_stale_icu_string_ptr(const void* s) {
+    if (!s) return false;
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(s);
+    return (addr & 0xFFFu) == 0x0D0u;
+}
+
 // Bounded ICU-style UTF-16 strlen: vm_readv each unit (tombstone_01–10, #48–49).
 int32_t safe_utf16_strlen_bounded(const void* s, int32_t max_units = 4096);
