@@ -29,6 +29,7 @@
 #include "game_types.hpp"
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
+#include "manage_tasks_guard.hpp"
 #include "vanilla_qol_fixes.hpp"
 #include "ecs_engine.hpp"
 
@@ -1198,7 +1199,9 @@ void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     notify_menu_read_save_path("GenericLoad");
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d)", slot);
     g_generic_load_in_progress.store(true, std::memory_order_release);
+    set_manage_tasks_load_force_safe(true);
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
+    set_manage_tasks_load_force_safe(false);
     g_generic_load_in_progress.store(false, std::memory_order_release);
     const bool load_ok = out && is_pointer_readable(out) && *out;
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d) done — ok=%d ms_bFailed=%d",
