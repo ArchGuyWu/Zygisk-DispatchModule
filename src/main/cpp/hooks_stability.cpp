@@ -584,11 +584,13 @@ static inline bool is_u_strlen_paused() {
     if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
         return true;
     }
+    if (is_save_load_active()) return true;
     if (g_save_load_session.load(std::memory_order_acquire)) return true;
     const int64_t quiesce_until =
         g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
     if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
     if (is_manage_tasks_execution_paused()) return true;
+    if (is_task_manager_query_paused()) return true;
     return is_post_load_hydration_paused();
 }
 
@@ -789,6 +791,8 @@ using TaskGetIdFn_t = int (*)(void*);
 
 inline int call_task_get_id_safe(void* task) {
     if (!task || task_slot_unsafe_for_vtable_call(task, 0x28)) return -1;
+    // Save-load / hydration: never invoke GetId vtable+0x28 (#33/#47).
+    if (is_stability_sanitize_paused()) return -1;
     void** vtable = reinterpret_cast<void**>(task);
     auto fn = reinterpret_cast<TaskGetIdFn_t>(
         *reinterpret_cast<void**>(reinterpret_cast<char*>(*vtable) + 0x28));
@@ -797,10 +801,14 @@ inline int call_task_get_id_safe(void* task) {
 
 inline void* find_task_by_type_in_chain(void* task, int type, size_t subtask_offset = 0x10) {
     if (!task || !is_task_vtable_safe(task)) return nullptr;
+    if (task_slot_unsafe_for_vtable_call(task, 0x28)) return nullptr;
+    if (task_subtask_chain_field_unsafe(task, subtask_offset)) return nullptr;
     void* current = task;
     for (int depth = 0; depth < 32 && current; ++depth) {
+        if (task_slot_unsafe_for_vtable_call(current, 0x28)) break;
         if (call_task_get_id_safe(current) == type) return current;
         current = read_subtask_ptr_at(current, subtask_offset);
+        if (current && task_subtask_chain_field_unsafe(current, subtask_offset)) break;
     }
     return nullptr;
 }
@@ -1305,10 +1313,19 @@ fn_FindActiveTask_t g_orig_find_active_task = nullptr;
 void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return nullptr;
+    if (is_task_manager_lookup_paused()) return nullptr;
     if (task_manager_has_unsafe_slot(self, 11, 0x28)) {
-        LOGW("⚠️ [FindActiveTaskByType] unsafe task mgr %p — skip (tombstone_33)", self);
+        LOGW("⚠️ [FindActiveTaskByType] unsafe task mgr %p — skip (tombstone_47)", self);
         return nullptr;
+    }
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (task && task_subtask_chain_field_unsafe(task, 0x10)) {
+            LOGW("⚠️ [FindActiveTaskByType] unsafe chain slot %d — skip (tombstone_47)", i);
+            return nullptr;
+        }
     }
     if (!is_stability_sanitize_paused()) {
         sanitize_task_manager_slots(self, "CTaskManager::FindActiveTaskByType", 0x28);
@@ -1751,12 +1768,16 @@ int32_t proxy_u_strlen(const void* s) {
         LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
         return 0;
     }
+    if (!is_pointer_readable(s) || !vma_is_readable(s)) {
+        LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_48)", s);
+        return 0;
+    }
     // Never CALL_PREV — vm_readv bounded UTF-16 walk only.
     const int32_t len = safe_utf16_strlen_bounded(s);
     if (len == 0) {
         uint16_t first = 0;
         if (safe_read_u16(s, &first) && first != 0) {
-            LOGW("⚠️ [u_strlen_64] stale/unterminated string %p — return 0", s);
+            LOGW("⚠️ [u_strlen_64] stale/unterminated string %p — return 0 (tombstone_49)", s);
         }
     }
     return len;
