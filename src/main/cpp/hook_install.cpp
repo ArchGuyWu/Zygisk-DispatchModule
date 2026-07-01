@@ -460,11 +460,11 @@ void hook_thread_func() {
                        "CGameLogic::InitAtStartOfGame");
     #undef HOOK_SAVE_LOAD_SYM
 
-    // Validated x20 in-body tramps: null/garbage skips BLR (fade + Continue #43); readable x20 runs vanilla.
+    // cbz-x20/x8 in-body tramps: null skips BLR (fade, log 202941); x8 cbz avoids Continue #43 @ +0x170.
     void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
     if (manage_tasks_sym) {
         if (install_manage_tasks_inbody_guards(manage_tasks_sym)) {
-            LOGI("✅ Patched ManageTasks validated x20 guards @ +0x168/+0x248/+0x280");
+            LOGI("✅ Patched ManageTasks cbz-x20/x8 guards @ +0x168/+0x170/+0x248/+0x250/+0x280");
         } else {
             LOGW("⚠️ ManageTasks in-body guards failed — shadowhook proxy only");
         }

@@ -227,6 +227,11 @@ static void notify_generic_load_returned(int slot, bool load_ok) {
     }
     poll_save_load_hydration_state();
     if (!ms_loading && have_game_state && game_state == 0) {
+        if (!g_fade_nudge_attempted.exchange(true, std::memory_order_acq_rel) &&
+            g_cgame_logic_game_state && is_pointer_readable(g_cgame_logic_game_state)) {
+            *g_cgame_logic_game_state = kGameStateLoadingStarted;
+            LOGW("💾 [SaveLoad] Immediate fade nudge — gameState 0→8 at GenericLoad return");
+        }
         start_save_load_fade_watchdog();
     }
 }
