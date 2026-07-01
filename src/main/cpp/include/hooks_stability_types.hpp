@@ -69,6 +69,9 @@ typedef void (*fn_UpdateCarAI_t)(void* vehicle);
 typedef void* (*fn_FacialControlSubTask_t)(void* self, void* ped);
 typedef void* (*fn_GetTaskMain_t)(void* self, void* ped);
 typedef bool (*fn_GetNearestCarDoor_t)(void* ped, void* vehicle, void* out_vec, int* door_index);
+typedef void (*fn_CCamera_RunDeferredFadeIfBound_t)(void* camera);
+typedef void (*fn_CCamera_Fade_t)(void* camera, float duration, int16_t direction);
+typedef int16_t (*fn_CCamera_GetScreenFadeStatus_t)(void* camera);
 
 extern fn_SetPedPosition_t g_orig_set_ped_pos;
 extern fn_ManageTasks_t g_orig_manage_tasks;
@@ -146,6 +149,11 @@ extern fn_ProcessAfterProcCol_t g_orig_process_after_proc_col;
 extern fn_ScanForEvents_t g_orig_scan_for_events;
 extern fn_ScanForCollisionEvents_t g_orig_scan_for_collision_events;
 extern fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with_ped_response;
+extern fn_CCamera_RunDeferredFadeIfBound_t g_run_deferred_fade_if_bound;
+extern fn_CCamera_Fade_t g_ccamera_fade;
+extern fn_CCamera_GetScreenFadeStatus_t g_get_screen_fade_status;
+extern fn_CCamera_RunDeferredFadeIfBound_t g_orig_ccamera_run_deferred_fade_if_bound;
+extern fn_CCamera_Fade_t g_orig_ccamera_fade;
 
 // Stability hook proxies (defined in hooks_stability.cpp, installed from hook_install.cpp)
 void proxy_set_ped_pos(void* self, void* ped);
@@ -213,3 +221,5 @@ void proxy_process_after_proc_col(void* self);
 void proxy_scan_for_events(void* self, void* ped);
 void proxy_scan_for_collision_events(void* self, void* ped, void* event_group);
 void* proxy_compute_ped_collision_with_ped_response(void* self, void* event, void* task, void* task2);
+void proxy_ccamera_run_deferred_fade_if_bound(void* self);
+void proxy_ccamera_fade(void* self, float duration, int16_t direction);

@@ -20,8 +20,12 @@
 #include "game_types.hpp"
 #include "pointer_sanitizer.hpp"
 #include "mod_shared.hpp"
+#include "hooks_stability_types.hpp"
 #include "manage_tasks_guard.hpp"
 #include "vanilla_qol_fixes.hpp"
+
+extern void* g_stub_ccamera_fade;
+extern void* g_stub_ccamera_run_deferred_fade_if_bound;
 
 typedef void (*fn_GenericGameStorageLoad_t)(void* self, bool flag);
 typedef void (*fn_GenericGameStorageLoadGame_t)(void* self);
@@ -191,6 +195,31 @@ void hook_thread_func() {
     RESOLVE_SYM(lib, g_TheCamera, "TheCamera", void*);
     RESOLVE_SYM(lib, g_GetGameCamPosition, "_ZN7CCamera18GetGameCamPositionEv", fn_GetGameCamPosition_t);
     RESOLVE_SYM(lib, g_GetLookDirection, "_ZN7CCamera16GetLookDirectionEv", fn_GetLookDirection_t);
+    RESOLVE_SYM(lib, g_run_deferred_fade_if_bound,
+                "_ZN7CCamera22RunDeferredFadeIfBoundEv", fn_CCamera_RunDeferredFadeIfBound_t);
+    RESOLVE_SYM(lib, g_ccamera_fade, "_ZN7CCamera4FadeEfs", fn_CCamera_Fade_t);
+    RESOLVE_SYM(lib, g_get_screen_fade_status,
+                "_ZN7CCamera19GetScreenFadeStatusEv", fn_CCamera_GetScreenFadeStatus_t);
+    {
+        void* fade_sym = xdl_sym(lib, "_ZN7CCamera4FadeEfs", nullptr);
+        if (fade_sym) {
+            g_stub_ccamera_fade = shadowhook_hook_sym_addr(
+                fade_sym,
+                reinterpret_cast<void*>(proxy_ccamera_fade),
+                reinterpret_cast<void**>(&g_orig_ccamera_fade));
+            if (g_stub_ccamera_fade) LOGI("✅ Hooked CCamera::Fade");
+        }
+        void* deferred_sym = xdl_sym(lib, "_ZN7CCamera22RunDeferredFadeIfBoundEv", nullptr);
+        if (deferred_sym) {
+            g_stub_ccamera_run_deferred_fade_if_bound = shadowhook_hook_sym_addr(
+                deferred_sym,
+                reinterpret_cast<void*>(proxy_ccamera_run_deferred_fade_if_bound),
+                reinterpret_cast<void**>(&g_orig_ccamera_run_deferred_fade_if_bound));
+            if (g_stub_ccamera_run_deferred_fade_if_bound) {
+                LOGI("✅ Hooked CCamera::RunDeferredFadeIfBound");
+            }
+        }
+    }
 
     // 解析任务与载具交互相关符号
     RESOLVE_SYM(lib, g_IsDriver, "_ZNK8CVehicle8IsDriverEPK4CPed", fn_IsDriver_t);
@@ -460,11 +489,11 @@ void hook_thread_func() {
                        "CGameLogic::InitAtStartOfGame");
     #undef HOOK_SAVE_LOAD_SYM
 
-    // cbz-x20/x8 in-body tramps: null skips BLR (fade, log 202941); x8 cbz avoids Continue #43 @ +0x170.
+    // cbz-x20 only (proven fade path, log 202941). Do not patch +0x170 — breaks ManageTasks flow.
     void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
     if (manage_tasks_sym) {
         if (install_manage_tasks_inbody_guards(manage_tasks_sym)) {
-            LOGI("✅ Patched ManageTasks cbz-x20/x8 guards @ +0x168/+0x170/+0x248/+0x250/+0x280");
+            LOGI("✅ Patched ManageTasks cbz-x20 guards @ +0x168/+0x248/+0x280");
         } else {
             LOGW("⚠️ ManageTasks in-body guards failed — shadowhook proxy only");
         }

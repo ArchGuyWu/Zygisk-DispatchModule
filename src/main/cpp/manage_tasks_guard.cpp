@@ -14,20 +14,15 @@ namespace {
 #define MAP_FIXED_NOREPLACE 0x100000
 #endif
 
-// RE offsets relative to CTaskManager::ManageTasks (ELF 0x57aaff8).
 constexpr size_t kManageTasksGuardSite168 = 0x168;
 constexpr size_t kManageTasksGuardSite248 = 0x248;
 constexpr size_t kManageTasksGuardSite280 = 0x280;
-constexpr size_t kManageTasksGuardSite170 = 0x170;
-constexpr size_t kManageTasksGuardSite250 = 0x250;
 constexpr size_t kManageTasksNullSkip178 = 0x178;
 constexpr size_t kManageTasksNullSkip258 = 0x258;
 constexpr size_t kManageTasksNullSkip294 = 0x294;
 constexpr size_t kManageTasksNonnull170 = 0x170;
 constexpr size_t kManageTasksNonnull250 = 0x250;
 constexpr size_t kManageTasksNonnull288 = 0x288;
-constexpr size_t kManageTasksAfter170 = 0x174;
-constexpr size_t kManageTasksAfter250 = 0x254;
 
 constexpr int64_t kArm64BranchRange = 0x7F000000;
 
@@ -39,8 +34,6 @@ struct GuardSiteState {
 GuardSiteState g_guard168;
 GuardSiteState g_guard248;
 GuardSiteState g_guard280;
-GuardSiteState g_guard170;
-GuardSiteState g_guard250;
 
 uint32_t arm64_b(uintptr_t from, uintptr_t to) {
     const int64_t off = (static_cast<int64_t>(to) - static_cast<int64_t>(from)) / 4;
@@ -133,7 +126,6 @@ void* allocate_near(void* target, size_t size) {
     return fallback;
 }
 
-// x20 null → skip BLR (fade needs this — log 202941 vs 223021).
 bool install_cbz_x20_tramp(GuardSiteState* state, uintptr_t base, size_t site_off,
                            size_t nonnull_resume_off, size_t null_skip_off, const char* label) {
     void* site = reinterpret_cast<void*>(base + site_off);
@@ -159,56 +151,6 @@ bool install_cbz_x20_tramp(GuardSiteState* state, uintptr_t base, size_t site_of
 
     if (!branch_reachable(tramp_addr + 12, reinterpret_cast<uintptr_t>(nonnull_resume)) ||
         !branch_reachable(tramp_addr + 16, reinterpret_cast<uintptr_t>(null_skip))) {
-        LOGE("❌ [ManageTasksGuard] tramp exit out of range for %s", label);
-        munmap(tramp, static_cast<size_t>(page_size));
-        return false;
-    }
-
-    std::memcpy(tramp, words, sizeof(words));
-
-    if (!finalize_trampoline_page(tramp, sizeof(words))) {
-        munmap(tramp, static_cast<size_t>(page_size));
-        return false;
-    }
-
-    if (!patch_branch_to(site, tramp)) {
-        LOGE("❌ [ManageTasksGuard] patch failed for %s @ %p", label, site);
-        munmap(tramp, static_cast<size_t>(page_size));
-        return false;
-    }
-
-    state->site = site;
-    state->tramp = tramp;
-    LOGI("✅ [ManageTasksGuard] %s: site=%p tramp=%p nonnull=%p null=%p",
-         label, site, tramp, nonnull_resume, null_skip);
-    return true;
-}
-
-// x8 null after ldr [x20] → skip second ldr + BLR (Continue #43 @ +0x170).
-bool install_cbz_x8_tramp(GuardSiteState* state, uintptr_t base, size_t site_off,
-                          size_t nonnull_resume_off, size_t null_skip_off, const char* label) {
-    void* site = reinterpret_cast<void*>(base + site_off);
-    void* nonnull_resume = reinterpret_cast<void*>(base + nonnull_resume_off);
-    void* null_skip = reinterpret_cast<void*>(base + null_skip_off);
-
-    const long page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) return false;
-
-    void* tramp = allocate_near(site, static_cast<size_t>(page_size));
-    if (tramp == MAP_FAILED) {
-        LOGE("❌ [ManageTasksGuard] near mmap failed for %s", label);
-        return false;
-    }
-
-    const uintptr_t tramp_addr = reinterpret_cast<uintptr_t>(tramp);
-    uint32_t words[4] = {};
-    words[0] = arm64_cbz(tramp_addr + 0, tramp_addr + 12, 8);
-    words[1] = 0xF9401108u;  // ldr x8, [x8, #0x20]
-    words[2] = arm64_b(tramp_addr + 8, reinterpret_cast<uintptr_t>(nonnull_resume));
-    words[3] = arm64_b(tramp_addr + 12, reinterpret_cast<uintptr_t>(null_skip));
-
-    if (!branch_reachable(tramp_addr + 8, reinterpret_cast<uintptr_t>(nonnull_resume)) ||
-        !branch_reachable(tramp_addr + 12, reinterpret_cast<uintptr_t>(null_skip))) {
         LOGE("❌ [ManageTasksGuard] tramp exit out of range for %s", label);
         munmap(tramp, static_cast<size_t>(page_size));
         return false;
@@ -262,11 +204,5 @@ bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {
     const bool ok280 = install_cbz_x20_tramp(&g_guard280, base, kManageTasksGuardSite280,
                                              kManageTasksNonnull288, kManageTasksNullSkip294,
                                              "cbz-x20@57ab278");
-    const bool ok170 = install_cbz_x8_tramp(&g_guard170, base, kManageTasksGuardSite170,
-                                            kManageTasksAfter170, kManageTasksNullSkip178,
-                                            "cbz-x8@57ab170");
-    const bool ok250 = install_cbz_x8_tramp(&g_guard250, base, kManageTasksGuardSite250,
-                                            kManageTasksAfter250, kManageTasksNullSkip258,
-                                            "cbz-x8@57ab250");
-    return ok168 && ok248 && ok280 && ok170 && ok250;
+    return ok168 && ok248 && ok280;
 }
