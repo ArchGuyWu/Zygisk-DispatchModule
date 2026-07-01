@@ -112,7 +112,7 @@ static void notify_generic_load_returned(int slot, bool load_ok);
 static void maybe_log_load_transition_heartbeat(const char* via);
 static void try_kick_fade_in_after_black(const char* via);
 static void try_dismiss_deferred_loading_screen(const char* via);
-static bool should_block_ccamera_fade_cancel_during_load_transition();
+static bool should_redirect_fade_zero_to_fade_in();
 static int read_streaming_num_requested();
 static bool read_ms_b_loading();
 static bool read_game_state(uint8_t* out);
@@ -192,13 +192,17 @@ static int16_t read_screen_fade_status() {
     return g_get_screen_fade_status(g_TheCamera);
 }
 
-// Only block CCamera::Fade(0,0) — NOT RunningDeferredLoadingScreenFade (that dismisses UE
-// loading HUD; blocking it caused loading+game overlay, log 003036).
-static bool should_block_ccamera_fade_cancel_during_load_transition() {
+// Redirect Fade(0,0) -> Fade(2.0,0) after load. Blocking (return without calling) deadlocks
+// GameThread at fadeStatus=1 (log 005245 — no further CGameLogic/ManageTasks logs).
+// Do NOT block RunningDeferredLoadingScreenFade — that dismisses UE loading HUD.
+static bool should_redirect_fade_zero_to_fade_in() {
     if (!is_engine_load_transition_active()) return false;
     if (is_generic_load_in_progress() || read_ms_b_loading()) return false;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return false;
+    const int64_t cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (cleared <= 0) return false;
     return read_screen_fade_status() >= 1;
 }
 
@@ -218,11 +222,9 @@ static void try_kick_fade_in_after_black(const char* via) {
     if (read_ms_b_loading()) return;
     const int64_t cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (cleared <= 0 || now_ms() - cleared < 300) return;
+    if (cleared <= 0 || now_ms() - cleared < 200) return;
     const int16_t fade_status = read_screen_fade_status();
-    if (fade_status != 2) {
-        if (fade_status != 1 || now_ms() - cleared < 400) return;
-    }
+    if (fade_status < 1) return;
     fn_CCamera_Fade_t fade_fn = g_orig_ccamera_fade ? g_orig_ccamera_fade : g_ccamera_fade;
     if (!fade_fn || !g_TheCamera || !is_pointer_readable(g_TheCamera)) return;
     g_fade_in_kick_attempted.store(true, std::memory_order_release);
@@ -2624,10 +2626,17 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
     if (duration == 0.0f && direction == 0 &&
-        should_block_ccamera_fade_cancel_during_load_transition()) {
-        LOGW("💾 [SaveLoad] Block Fade(0,0) — fadeStatus=%d gameState=%u",
-             static_cast<int>(read_screen_fade_status()),
+        should_redirect_fade_zero_to_fade_in()) {
+        const int16_t fade_status = read_screen_fade_status();
+        LOGW("💾 [SaveLoad] Redirect Fade(0,0) -> Fade(2.0,0) fadeStatus=%d gameState=%u",
+             static_cast<int>(fade_status),
              have_game_state ? game_state : 255u);
+        try_dismiss_deferred_loading_screen("Fade redirect");
+        g_fade_in_kick_attempted.store(true, std::memory_order_release);
+        if (g_orig_ccamera_fade) {
+            g_orig_ccamera_fade(self, 2.0f, 0);
+        }
+        vanilla_qol_schedule_touch_rehydrate("fade redirect");
         return;
     }
     if (is_engine_load_transition_active()) {
