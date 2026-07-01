@@ -239,16 +239,19 @@ static bool is_menu_save_load_path() {
            g_menu_read_save_path_seen.load(std::memory_order_acquire);
 }
 
+// Post-load only: always skip Fade(0,0) — fadeStatus=0 still enters orig and hangs
+// after +0x288 preclear (log 031623). During GenericLoad use in_load_skip only.
 static bool should_skip_post_load_fade_zero() {
-    if (is_continue_load_path()) return false;
-    if (read_screen_fade_status() < 1) return false;
+    return is_post_load_fade_recovery_active();
+}
+
+// GenericLoad Fade(0,0) at fadeStatus>=1 hangs in orig; force_complete here aborts
+// Fade(1,1) darken (log 031708). Skip orig only — do not mutate transition state.
+static bool should_skip_in_generic_load_fade_zero() {
+    if (!is_generic_load_in_progress()) return false;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return false;
-    if (is_post_load_fade_recovery_active()) return true;
-    // During GenericLoad / pre-GenericLoad menu load (log 030617: orig blocks, no darken).
-    if (!is_menu_save_load_path()) return false;
-    return read_ms_b_loading() || is_generic_load_in_progress() ||
-           g_menu_read_save_path_seen.load(std::memory_order_acquire);
+    return read_screen_fade_status() >= 1;
 }
 
 static void* get_active_transition_screen() {
@@ -333,8 +336,10 @@ static void maybe_advance_game_state_after_fade_clear(const char* via) {
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return;
     if (read_screen_fade_status() > 0) return;
-    const bool menu_load = is_menu_save_load_path() && !is_continue_load_path();
-    try_nudge_game_state_loading_started(via, menu_load);
+    const bool immediate =
+        g_save_load_kind.load(std::memory_order_acquire) ==
+        static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad);
+    try_nudge_game_state_loading_started(via, immediate);
 }
 
 static void try_nudge_game_state_loading_started(const char* via, bool immediate) {
@@ -366,8 +371,7 @@ static void kick_post_load_fade_in_once(const char* via) {
     g_deferred_fade_in_kick.store(false, std::memory_order_release);
     g_loading_hud_dismissed.store(true, std::memory_order_release);
     const int16_t before = read_screen_fade_status();
-    const bool aggressive = !is_continue_load_path();
-    force_complete_post_load_fade(g_TheCamera, via, aggressive);
+    force_complete_post_load_fade(g_TheCamera, via, true);
     LOGW("💾 [SaveLoad] Fade-in kick #%d — force-complete fadeStatus=%d→%d via %s "
          "streaming=%d",
          attempts + 1,
@@ -387,8 +391,9 @@ static void try_dismiss_deferred_loading_screen(const char* via) {
     void* self = get_menu_gameterface_self();
     if (!self || !is_pointer_readable(self)) return;
     if (!g_orig_running_deferred_loading_screen_fade) return;
-    if (g_TheCamera && is_pointer_readable(g_TheCamera) && read_screen_fade_status() >= 1) {
-        force_complete_post_load_fade(g_TheCamera, via, !is_continue_load_path());
+    if (g_TheCamera && is_pointer_readable(g_TheCamera) &&
+        is_post_load_fade_recovery_active()) {
+        force_complete_post_load_fade(g_TheCamera, via, true);
     }
     g_loading_hud_dismissed.store(true, std::memory_order_release);
     g_orig_running_deferred_loading_screen_fade(self, 0.0f, 0, false);
@@ -761,7 +766,8 @@ void poll_save_load_hydration_state() {
         }
         if (cleared > 0) {
             const int64_t nudge_ms =
-                is_menu_save_load_path() && !is_continue_load_path() ? 500 : kGameStateNudgeStallMs;
+                kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad) ? 500
+                                                                            : kGameStateNudgeStallMs;
             if (now - cleared >= nudge_ms && read_screen_fade_status() <= 0) {
                 try_nudge_game_state_loading_started("pollFadeStall", false);
             } else if (now - cleared >= kGameStateNudgeStallMs) {
@@ -2836,24 +2842,19 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
     SHADOWHOOK_STACK_SCOPE();
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
-    if (duration == 0.0f && direction == 0 && have_game_state && game_state == 0 &&
-        read_screen_fade_status() >= 1 && is_menu_save_load_path()) {
-        if (is_continue_load_path()) {
-            void* screen = get_active_transition_screen();
-            if (screen) {
-                preclear_fade_wait_state(screen);
-                LOGI("💾 [SaveLoad] Continue preclear before Fade(0,0) — fadeStatus=%d",
-                     static_cast<int>(read_screen_fade_status()));
-            }
-        } else if (should_skip_post_load_fade_zero()) {
-            LOGW("💾 [SaveLoad] Skip Fade(0,0) — fadeStatus=%d gameState=%u kind=%u",
-                 static_cast<int>(read_screen_fade_status()),
-                 game_state,
-                 g_save_load_kind.load(std::memory_order_acquire));
-            force_complete_post_load_fade(self, "Skip Fade(0,0)", true);
-            g_deferred_fade_in_kick.store(true, std::memory_order_release);
-            return;
-        }
+    if (duration == 0.0f && direction == 0 && should_skip_in_generic_load_fade_zero()) {
+        LOGW("💾 [SaveLoad] Skip Fade(0,0) — in-GenericLoad fadeStatus=%d (no force-complete)",
+             static_cast<int>(read_screen_fade_status()));
+        return;
+    }
+    if (duration == 0.0f && direction == 0 && should_skip_post_load_fade_zero()) {
+        LOGW("💾 [SaveLoad] Skip Fade(0,0) — post-load fadeStatus=%d gameState=%u kind=%u",
+             static_cast<int>(read_screen_fade_status()),
+             have_game_state ? game_state : 255u,
+             g_save_load_kind.load(std::memory_order_acquire));
+        force_complete_post_load_fade(self, "Skip Fade(0,0)", true);
+        g_deferred_fade_in_kick.store(true, std::memory_order_release);
+        return;
     }
     if (is_engine_load_transition_active()) {
         LOGI("💾 [SaveLoad] CCamera::Fade(%.2f,%d) self=%p gameState=%u",
