@@ -113,8 +113,10 @@ static void maybe_log_load_transition_heartbeat(const char* via);
 static void try_kick_fade_in_after_black(const char* via);
 static void try_dismiss_deferred_loading_screen(const char* via);
 static void try_nudge_game_state_loading_started(const char* via, bool immediate);
+static bool is_post_load_fade_recovery_active();
 static bool should_skip_post_load_fade_zero();
 static bool should_replace_post_load_deferred_fade_zero();
+static bool should_short_circuit_post_load_deferred_fade_zero();
 static void kick_post_load_fade_in_once(const char* via);
 static void run_deferred_fade_in_kick_if_needed(const char* via);
 static int read_streaming_num_requested();
@@ -143,9 +145,10 @@ static std::atomic<int> g_fade_in_kick_count{0};
 static std::atomic<int64_t> g_last_fade_in_kick_ms{0};
 static std::atomic<bool> g_game_state_nudge_attempted{false};
 static std::atomic<bool> g_loading_hud_dismissed{false};
+static std::atomic<bool> g_post_load_fade_in_kicked{false};
 static constexpr int kMaxFadeInKickAttempts = 1;
 static constexpr int64_t kFadeInKickIntervalMs = 500;
-static constexpr int64_t kGameStateNudgeStallMs = 500;
+static constexpr int64_t kGameStateNudgeStallMs = 2000;
 
 void notify_menu_gameterface_self(void* self) {
     if (!self || !is_pointer_readable(self)) return;
@@ -166,6 +169,7 @@ void notify_menu_read_save_path(const char* via) {
     g_last_fade_in_kick_ms.store(0, std::memory_order_release);
     g_game_state_nudge_attempted.store(false, std::memory_order_release);
     g_loading_hud_dismissed.store(false, std::memory_order_release);
+    g_post_load_fade_in_kicked.store(false, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
@@ -207,21 +211,31 @@ static int16_t read_screen_fade_status() {
     return g_get_screen_fade_status(g_TheCamera);
 }
 
-// Post-load Fade(0,0) at fadeStatus==1: original call hangs GameThread (log 011110).
-// At fadeStatus==2 the same call may return quickly and advance CGameLogic — allow it.
-static bool should_skip_post_load_fade_zero() {
-    if (!is_engine_load_transition_active()) return false;
-    if (is_generic_load_in_progress() || read_ms_b_loading()) return false;
+// Post-load (ms_bLoading cleared, gameState==0): Fade(0,0) hangs at fadeStatus>=1 (logs 011110/014634).
+static bool is_post_load_fade_recovery_active() {
+    if (read_ms_b_loading() || is_generic_load_in_progress()) return false;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return false;
-    const int64_t cleared =
-        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (cleared <= 0) return false;
-    return read_screen_fade_status() == 1;
+    return g_ms_b_loading_cleared_ms.load(std::memory_order_acquire) > 0;
+}
+
+static bool should_skip_post_load_fade_zero() {
+    if (!is_post_load_fade_recovery_active()) return false;
+    if (g_post_load_fade_in_kicked.load(std::memory_order_acquire)) return true;
+    const int16_t fade_status = read_screen_fade_status();
+    return fade_status >= 1;
 }
 
 static bool should_replace_post_load_deferred_fade_zero() {
-    return should_skip_post_load_fade_zero();
+    if (!is_post_load_fade_recovery_active()) return false;
+    if (g_post_load_fade_in_kicked.load(std::memory_order_acquire)) return false;
+    return read_screen_fade_status() == 1;
+}
+
+static bool should_short_circuit_post_load_deferred_fade_zero() {
+    if (!is_post_load_fade_recovery_active()) return false;
+    if (g_post_load_fade_in_kicked.load(std::memory_order_acquire)) return true;
+    return read_screen_fade_status() >= 2;
 }
 
 static void try_nudge_game_state_loading_started(const char* via, bool immediate) {
@@ -252,6 +266,8 @@ static void kick_post_load_fade_in_once(const char* via) {
     g_fade_in_kick_count.store(attempts + 1, std::memory_order_release);
     g_last_fade_in_kick_ms.store(now_ms(), std::memory_order_release);
     g_deferred_fade_in_kick.store(false, std::memory_order_release);
+    g_post_load_fade_in_kicked.store(true, std::memory_order_release);
+    g_loading_hud_dismissed.store(true, std::memory_order_release);
     fade_fn(g_TheCamera, 2.0f, 0);
     vanilla_qol_schedule_touch_rehydrate("fade-in kick");
     LOGW("💾 [SaveLoad] Fade-in kick #%d — CCamera::Fade(2.0,0) fadeStatus=%d via %s "
@@ -269,17 +285,21 @@ static void run_deferred_fade_in_kick_if_needed(const char* via) {
 
 static void try_dismiss_deferred_loading_screen(const char* via) {
     if (g_loading_hud_dismissed.load(std::memory_order_acquire)) return;
-    void* self = get_menu_gameterface_self();
-    if (!self || !is_pointer_readable(self)) return;
-    g_loading_hud_dismissed.store(true, std::memory_order_release);
+    if (should_short_circuit_post_load_deferred_fade_zero()) {
+        g_loading_hud_dismissed.store(true, std::memory_order_release);
+        LOGI("💾 [SaveLoad] Dismiss loading HUD — skip (fade recovery active) via %s", via);
+        return;
+    }
     if (should_replace_post_load_deferred_fade_zero()) {
         LOGW("💾 [SaveLoad] Dismiss loading HUD — replace DeferredFade(0,0,0) with Fade(2,0) via %s",
              via);
         kick_post_load_fade_in_once(via);
-        try_nudge_game_state_loading_started(via, true);
         return;
     }
+    void* self = get_menu_gameterface_self();
+    if (!self || !is_pointer_readable(self)) return;
     if (!g_orig_running_deferred_loading_screen_fade) return;
+    g_loading_hud_dismissed.store(true, std::memory_order_release);
     g_orig_running_deferred_loading_screen_fade(self, 0.0f, 0, false);
     LOGI("💾 [SaveLoad] Dismiss loading HUD — RunningDeferredLoadingScreenFade(0,0,0) via %s",
          via);
@@ -331,7 +351,6 @@ static void notify_generic_load_returned(int slot, bool load_ok) {
              have_game_state ? game_state : 255u,
              slot,
              load_ok ? 1 : 0);
-        try_dismiss_deferred_loading_screen("GenericLoad return");
         vanilla_qol_schedule_touch_rehydrate("ms_bLoading cleared");
     } else {
         LOGI("💾 [SaveLoad] GenericLoad return — ms_bLoading still 1 gameState=%u slot=%d",
@@ -494,7 +513,6 @@ void begin_save_load_session() {
     if (!was_active) {
         const int64_t t = now_ms();
         g_session_started_ms.store(t, std::memory_order_release);
-        g_ms_b_loading_cleared_ms.store(0, std::memory_order_release);
         g_hydration_ready_since_ms.store(0, std::memory_order_release);
         g_save_load_quiesce_until_ms.store(0, std::memory_order_release);
         g_skip_pipeline_was_active.store(false, std::memory_order_release);
@@ -2692,18 +2710,15 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
     const bool have_game_state = read_game_state(&game_state);
     if (duration == 0.0f && direction == 0 &&
         should_skip_post_load_fade_zero()) {
-        LOGW("💾 [SaveLoad] Skip Fade(0,0) — orig hangs at fadeStatus=1; allow when fadeStatus=2 "
-             "gameState=%u",
-             have_game_state ? game_state : 255u);
-        g_deferred_fade_in_kick.store(true, std::memory_order_release);
-        try_nudge_game_state_loading_started("CCamera::Fade skip", true);
-        return;
-    }
-    if (duration == 0.0f && direction == 0 && is_engine_load_transition_active() &&
-        have_game_state && game_state == 0 && !read_ms_b_loading()) {
-        LOGI("💾 [SaveLoad] Allow Fade(0,0) — fadeStatus=%d gameState=%u",
+        LOGW("💾 [SaveLoad] Skip Fade(0,0) — post-load fadeStatus=%d kicked=%d gameState=%u",
              static_cast<int>(read_screen_fade_status()),
-             game_state);
+             g_post_load_fade_in_kicked.load(std::memory_order_acquire) ? 1 : 0,
+             have_game_state ? game_state : 255u);
+        if (!g_post_load_fade_in_kicked.load(std::memory_order_acquire) &&
+            read_screen_fade_status() == 1) {
+            g_deferred_fade_in_kick.store(true, std::memory_order_release);
+        }
+        return;
     }
     if (is_engine_load_transition_active()) {
         LOGI("💾 [SaveLoad] CCamera::Fade(%.2f,%d) self=%p gameState=%u",
@@ -2733,13 +2748,19 @@ void proxy_running_deferred_loading_screen_fade(void* self,
     }
     if (duration == 0.0f && direction == 0 && !flag &&
         should_replace_post_load_deferred_fade_zero()) {
-        LOGW("💾 [SaveLoad] Replace DeferredFade(0,0,0) — orig waits after skipped Fade(0,0); "
-             "kick Fade(2,0) fadeStatus=%d gameState=%u",
+        LOGW("💾 [SaveLoad] Replace DeferredFade(0,0,0) — kick Fade(2,0) fadeStatus=%d gameState=%u",
+             static_cast<int>(read_screen_fade_status()),
+             have_game_state ? game_state : 255u);
+        kick_post_load_fade_in_once("RunningDeferredLoadingScreenFade replace");
+        return;
+    }
+    if (duration == 0.0f && direction == 0 && !flag &&
+        should_short_circuit_post_load_deferred_fade_zero()) {
+        LOGI("💾 [SaveLoad] Short-circuit DeferredFade(0,0,0) — fade recovery done "
+             "fadeStatus=%d gameState=%u",
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u);
         g_loading_hud_dismissed.store(true, std::memory_order_release);
-        kick_post_load_fade_in_once("RunningDeferredLoadingScreenFade replace");
-        try_nudge_game_state_loading_started("RunningDeferredLoadingScreenFade replace", true);
         return;
     }
     if (g_orig_running_deferred_loading_screen_fade) {
