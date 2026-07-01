@@ -18,13 +18,13 @@ namespace {
 // Patch ldr x8,[x20] before vtable dispatch; null x20 skips to after BLR.
 constexpr size_t kManageTasksGuardSite168 = 0x168; // VA +0x168 → ldr x8,[x20] @ +0x160
 constexpr size_t kManageTasksGuardSite248 = 0x248; // VA +0x248 → ldr x8,[x20] @ +0x240
-constexpr size_t kManageTasksGuardSite278 = 0x278; // VA +0x278 → ldr x8,[x20] after mov x20,xzr
+constexpr size_t kManageTasksGuardSite280 = 0x280; // VA +0x278 → ldr x8,[x20] after mov x20,xzr
 constexpr size_t kManageTasksNullSkip178 = 0x178;  // after BLR @ +0x170
 constexpr size_t kManageTasksNullSkip258 = 0x258;  // after BLR @ +0x250
 constexpr size_t kManageTasksNullSkip294 = 0x294;  // after BLR @ +0x28c
 constexpr size_t kManageTasksNonnull170 = 0x170;   // ldr x8,[x8,#0x20] @ +0x168
 constexpr size_t kManageTasksNonnull250 = 0x250;   // ldr x8,[x8,#0x20] @ +0x248
-constexpr size_t kManageTasksNonnull280 = 0x280;   // ldr x1,[x19,#0x58] @ +0x280
+constexpr size_t kManageTasksNonnull288 = 0x288;   // ldr x1,[x19,#0x58] @ +0x280
 
 constexpr int64_t kArm64BranchRange = 0x7F000000; // ±128 MiB for unconditional B
 
@@ -35,7 +35,7 @@ struct GuardSiteState {
 
 GuardSiteState g_guard168;
 GuardSiteState g_guard248;
-GuardSiteState g_guard278;
+GuardSiteState g_guard280;
 
 uint32_t arm64_b(uintptr_t from, uintptr_t to) {
     const int64_t off = (static_cast<int64_t>(to) - static_cast<int64_t>(from)) / 4;
@@ -199,8 +199,8 @@ bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {
     const bool ok248 = install_cbz_x20_tramp(&g_guard248, base, kManageTasksGuardSite248,
                                              kManageTasksNonnull250, kManageTasksNullSkip258,
                                              "cbz-x20@57ab240");
-    const bool ok278 = install_cbz_x20_tramp(&g_guard278, base, kManageTasksGuardSite278,
-                                             kManageTasksNonnull280, kManageTasksNullSkip294,
+    const bool ok280 = install_cbz_x20_tramp(&g_guard280, base, kManageTasksGuardSite280,
+                                             kManageTasksNonnull288, kManageTasksNullSkip294,
                                              "cbz-x20@57ab278");
-    return ok168 && ok248 && ok278;
+    return ok168 && ok248 && ok280;
 }

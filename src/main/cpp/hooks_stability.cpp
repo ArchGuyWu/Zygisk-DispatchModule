@@ -155,11 +155,7 @@ void notify_ue_menu_load_committed(const char* via, int slot) {
          slot,
          ms_loading ? 1 : 0,
          have_game_state ? game_state : 255u);
-    // DE Load Game uses UE LoadDataInSlot*, not CGenericGameStorage::GenericLoad.
-    if (!g_save_load_session.load(std::memory_order_acquire)) {
-        begin_save_load_session();
-        LOGI("💾 [SaveLoad] %s(slot=%d) — session begin (UE menu load path)", via, slot);
-    }
+    // Session begins in poll_save_load_hydration_state when ms_bLoading / gameState 8+.
 }
 
 static int read_streaming_num_requested() {
@@ -391,9 +387,17 @@ void poll_save_load_hydration_state() {
         game_state != kGameStateFrontendIdle) {
         LOGI("💾 [SaveLoad] Left frontend idle — gameState=%u", game_state);
     }
-    if (have_game_state && prev_game_state == 0 && game_state == kGameStateLoadingStarted) {
+    if (have_game_state &&
+        game_state == kGameStateLoadingStarted &&
+        prev_game_state != kGameStateLoadingStarted) {
         LOGI("💾 [SaveLoad] Entered loading_started — gameState=8 (release force_safe)");
         refresh_manage_tasks_force_safe();
+    }
+    if (have_game_state &&
+        game_state == kGameStateIdle &&
+        prev_game_state != kGameStateIdle) {
+        LOGI("💾 [SaveLoad] Entered gameplay idle — gameState=9 (hydration session)");
+        begin_save_load_session();
     }
 
     if (ms_loading || (have_game_state && game_state == kGameStateLoadingStarted)) {
@@ -508,6 +512,14 @@ static inline bool is_engine_load_transition_active() {
     return game_state == 0 || game_state == kGameStateLoadingStarted;
 }
 
+// Hydration gates (task queries / force scrub) only after gameState==9 — not during 0→8 fade.
+static inline bool is_save_load_hydration_phase() {
+    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state)) return false;
+    return game_state == kGameStateIdle;
+}
+
 // In-body tramps (null→after-BLR, non-null→vtable ldr) replace force_safe patches.
 static void refresh_manage_tasks_force_safe() {
     set_manage_tasks_force_safe(false, "tramp only");
@@ -617,11 +629,11 @@ static inline bool is_post_load_task_hotpath_paused() {
     return false;
 }
 
-// Task-manager queries / ControlSubTask reads: pause for full save-load + post-load tail.
+// Task-manager queries / ControlSubTask reads: pause during ms_bLoading + gameState 9 hydration.
 // CALL_PREV on half-hydrated slots crashes (#14–16, #32–34, #39–40).
 static inline bool is_task_manager_query_paused() {
     if (read_ms_b_loading()) return true;
-    if (g_save_load_session.load(std::memory_order_acquire)) return true;
+    if (is_save_load_hydration_phase()) return true;
     const int64_t quiesce_until =
         g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
     if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
@@ -1080,7 +1092,7 @@ void sanitize_task_chain(void* task, int depth = 0) {
 
 // RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–08, scene switch).
 // RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — patched in manage_tasks_guard.cpp.
-// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — patched in manage_tasks_guard.cpp (+0x278).
+// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — patched in manage_tasks_guard.cpp (+0x280).
 static void sanitize_manage_tasks_pre_call(void* self, bool force) {
     sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x28, force);
     sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x28, force);
@@ -1103,8 +1115,8 @@ void proxy_manage_tasks(void* self) {
         // Layered gate (tombstone 29–32): skip CALL_PREV only during session+gameState 9
         // hydration; ms_bLoading / state 7–8 always CALL_PREV (loading screen progress).
         if (is_manage_tasks_execution_paused()) return;
-        // Load path: stale non-null x20 mid-function (tombstone_17/18) — force slot scrub.
-        if (is_save_load_active()) {
+        // Hydration only: force scrub during gameState==9 (not 0→8 fade — log 202038 hang).
+        if (is_manage_tasks_execution_paused()) {
             sanitize_manage_tasks_pre_call(self, true);
         }
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
@@ -1242,7 +1254,6 @@ void proxy_generic_game_storage_after_success_load() {
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                            std::memory_order_release);
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_after_success_load);
-    begin_save_load_session();
     refresh_manage_tasks_force_safe();
     LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
     vanilla_qol_on_deserialize_complete();
