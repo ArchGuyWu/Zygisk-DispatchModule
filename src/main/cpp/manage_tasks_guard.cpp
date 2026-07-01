@@ -114,18 +114,29 @@ bool install_branch_only_tramp(GuardSiteState* state, uintptr_t base, size_t sit
     return true;
 }
 
+bool g_manage_tasks_force_safe_active = false;
+
 } // namespace
 
-void set_manage_tasks_load_force_safe(bool enabled) {
+void set_manage_tasks_force_safe(bool enabled, const char* reason) {
     if (!g_guard160.site || !g_guard278.site) return;
+    if (enabled == g_manage_tasks_force_safe_active) return;
+    g_manage_tasks_force_safe_active = enabled;
     if (enabled) {
-        LOGW("⚠️ [ManageTasksGuard] GenericLoad — force safe @ +0x168/+0x278");
+        LOGW("⚠️ [ManageTasksGuard] %s — force safe @ +0x168/+0x278",
+             reason ? reason : "force");
         patch_branch_to(g_guard160.site, g_guard160.safe);
         patch_branch_to(g_guard278.site, g_guard278.safe);
     } else {
+        LOGI("ℹ️ [ManageTasksGuard] %s — restore tramp @ +0x168/+0x278",
+             reason ? reason : "restore");
         patch_branch_to(g_guard160.site, g_guard160.tramp);
         patch_branch_to(g_guard278.site, g_guard278.tramp);
     }
+}
+
+void set_manage_tasks_load_force_safe(bool enabled) {
+    set_manage_tasks_force_safe(enabled, enabled ? "GenericLoad" : "GenericLoad end");
 }
 
 bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {

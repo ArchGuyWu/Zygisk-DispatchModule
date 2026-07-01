@@ -105,6 +105,7 @@ static constexpr int64_t kUstrlenPostLoadDwellMs = 3000;
 static constexpr int64_t kUstrlenPostLoadHardCapMs = 120000;
 
 void begin_save_load_session();
+static void refresh_manage_tasks_force_safe();
 
 void notify_menu_read_save_path(const char* via) {
     // Kind flags only — do NOT begin session here. Starting session before
@@ -306,6 +307,7 @@ void begin_save_load_session() {
         g_skip_pipeline_cleared_ms.store(0, std::memory_order_release);
         g_u_strlen_hydration_ready_since_ms.store(0, std::memory_order_release);
         LOGI("💾 [SaveLoad] Session begin");
+        refresh_manage_tasks_force_safe();
     }
 }
 
@@ -328,6 +330,7 @@ static void end_save_load_session(const char* reason) {
         now_ms() + kSaveLoadPostSessionCooldownMs, std::memory_order_release);
     LOGI("💾 [SaveLoad] Session end — %s (cooldown %lldms)",
          reason, static_cast<long long>(kSaveLoadPostSessionCooldownMs));
+    refresh_manage_tasks_force_safe();
     vanilla_qol_on_save_load_session_ended();
 }
 
@@ -464,6 +467,7 @@ void poll_save_load_hydration_state() {
     prev_ms_loading = ms_loading;
 
     poll_u_strlen_post_load_hydration();
+    refresh_manage_tasks_force_safe();
 }
 
 static inline bool ped_field_range_readable(void* base, size_t offset, size_t span);
@@ -484,6 +488,33 @@ static bool is_gameplay_world_stable() {
         return false;
     }
     return true;
+}
+
+// Keep ManageTasks inbody sites on safe path until gameState==9 + world stable.
+// Tombstone 25/26: force_safe dropped at GenericLoad return while gameState=0
+// and stale x20 vtable still BLR-crashes @ ManageTasks+0x154.
+static void refresh_manage_tasks_force_safe() {
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    const bool session = g_save_load_session.load(std::memory_order_acquire);
+    const bool want =
+        is_generic_load_in_progress() ||
+        read_ms_b_loading() ||
+        (session &&
+         (!have_game_state || game_state != kGameStateIdle || !is_gameplay_world_stable()));
+
+    const char* reason = "hydration";
+    if (is_generic_load_in_progress()) {
+        reason = "GenericLoad";
+    } else if (read_ms_b_loading()) {
+        reason = "ms_bLoading";
+    } else if (session && have_game_state && game_state != kGameStateIdle) {
+        reason = "session pre-idle";
+    } else if (session) {
+        reason = "session hydration";
+    }
+
+    set_manage_tasks_force_safe(want, reason);
 }
 
 bool is_scene_transition_active() {
@@ -1200,10 +1231,10 @@ void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     notify_menu_read_save_path("GenericLoad");
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d)", slot);
     g_generic_load_in_progress.store(true, std::memory_order_release);
-    set_manage_tasks_load_force_safe(true);
+    refresh_manage_tasks_force_safe();
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
-    set_manage_tasks_load_force_safe(false);
     g_generic_load_in_progress.store(false, std::memory_order_release);
+    refresh_manage_tasks_force_safe();
     const bool load_ok = out && is_pointer_readable(out) && *out;
     LOGI("💾 [SaveLoad] GenericLoad(slot=%d) done — ok=%d ms_bFailed=%d",
          slot, load_ok ? 1 : 0, read_ms_b_load_failed() ? 1 : 0);
@@ -1216,6 +1247,7 @@ void proxy_generic_game_storage_after_success_load() {
                            std::memory_order_release);
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_after_success_load);
     begin_save_load_session();
+    refresh_manage_tasks_force_safe();
     LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
     vanilla_qol_on_deserialize_complete();
 }
