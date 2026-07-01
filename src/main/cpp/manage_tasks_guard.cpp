@@ -18,16 +18,10 @@ constexpr size_t kManageTasksResume15c = 0x154 + 8;
 constexpr size_t kManageTasksResume168 = 0x168 + 8;
 constexpr size_t kManageTasksResume250 = 0x248 + 8;
 constexpr size_t kManageTasksResume280 = 0x278 + 8;
-// Vehicle-array loop null exit (mov x20, xzr) before +0x168 site.
-constexpr size_t kManageTasksSafeClearX20 = 0x164;
-// 0x254 landed on blr x8 (tombstone_33/34 pc=1); 0x25c is pursuit-loop ldr x0.
-constexpr size_t kManageTasksSafePursuitLoop = 0x25c;
-// 0x3b0 landed on blr x8; 0x3b8 is mov x24, xzr after the guarded call.
-constexpr size_t kManageTasksSafeClearX24 = 0x3b8;
 
 struct GuardSiteState {
     void* site = nullptr;
-    void* safe = nullptr;
+    void* resume = nullptr;
     void* tramp = nullptr;
 };
 
@@ -81,10 +75,9 @@ bool patch_branch_to(void* site, void* target) {
 }
 
 bool install_branch_only_tramp(GuardSiteState* state, uintptr_t base, size_t site_off, size_t resume_off,
-                             size_t safe_off, const char* label) {
+                             const char* label) {
     void* site = reinterpret_cast<void*>(base + site_off);
     void* resume = reinterpret_cast<void*>(base + resume_off);
-    void* safe = reinterpret_cast<void*>(base + safe_off);
 
     const long page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) return false;
@@ -97,13 +90,15 @@ bool install_branch_only_tramp(GuardSiteState* state, uintptr_t base, size_t sit
     }
 
     const uintptr_t tramp_addr = reinterpret_cast<uintptr_t>(tramp);
-    // No BLR into mod .text (PAC-safe): cbz → ldr → resume, else branch safe.
+    const uintptr_t resume_addr = reinterpret_cast<uintptr_t>(resume);
+    // PAC-safe: skip stale vtable BLR — both null/non-null x20 land on resume.
+    // Old safe@0x25c pursuit loop stalled gameState 0→8 (hang).
     uint32_t words[5] = {};
     words[0] = arm64_cbz_x20(tramp_addr + 0, tramp_addr + 16);
     words[1] = 0xF9400288u;  // ldr x8, [x20]
     words[2] = 0xAA1403E0u;  // mov x0, x20
-    words[3] = arm64_b(tramp_addr + 12, reinterpret_cast<uintptr_t>(resume));
-    words[4] = arm64_b(tramp_addr + 16, reinterpret_cast<uintptr_t>(safe));
+    words[3] = arm64_b(tramp_addr + 12, resume_addr);
+    words[4] = arm64_b(tramp_addr + 16, resume_addr);
     std::memcpy(tramp, words, sizeof(words));
 
     if (!finalize_trampoline_page(tramp, sizeof(words))) {
@@ -118,9 +113,9 @@ bool install_branch_only_tramp(GuardSiteState* state, uintptr_t base, size_t sit
     }
 
     state->site = site;
-    state->safe = safe;
+    state->resume = resume;
     state->tramp = tramp;
-    LOGI("✅ [ManageTasksGuard] %s: site=%p tramp=%p resume=%p safe=%p", label, site, tramp, resume, safe);
+    LOGI("✅ [ManageTasksGuard] %s: site=%p tramp=%p resume=%p", label, site, tramp, resume);
     return true;
 }
 
@@ -133,12 +128,12 @@ void set_manage_tasks_force_safe(bool enabled, const char* reason) {
     if (enabled == g_manage_tasks_force_safe_active) return;
     g_manage_tasks_force_safe_active = enabled;
     if (enabled) {
-        LOGW("⚠️ [ManageTasksGuard] %s — force safe @ +0x154/+0x168/+0x248/+0x278",
+        LOGW("⚠️ [ManageTasksGuard] %s — force BLR-skip @ +0x154/+0x168/+0x248/+0x278",
              reason ? reason : "force");
-        patch_branch_to(g_guard154.site, g_guard154.safe);
-        patch_branch_to(g_guard160.site, g_guard160.safe);
-        patch_branch_to(g_guard248.site, g_guard248.safe);
-        patch_branch_to(g_guard278.site, g_guard278.safe);
+        patch_branch_to(g_guard154.site, g_guard154.resume);
+        patch_branch_to(g_guard160.site, g_guard160.resume);
+        patch_branch_to(g_guard248.site, g_guard248.resume);
+        patch_branch_to(g_guard278.site, g_guard278.resume);
     } else {
         LOGI("ℹ️ [ManageTasksGuard] %s — restore tramp @ +0x154/+0x168/+0x248/+0x278",
              reason ? reason : "restore");
@@ -158,16 +153,16 @@ bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {
     const uintptr_t base = reinterpret_cast<uintptr_t>(manage_tasks_fn);
 
     const bool ok154 = install_branch_only_tramp(&g_guard154, base, kManageTasksGuardSite154,
-                                                 kManageTasksResume15c, kManageTasksSafeClearX20,
-                                                 "x20-null@57ab14c");
+                                                 kManageTasksResume15c,
+                                                 "blr-skip@57ab14c");
     const bool ok160 = install_branch_only_tramp(&g_guard160, base, kManageTasksGuardSite160,
-                                                 kManageTasksResume168, kManageTasksSafePursuitLoop,
-                                                 "x20-null@57ab160");
+                                                 kManageTasksResume168,
+                                                 "blr-skip@57ab160");
     const bool ok248 = install_branch_only_tramp(&g_guard248, base, kManageTasksGuardSite248,
-                                                 kManageTasksResume250, kManageTasksSafePursuitLoop,
-                                                 "x20-null@57ab240");
+                                                 kManageTasksResume250,
+                                                 "blr-skip@57ab240");
     const bool ok278 = install_branch_only_tramp(&g_guard278, base, kManageTasksGuardSite278,
-                                                 kManageTasksResume280, kManageTasksSafeClearX24,
-                                                 "x20-null@57ab278");
+                                                 kManageTasksResume280,
+                                                 "blr-skip@57ab278");
     return ok154 && ok160 && ok248 && ok278;
 }
