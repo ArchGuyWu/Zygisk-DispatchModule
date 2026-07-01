@@ -1,6 +1,6 @@
 #pragma once
 
-// In-body guard for CTaskManager::ManageTasks @ ELF+0x168 / +0x248 (null x20 skips BLR).
+// In-body guard for CTaskManager::ManageTasks @ ELF+0x168 / +0x248 / +0x278 (null x20 skips BLR).
 bool install_manage_tasks_inbody_guards(void* manage_tasks_fn);
 
 // Patch guard sites to unconditional branch-to-safe (no mmap BLR). Idempotent.

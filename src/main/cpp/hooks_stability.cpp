@@ -500,6 +500,14 @@ static inline bool is_early_deserialize_tail_paused() {
     return is_generic_load_in_progress();
 }
 
+// gameState 0 / 8 and ms_bLoading: engine must run PlayerInfo/CCam or fade hangs (log 201238).
+static inline bool is_engine_load_transition_active() {
+    if (read_ms_b_loading()) return true;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state)) return false;
+    return game_state == 0 || game_state == kGameStateLoadingStarted;
+}
+
 // In-body tramps (null→after-BLR, non-null→vtable ldr) replace force_safe patches.
 static void refresh_manage_tasks_force_safe() {
     set_manage_tasks_force_safe(false, "tramp only");
@@ -1072,7 +1080,7 @@ void sanitize_task_chain(void* task, int depth = 0) {
 
 // RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–08, scene switch).
 // RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — patched in manage_tasks_guard.cpp.
-// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — covered by +0x248 guard (57ab240).
+// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — patched in manage_tasks_guard.cpp (+0x278).
 static void sanitize_manage_tasks_pre_call(void* self, bool force) {
     sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x28, force);
     sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x28, force);
@@ -1827,10 +1835,14 @@ static inline bool player_info_process_crash_unsafe(void* self) {
 void proxy_player_info_process(void* self, int player_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) {
-        if (is_player_info_process_paused()) {
+        if (is_player_info_process_paused() || is_engine_load_transition_active()) {
             LOGW("⚠️ [PlayerInfo::Process] null self idx=%d — skip (tombstone_23/24)",
                  player_index);
         }
+        return;
+    }
+    if (is_engine_load_transition_active() || is_generic_load_in_progress()) {
+        SHADOWHOOK_CALL_PREV(proxy_player_info_process, self, player_index);
         return;
     }
     if (is_player_info_process_paused()) {
@@ -2365,6 +2377,12 @@ static inline bool cam_process_unsafe(void* self) {
 
 void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_engine_load_transition_active() || is_generic_load_in_progress()) {
+        if (!cam_process_unsafe(self)) {
+            SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
+        }
+        return;
+    }
     if (is_player_info_process_paused()) {
         if (cam_process_unsafe(self)) {
             LOGW("⚠️ [CCam::Process_FollowPed_SA] unsafe %p — skip load (tombstone_27/28)",
