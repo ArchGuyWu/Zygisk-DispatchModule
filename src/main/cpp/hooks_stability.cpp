@@ -1072,7 +1072,7 @@ void sanitize_task_chain(void* task, int depth = 0) {
 
 // RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–08, scene switch).
 // RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — patched in manage_tasks_guard.cpp.
-// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — patched in manage_tasks_guard.cpp.
+// RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — covered by +0x248 guard (57ab240).
 static void sanitize_manage_tasks_pre_call(void* self, bool force) {
     sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x28, force);
     sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x28, force);
