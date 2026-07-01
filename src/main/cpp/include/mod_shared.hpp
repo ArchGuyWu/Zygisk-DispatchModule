@@ -290,6 +290,7 @@ bool is_disk_deserialize_active();
 bool is_skip_cutscene_pipeline_active();
 void begin_save_load_session();
 void notify_menu_read_save_path(const char* via);
+void notify_ue_menu_load_committed(const char* via, int slot);
 void notify_explicit_new_game_bootstrap(const char* via);
 void mark_save_load_quiesce(int64_t duration_ms = 0);
 void poll_save_load_hydration_state();

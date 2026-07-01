@@ -46,7 +46,7 @@ logcat_cmd() {
     fi
 }
 
-FILTER_RE='GenericLoad|ms_bLoading cleared|Session begin|Session end|Hydration|Skip pipeline|u_strlen|ms_bFailed|deserialize|Left frontend|Menu read-save|RestoreForStartLoad|ProcessControl|Intel::FindTask|SaveLoad'
+FILTER_RE='GenericLoad|LoadDataInSlot|LoadGameFromSlot|ms_bLoading|Session begin|Session end|Hydration|Skip pipeline|u_strlen|ms_bFailed|deserialize|Left frontend|Menu read-save|RestoreForStartLoad|All hooks installed|VanillaQoL|SaveLoad'
 
 echo "=== SaveLoad logcat capture ==="
 echo "Mode: $MODE | clear buffer: $CLEAR"
@@ -57,7 +57,9 @@ echo ""
 if (( CLEAR )); then
     echo "🧹 Clearing logcat buffer..."
     logcat_cmd "logcat -c" || true
-    echo "✅ Buffer cleared. Start the game and load a save now."
+    echo "✅ Buffer cleared."
+    echo "   1) 启动游戏，等 logcat 出现「All hooks installed」"
+    echo "   2) 主菜单 Load Game → 选 slot（不要点继续）"
     echo ""
 fi
 

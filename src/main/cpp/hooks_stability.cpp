@@ -140,6 +140,23 @@ static bool read_game_state(uint8_t* out) {
     return true;
 }
 
+void notify_ue_menu_load_committed(const char* via, int slot) {
+    notify_menu_read_save_path(via);
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    const bool ms_loading = read_ms_b_loading();
+    LOGI("💾 [SaveLoad] %s(slot=%d) committed — ms_bLoading=%d gameState=%u",
+         via,
+         slot,
+         ms_loading ? 1 : 0,
+         have_game_state ? game_state : 255u);
+    // DE Load Game uses UE LoadDataInSlot*, not CGenericGameStorage::GenericLoad.
+    if (!g_save_load_session.load(std::memory_order_acquire)) {
+        begin_save_load_session();
+        LOGI("💾 [SaveLoad] %s(slot=%d) — session begin (UE menu load path)", via, slot);
+    }
+}
+
 static int read_streaming_num_requested() {
     if (!g_streaming_ms_num_models_requested ||
         !is_pointer_readable(g_streaming_ms_num_models_requested)) {

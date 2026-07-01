@@ -204,15 +204,16 @@ bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
 void proxy_gameterface_load_data_in_slot(void* self, int slot) {
     SHADOWHOOK_STACK_SCOPE();
     notify_menu_read_save_path("UGameterface::LoadDataInSlot");
-    LOGI("💾 [SaveLoad] UGameterface::LoadDataInSlot(slot=%d)", slot);
+    LOGI("💾 [SaveLoad] UGameterface::LoadDataInSlot(slot=%d) — awaiting commit event", slot);
     SHADOWHOOK_CALL_PREV(proxy_gameterface_load_data_in_slot, self, slot);
 }
 
 void proxy_ui_menu_load_data_in_slot_event(void* self, bool success, int slot) {
     SHADOWHOOK_STACK_SCOPE();
     if (success) {
-        notify_menu_read_save_path("UUI_Menu_Base::LoadDataInSlotEvent");
-        LOGI("💾 [SaveLoad] UUI_Menu_Base::LoadDataInSlotEvent(slot=%d)", slot);
+        notify_ue_menu_load_committed("UUI_Menu_Base::LoadDataInSlotEvent", slot);
+    } else {
+        LOGW("💾 [SaveLoad] UUI_Menu_Base::LoadDataInSlotEvent(slot=%d) — failed", slot);
     }
     SHADOWHOOK_CALL_PREV(proxy_ui_menu_load_data_in_slot_event, self, success, slot);
 }
@@ -246,8 +247,7 @@ static void* g_stub_load_game_from_slot = nullptr;
 
 void* proxy_load_game_from_slot(const void* slot_name, int user_index) {
     SHADOWHOOK_STACK_SCOPE();
-    notify_menu_read_save_path("UGameplayStatics::LoadGameFromSlot");
-    LOGI("💾 [SaveLoad] UGameplayStatics::LoadGameFromSlot(userIndex=%d)", user_index);
+    notify_ue_menu_load_committed("UGameplayStatics::LoadGameFromSlot", user_index);
     return SHADOWHOOK_CALL_PREV(proxy_load_game_from_slot, slot_name, user_index);
 }
 
