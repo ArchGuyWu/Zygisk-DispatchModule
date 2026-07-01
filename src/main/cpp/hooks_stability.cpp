@@ -3262,6 +3262,7 @@ inline bool vehicle_ai_subobject_chain_safe(void* vehicle) {
 
 void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_player_info_process_paused()) return nullptr;
     if (!vehicle_ai_subobject_chain_safe(vehicle)) {
         LOGW("⚠️ [IsPoliceVehicleInPursuit thunk] vehicle %p ai chain unsafe — skip", vehicle);
         return nullptr;
@@ -3272,11 +3273,21 @@ void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
 bool proxy_is_police_vehicle_in_pursuit(int vehicle_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (vehicle_index < 0) return false;
+    if (is_player_info_process_paused()) {
+        LOGW("⚠️ [IsPoliceVehicleInPursuit] idx=%d — skip load (tombstone_29/30)",
+             vehicle_index);
+        return false;
+    }
     if (g_GetPoolVehicle) {
         void* vehicle = g_GetPoolVehicle(vehicle_index);
-        if (vehicle && !vehicle_ai_subobject_chain_safe(vehicle)) {
+        // +0x29c reads vehicle+0x10 with no null guard; pool slot empty during hydrate.
+        if (!vehicle || !vehicle_ai_subobject_chain_safe(vehicle)) {
+            LOGW("⚠️ [IsPoliceVehicleInPursuit] idx=%d vehicle %p — skip (tombstone_29/30)",
+                 vehicle_index, vehicle);
             return false;
         }
+    } else if (is_save_load_session_or_loading()) {
+        return false;
     }
     return SHADOWHOOK_CALL_PREV(proxy_is_police_vehicle_in_pursuit, vehicle_index);
 }

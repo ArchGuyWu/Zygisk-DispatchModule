@@ -1067,7 +1067,7 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskSimpleIKManager::ProcessPed: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CCarCtrl::IsPoliceVehicleInPursuit (outer + inner vehicle-ai thunk at +0x2b8)
+    // Hook CCarCtrl::IsPoliceVehicleInPursuit (null pool slot @ +0x29c, thunk @ +0x2b8; tombstone_29/30)
     g_stub_is_police_vehicle_in_pursuit = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN8CCarCtrl24IsPoliceVehicleInPursuitEi",
