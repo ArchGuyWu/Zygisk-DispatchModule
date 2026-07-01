@@ -512,6 +512,11 @@ static inline bool is_engine_load_transition_active() {
     return game_state == 0 || game_state == kGameStateLoadingStarted;
 }
 
+// 0→9 fade: run vanilla ped/intel hooks; strict unsafe gates cause permanent hang (log 202941).
+static inline bool is_load_transition_engine_fastpath() {
+    return is_engine_load_transition_active() || is_generic_load_in_progress();
+}
+
 // Hydration gates (task queries / force scrub) only after gameState==9 — not during 0→8 fade.
 static inline bool is_save_load_hydration_phase() {
     if (!g_save_load_session.load(std::memory_order_acquire)) return false;
@@ -572,6 +577,7 @@ static bool is_gameplay_world_stable_for_sanitize() {
 }
 
 inline bool is_stability_sanitize_paused() {
+    if (is_load_transition_engine_fastpath()) return false;
     return is_save_load_active() ||
            is_scene_transition_active() ||
            !is_gameplay_world_stable_for_sanitize();
@@ -1803,6 +1809,10 @@ fn_ProcessBuoyancy_t g_orig_process_buoyancy = nullptr;
 void proxy_process_buoyancy(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_process_buoyancy, self);
+        return;
+    }
     if (is_task_manager_lookup_paused()) return;
     if (is_manage_tasks_execution_paused()) return;
     if (is_ped_physics_hotpath_paused()) return;
@@ -1846,13 +1856,13 @@ static inline bool player_info_process_crash_unsafe(void* self) {
 void proxy_player_info_process(void* self, int player_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) {
-        if (is_player_info_process_paused() || is_engine_load_transition_active()) {
+        if (is_player_info_process_paused() || is_load_transition_engine_fastpath()) {
             LOGW("⚠️ [PlayerInfo::Process] null self idx=%d — skip (tombstone_23/24)",
                  player_index);
         }
         return;
     }
-    if (is_engine_load_transition_active() || is_generic_load_in_progress()) {
+    if (is_load_transition_engine_fastpath()) {
         SHADOWHOOK_CALL_PREV(proxy_player_info_process, self, player_index);
         return;
     }
@@ -1887,6 +1897,10 @@ static inline bool player_ped_control_crash_unsafe(void* ped) {
 void proxy_player_ped_process_control(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_player_ped_process_control, self);
+        return;
+    }
     if (is_stability_sanitize_paused()) {
         // gameState 9 + session hydration: never CALL_PREV (#08, ped+0x44 null deref).
         if (is_manage_tasks_execution_paused() || is_post_load_task_hotpath_paused()) {
@@ -1913,6 +1927,10 @@ fn_ProcessStaticCounter_t g_orig_process_static_counter = nullptr;
 void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_process_static_counter, self);
+        return;
+    }
     if (is_ped_physics_hotpath_paused()) return;
     if (is_post_load_task_hotpath_paused()) return;
     if (intelligence_static_counter_unsafe(self)) {
@@ -1932,6 +1950,12 @@ fn_cBuoyancy_ProcessBuoyancy_t g_orig_cbuoyancy_process_buoyancy = nullptr;
 bool proxy_cbuoyancy_process_buoyancy(void* self, void* physical, float f1, void* vec1, void* vec2) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return false;
+    if (is_load_transition_engine_fastpath()) {
+        if (physical && !is_pointer_readable(physical)) return false;
+        if (vec1 && !is_pointer_readable(vec1)) return false;
+        if (vec2 && !is_pointer_readable(vec2)) return false;
+        return SHADOWHOOK_CALL_PREV(proxy_cbuoyancy_process_buoyancy, self, physical, f1, vec1, vec2);
+    }
     if (is_task_manager_lookup_paused()) return false;
     if (is_post_load_hydration_paused()) return false;
     if (is_ped_physics_hotpath_paused()) return false;
@@ -2095,6 +2119,9 @@ void* proxy_get_task_main(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
+    if (is_load_transition_engine_fastpath()) {
+        return SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
+    }
     if (is_task_manager_lookup_paused()) return nullptr;
     if (is_post_load_hydration_paused()) return nullptr;
     if (intelligence_zero_filled(self) ||
@@ -2388,7 +2415,7 @@ static inline bool cam_process_unsafe(void* self) {
 
 void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_engine_load_transition_active() || is_generic_load_in_progress()) {
+    if (is_load_transition_engine_fastpath()) {
         if (!cam_process_unsafe(self)) {
             SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
         }
@@ -3111,6 +3138,10 @@ inline bool intel_task_chains_safe_for_scan_readonly(void* intel, size_t vtable_
 void proxy_scan_for_events(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!ped || !is_pointer_readable(ped)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
+        return;
+    }
     if (is_task_manager_lookup_paused()) return;
     if (is_post_load_hydration_paused()) return;
     if (!ped_physics_tick_ready(ped)) return;
