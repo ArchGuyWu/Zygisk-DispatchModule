@@ -10,12 +10,16 @@
 
 namespace {
 
+constexpr size_t kManageTasksGuardSite154 = 0x154;
 constexpr size_t kManageTasksGuardSite160 = 0x168;
 constexpr size_t kManageTasksGuardSite248 = 0x248;
 constexpr size_t kManageTasksGuardSite278 = 0x278;
+constexpr size_t kManageTasksResume15c = 0x154 + 8;
 constexpr size_t kManageTasksResume168 = 0x168 + 8;
 constexpr size_t kManageTasksResume250 = 0x248 + 8;
 constexpr size_t kManageTasksResume280 = 0x278 + 8;
+// Vehicle-array loop null exit (mov x20, xzr) before +0x168 site.
+constexpr size_t kManageTasksSafeClearX20 = 0x164;
 // 0x254 landed on blr x8 (tombstone_33/34 pc=1); 0x25c is pursuit-loop ldr x0.
 constexpr size_t kManageTasksSafePursuitLoop = 0x25c;
 // 0x3b0 landed on blr x8; 0x3b8 is mov x24, xzr after the guarded call.
@@ -27,6 +31,7 @@ struct GuardSiteState {
     void* tramp = nullptr;
 };
 
+GuardSiteState g_guard154;
 GuardSiteState g_guard160;
 GuardSiteState g_guard248;
 GuardSiteState g_guard278;
@@ -124,18 +129,20 @@ bool g_manage_tasks_force_safe_active = false;
 } // namespace
 
 void set_manage_tasks_force_safe(bool enabled, const char* reason) {
-    if (!g_guard160.site || !g_guard248.site || !g_guard278.site) return;
+    if (!g_guard154.site || !g_guard160.site || !g_guard248.site || !g_guard278.site) return;
     if (enabled == g_manage_tasks_force_safe_active) return;
     g_manage_tasks_force_safe_active = enabled;
     if (enabled) {
-        LOGW("⚠️ [ManageTasksGuard] %s — force safe @ +0x168/+0x248/+0x278",
+        LOGW("⚠️ [ManageTasksGuard] %s — force safe @ +0x154/+0x168/+0x248/+0x278",
              reason ? reason : "force");
+        patch_branch_to(g_guard154.site, g_guard154.safe);
         patch_branch_to(g_guard160.site, g_guard160.safe);
         patch_branch_to(g_guard248.site, g_guard248.safe);
         patch_branch_to(g_guard278.site, g_guard278.safe);
     } else {
-        LOGI("ℹ️ [ManageTasksGuard] %s — restore tramp @ +0x168/+0x248/+0x278",
+        LOGI("ℹ️ [ManageTasksGuard] %s — restore tramp @ +0x154/+0x168/+0x248/+0x278",
              reason ? reason : "restore");
+        patch_branch_to(g_guard154.site, g_guard154.tramp);
         patch_branch_to(g_guard160.site, g_guard160.tramp);
         patch_branch_to(g_guard248.site, g_guard248.tramp);
         patch_branch_to(g_guard278.site, g_guard278.tramp);
@@ -150,6 +157,9 @@ bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {
     if (!manage_tasks_fn) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(manage_tasks_fn);
 
+    const bool ok154 = install_branch_only_tramp(&g_guard154, base, kManageTasksGuardSite154,
+                                                 kManageTasksResume15c, kManageTasksSafeClearX20,
+                                                 "x20-null@57ab14c");
     const bool ok160 = install_branch_only_tramp(&g_guard160, base, kManageTasksGuardSite160,
                                                  kManageTasksResume168, kManageTasksSafePursuitLoop,
                                                  "x20-null@57ab160");
@@ -159,5 +169,5 @@ bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {
     const bool ok278 = install_branch_only_tramp(&g_guard278, base, kManageTasksGuardSite278,
                                                  kManageTasksResume280, kManageTasksSafeClearX24,
                                                  "x20-null@57ab278");
-    return ok160 && ok248 && ok278;
+    return ok154 && ok160 && ok248 && ok278;
 }

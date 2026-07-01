@@ -75,6 +75,7 @@ static std::atomic<int64_t> g_save_load_quiesce_until_ms{0};
 static std::atomic<bool> g_skip_pipeline_was_active{false};
 static std::atomic<int64_t> g_skip_pipeline_cleared_ms{0};
 static std::atomic<int64_t> g_u_strlen_hydration_ready_since_ms{0};
+static std::atomic<bool> g_manage_tasks_gs0_skip_logged{false};
 
 // Menu read-save: direct scene, no intro. New game bootstrap may enter skip/intro pipeline.
 enum class SaveLoadKind : uint8_t {
@@ -306,6 +307,7 @@ void begin_save_load_session() {
         g_skip_pipeline_was_active.store(false, std::memory_order_release);
         g_skip_pipeline_cleared_ms.store(0, std::memory_order_release);
         g_u_strlen_hydration_ready_since_ms.store(0, std::memory_order_release);
+        g_manage_tasks_gs0_skip_logged.store(false, std::memory_order_release);
         LOGI("💾 [SaveLoad] Session begin");
         refresh_manage_tasks_force_safe();
     }
@@ -504,6 +506,17 @@ static inline bool is_early_deserialize_tail_paused() {
 static void refresh_manage_tasks_force_safe() {
     const bool want = is_generic_load_in_progress();
     set_manage_tasks_force_safe(want, want ? "GenericLoad" : "GenericLoad end");
+}
+
+// Post-deserialize gameState==0: stale vehicle vtables BLR @ +0x150 (tombstone_35/36).
+// Skip whole ManageTasks until LOADING_STARTED; ms_bLoading/state 7-8 must still run.
+static inline bool is_manage_tasks_gamestate_zero_tail_skipped() {
+    if (is_generic_load_in_progress()) return false;
+    if (read_ms_b_loading()) return false;
+    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state)) return false;
+    return game_state == 0;
 }
 
 bool is_scene_transition_active() {
@@ -1092,6 +1105,12 @@ static void sanitize_manage_tasks_pre_call(void* self, bool force) {
 void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_manage_tasks_gamestate_zero_tail_skipped()) {
+        if (!g_manage_tasks_gs0_skip_logged.exchange(true, std::memory_order_relaxed)) {
+            LOGW("⚠️ [CTaskManager::ManageTasks] gameState=0 tail — skip CALL_PREV (tombstone_35/36)");
+        }
+        return;
+    }
     if (is_stability_sanitize_paused()) {
         // Layered gate (tombstone 29–32): skip CALL_PREV only during session+gameState 9
         // hydration; ms_bLoading / state 7–8 always CALL_PREV (loading screen progress).
