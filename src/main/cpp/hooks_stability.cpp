@@ -754,8 +754,9 @@ inline bool task_slot_unsafe_for_vtable_call(void* task, size_t vtable_offset) {
     return !is_task_vtable_safe(task) || task_vtable_fn_at_unsafe(task, vtable_offset);
 }
 
-inline void sanitize_task_manager_slots(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18) {
-    if (is_stability_sanitize_paused()) return;
+inline void sanitize_task_manager_slots(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18,
+                                        bool force = false) {
+    if (!force && is_stability_sanitize_paused()) return;
     if (!task_mgr || !is_pointer_readable(task_mgr)) return;
     for (int i = 0; i < 11; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
@@ -931,8 +932,9 @@ inline void* simplest_in_task_chain(void* task, size_t vtable_offset = 0x18) {
     return current;
 }
 
-inline void sanitize_task_manager_primary_chains(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18) {
-    if (is_stability_sanitize_paused()) return;
+inline void sanitize_task_manager_primary_chains(void* task_mgr, const char* log_tag, size_t vtable_fn_offset = 0x18,
+                                                 bool force = false) {
+    if (!force && is_stability_sanitize_paused()) return;
     if (!task_mgr || !is_pointer_readable(task_mgr)) return;
     for (int i = 0; i < 5; ++i) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(task_mgr) + i * 8);
@@ -1045,6 +1047,21 @@ void sanitize_task_chain(void* task, int depth = 0) {
 // RE: slot[x23] null at 57ab090 → cbz 57ab160; x20 null → no cbz 57ab160 (tombstone_03–08, scene switch).
 // RE: 57ab0f0/57ab140 reload slot → null → 57ab15c mov x20,xzr → 57ab160 — patched in manage_tasks_guard.cpp.
 // RE: 57ab274 mov x20,xzr → ldr [x20] at 57ab278 — patched in manage_tasks_guard.cpp.
+static void sanitize_manage_tasks_pre_call(void* self, bool force) {
+    sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x28, force);
+    sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x28, force);
+    for (int i = 0; i < 11; ++i) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        if (task_chain_walk_unsafe(task, 0x28)) {
+            LOGW("⚠️ [CTaskManager::ManageTasks] clearing unsafe chain at slot %d", i);
+            *task_slot = nullptr;
+        }
+    }
+}
+
 void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
@@ -1052,22 +1069,15 @@ void proxy_manage_tasks(void* self) {
         // Layered gate (tombstone 29–32): skip CALL_PREV only during session+gameState 9
         // hydration; ms_bLoading / state 7–8 always CALL_PREV (loading screen progress).
         if (is_manage_tasks_execution_paused()) return;
+        // Load path: stale non-null x20 mid-function (tombstone_17/18) — force slot scrub.
+        if (is_save_load_active()) {
+            sanitize_manage_tasks_pre_call(self, true);
+        }
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
     }
 
-    sanitize_task_manager_slots(self, "CTaskManager::ManageTasks", 0x18);
-    sanitize_task_manager_primary_chains(self, "CTaskManager::ManageTasks", 0x18);
-    for (int i = 0; i < 11; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-        if (!is_pointer_readable(task_slot)) continue;
-        void* task = *task_slot;
-        if (!task) continue;
-        if (task_chain_walk_unsafe(task, 0x18)) {
-            LOGW("⚠️ [CTaskManager::ManageTasks] clearing unsafe chain at slot %d", i);
-            *task_slot = nullptr;
-        }
-    }
+    sanitize_manage_tasks_pre_call(self, false);
     SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
 }
 
