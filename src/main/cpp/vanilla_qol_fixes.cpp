@@ -198,7 +198,11 @@ bool proxy_san_andreas_load_data_in_slot(void* self, int slot) {
     SHADOWHOOK_STACK_SCOPE();
     notify_menu_read_save_path("USanAndreasInterface::LoadDataInSlot");
     LOGI("💾 [SaveLoad] USanAndreasInterface::LoadDataInSlot(slot=%d)", slot);
-    return SHADOWHOOK_CALL_PREV(proxy_san_andreas_load_data_in_slot, self, slot);
+    const bool ok = SHADOWHOOK_CALL_PREV(proxy_san_andreas_load_data_in_slot, self, slot);
+    LOGI("💾 [SaveLoad] USanAndreasInterface::LoadDataInSlot(slot=%d) returned — ok=%d",
+         slot, ok ? 1 : 0);
+    poll_save_load_hydration_state();
+    return ok;
 }
 
 void proxy_gameterface_load_data_in_slot(void* self, int slot) {

@@ -108,10 +108,16 @@ static constexpr int64_t kUstrlenPostLoadHardCapMs = 120000;
 void begin_save_load_session();
 static void refresh_manage_tasks_force_safe();
 static void notify_generic_load_returned(int slot, bool load_ok);
+static void maybe_log_load_transition_heartbeat(const char* via);
+static void maybe_nudge_fade_stall(uint8_t game_state, bool have_game_state);
+static int read_streaming_num_requested();
+
+static std::atomic<bool> g_fade_nudge_attempted{false};
 
 void notify_menu_read_save_path(const char* via) {
     // Kind flags only — do NOT begin session here. Starting session before
     // ms_bLoading/game_state==8 skips ManageTasks during the loading screen (hang).
+    g_fade_nudge_attempted.store(false, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
@@ -146,6 +152,37 @@ static bool read_game_state(uint8_t* out) {
     return true;
 }
 
+static void maybe_log_load_transition_heartbeat(const char* via) {
+    static int64_t last_ms = 0;
+    uint8_t game_state = 0;
+    const bool have_game_state = read_game_state(&game_state);
+    if (!have_game_state || game_state != 0) return;
+    const int64_t cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (cleared <= 0) return;
+    const int64_t now = now_ms();
+    if (now - last_ms < 2000) return;
+    last_ms = now;
+    LOGI("💾 [SaveLoad] Heartbeat %s — gameState=0 ms_bLoading=%d sinceCleared=%lldms streaming=%d",
+         via,
+         read_ms_b_loading() ? 1 : 0,
+         static_cast<long long>(now - cleared),
+         read_streaming_num_requested());
+}
+
+static void maybe_nudge_fade_stall(uint8_t game_state, bool have_game_state) {
+    if (!have_game_state || game_state != 0) return;
+    if (g_fade_nudge_attempted.load(std::memory_order_acquire)) return;
+    const int64_t cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (cleared <= 0 || now_ms() - cleared < 5000) return;
+    if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return;
+    g_fade_nudge_attempted.store(true, std::memory_order_release);
+    *g_cgame_logic_game_state = kGameStateLoadingStarted;
+    LOGW("💾 [SaveLoad] Fade recovery — nudged gameState 0→8 after %lldms stall",
+         static_cast<long long>(now_ms() - cleared));
+}
+
 // GenericLoad blocks GameThread — poll may miss ms_bLoading true→false edge (log 221406).
 static void notify_generic_load_returned(int slot, bool load_ok) {
     uint8_t game_state = 0;
@@ -163,6 +200,7 @@ static void notify_generic_load_returned(int slot, bool load_ok) {
              slot);
         begin_save_load_session();
     }
+    poll_save_load_hydration_state();
 }
 
 void notify_ue_menu_load_committed(const char* via, int slot) {
@@ -454,6 +492,7 @@ void poll_save_load_hydration_state() {
                  g_save_load_session.load(std::memory_order_acquire) ? 1 : 0,
                  read_streaming_num_requested());
         }
+        maybe_nudge_fade_stall(game_state, have_game_state);
     } else {
         last_fade_stall_diag_ms = 0;
     }
@@ -1198,6 +1237,7 @@ void proxy_manage_tasks(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_load_transition_engine_fastpath()) {
+        maybe_log_load_transition_heartbeat("ManageTasks");
         SHADOWHOOK_CALL_PREV(proxy_manage_tasks, self);
         return;
     }
@@ -1954,6 +1994,7 @@ void proxy_player_info_process(void* self, int player_index) {
         return;
     }
     if (is_load_transition_engine_fastpath()) {
+        maybe_log_load_transition_heartbeat("PlayerInfo::Process");
         SHADOWHOOK_CALL_PREV(proxy_player_info_process, self, player_index);
         return;
     }
@@ -2280,6 +2321,10 @@ inline bool ik_chain_has_null_entity_slot(void* self) {
 void proxy_ik_chain_update(void* self, float dt) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_ik_chain_update, self, dt);
+        return;
+    }
     // Original cbz x0 falls through to ldr [x0,#0x20] (tombstone_09, fault 0x20).
     if (self && ik_chain_has_null_entity_slot(self)) {
         LOGW("⚠️ [IKChainManager::Update] chain node with null entity — skip original");
@@ -3368,6 +3413,10 @@ void proxy_ik_manager_process_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_ik_manager_process_ped, self, ped);
+        return;
+    }
     if (is_task_manager_lookup_paused()) return;
     if (is_post_load_hydration_paused()) return;
     if (is_post_load_task_hotpath_paused()) return;

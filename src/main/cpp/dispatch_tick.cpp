@@ -152,13 +152,13 @@ void cleanup_single_case_vehicles(std::shared_ptr<CrimeEvent> crime) {
 void proxy_the_scripts_process() {
     SHADOWHOOK_STACK_SCOPE();
 
+    // Poll before orig: GenericLoad return may leave gameState=0 while orig blocks (log 223021).
+    poll_save_load_transition();
+
     if (g_orig_the_scripts_process) {
         g_orig_the_scripts_process();
     }
 
-    poll_save_load_transition();
-    // Fade stall diag lives in poll_save_load_hydration_state — if absent after load,
-    // GameThread hung before this hook (see u_strlen ICU passthrough fix, log 222415).
     if (!is_mod_dispatch_paused()) {
         on_main_thread_tick();
     }
