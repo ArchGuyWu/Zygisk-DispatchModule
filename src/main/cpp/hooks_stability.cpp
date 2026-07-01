@@ -115,6 +115,7 @@ static void try_dismiss_deferred_loading_screen(const char* via);
 static void try_nudge_game_state_loading_started(const char* via, bool immediate);
 static bool is_post_load_fade_recovery_active();
 static bool should_skip_post_load_fade_zero();
+static bool force_complete_post_load_fade(void* camera, const char* via);
 static void kick_post_load_fade_in_once(const char* via);
 static void run_deferred_fade_in_kick_if_needed(const char* via);
 static int read_streaming_num_requested();
@@ -124,6 +125,10 @@ static bool read_game_state(uint8_t* out);
 fn_CCamera_RunDeferredFadeIfBound_t g_run_deferred_fade_if_bound = nullptr;
 fn_CCamera_Fade_t g_ccamera_fade = nullptr;
 fn_CCamera_GetScreenFadeStatus_t g_get_screen_fade_status = nullptr;
+fn_UGTAViewportClient_GetTransitionManager_t g_get_transition_manager = nullptr;
+fn_UUITransition_Continue_Base_t g_ui_transition_continue_base = nullptr;
+fn_UUITransitionScreen_ForceCurrentFadeOpacity_t g_ui_transition_screen_force_fade_opacity =
+    nullptr;
 fn_CCamera_RunDeferredFadeIfBound_t g_orig_ccamera_run_deferred_fade_if_bound = nullptr;
 fn_CCamera_Fade_t g_orig_ccamera_fade = nullptr;
 fn_UGameterface_RunningDeferredLoadingScreenFade_t g_running_deferred_loading_screen_fade =
@@ -223,6 +228,63 @@ static bool should_skip_post_load_fade_zero() {
     return read_screen_fade_status() >= 1;
 }
 
+// RE Fade(0,0): orig waits on UUITransitionScreen+0x2a1 (log 025530 hang after Skip).
+// Drive the same completion path without calling CCamera::Fade(0,0).
+static bool force_complete_post_load_fade(void* camera, const char* via) {
+    if (!camera || !is_pointer_readable(camera)) return false;
+    const int16_t before = read_screen_fade_status();
+    bool acted = false;
+
+    if (g_get_transition_manager && g_ui_transition_continue_base) {
+        void* transition = g_get_transition_manager();
+        if (transition && is_pointer_readable(transition)) {
+            void** screen_slot =
+                reinterpret_cast<void**>(reinterpret_cast<char*>(transition) + 0x28);
+            void* screen = nullptr;
+            if (is_pointer_readable(screen_slot)) {
+                screen = *screen_slot;
+            }
+            g_ui_transition_continue_base(transition, true, 0);
+            g_ui_transition_continue_base(transition, true, 1);
+            acted = true;
+            if (screen && is_pointer_readable(screen) &&
+                g_ui_transition_screen_force_fade_opacity) {
+                g_ui_transition_screen_force_fade_opacity(screen, 0.0f);
+                uint8_t* busy =
+                    reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(screen) + 0x2a1);
+                if (is_pointer_readable(busy)) {
+                    *busy = 0;
+                }
+                uint8_t* state =
+                    reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(screen) + 0x260);
+                if (is_pointer_readable(state) && *state < 4) {
+                    *state = 4;
+                }
+            }
+            if (before >= 2) {
+                g_ui_transition_continue_base(transition, true, 2);
+            }
+            g_ui_transition_continue_base(transition, true, 1);
+        }
+    }
+
+    uint8_t* camera_fade_done =
+        reinterpret_cast<uint8_t*>(reinterpret_cast<char*>(camera) + 0x2a);
+    if (is_pointer_readable(camera_fade_done)) {
+        *camera_fade_done = 1;
+        acted = true;
+    }
+
+    if (acted) {
+        vanilla_qol_schedule_touch_rehydrate("fade force-complete");
+        LOGW("💾 [SaveLoad] Force fade complete — fadeStatus %d→%d via %s",
+             static_cast<int>(before),
+             static_cast<int>(read_screen_fade_status()),
+             via ? via : "?");
+    }
+    return acted;
+}
+
 static void try_nudge_game_state_loading_started(const char* via, bool immediate) {
     if (g_game_state_nudge_attempted.load(std::memory_order_acquire)) return;
     uint8_t game_state = 0;
@@ -246,17 +308,17 @@ static void kick_post_load_fade_in_once(const char* via) {
     if (read_ms_b_loading()) return;
     const int attempts = g_fade_in_kick_count.load(std::memory_order_acquire);
     if (attempts >= kMaxFadeInKickAttempts) return;
-    fn_CCamera_Fade_t fade_fn = g_orig_ccamera_fade ? g_orig_ccamera_fade : g_ccamera_fade;
-    if (!fade_fn || !g_TheCamera || !is_pointer_readable(g_TheCamera)) return;
+    if (!g_TheCamera || !is_pointer_readable(g_TheCamera)) return;
     g_fade_in_kick_count.store(attempts + 1, std::memory_order_release);
     g_last_fade_in_kick_ms.store(now_ms(), std::memory_order_release);
     g_deferred_fade_in_kick.store(false, std::memory_order_release);
     g_loading_hud_dismissed.store(true, std::memory_order_release);
-    fade_fn(g_TheCamera, 2.0f, 0);
-    vanilla_qol_schedule_touch_rehydrate("fade-in kick");
-    LOGW("💾 [SaveLoad] Fade-in kick #%d — CCamera::Fade(2.0,0) fadeStatus=%d via %s "
+    const int16_t before = read_screen_fade_status();
+    force_complete_post_load_fade(g_TheCamera, via);
+    LOGW("💾 [SaveLoad] Fade-in kick #%d — force-complete fadeStatus=%d→%d via %s "
          "streaming=%d",
          attempts + 1,
+         static_cast<int>(before),
          static_cast<int>(read_screen_fade_status()),
          via,
          read_streaming_num_requested());
@@ -2705,6 +2767,7 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
         LOGW("💾 [SaveLoad] Skip Fade(0,0) — post-load fadeStatus=%d gameState=%u",
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u);
+        force_complete_post_load_fade(self, "Skip Fade(0,0)");
         g_deferred_fade_in_kick.store(true, std::memory_order_release);
         return;
     }
@@ -2741,8 +2804,6 @@ void proxy_running_deferred_loading_screen_fade(void* self,
         if (read_screen_fade_status() >= 1) {
             g_deferred_fade_in_kick.store(true, std::memory_order_release);
         }
-        run_deferred_fade_in_kick_if_needed("RunningDeferredLoadingScreenFade post");
-        try_kick_fade_in_after_black("RunningDeferredLoadingScreenFade post");
     }
 }
 

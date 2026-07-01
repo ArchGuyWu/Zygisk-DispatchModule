@@ -72,6 +72,9 @@ typedef bool (*fn_GetNearestCarDoor_t)(void* ped, void* vehicle, void* out_vec, 
 typedef void (*fn_CCamera_RunDeferredFadeIfBound_t)(void* camera);
 typedef void (*fn_CCamera_Fade_t)(void* camera, float duration, int16_t direction);
 typedef int16_t (*fn_CCamera_GetScreenFadeStatus_t)(void* camera);
+typedef void* (*fn_UGTAViewportClient_GetTransitionManager_t)();
+typedef void (*fn_UUITransition_Continue_Base_t)(void* self, bool flag, uint8_t state);
+typedef void (*fn_UUITransitionScreen_ForceCurrentFadeOpacity_t)(void* self, float opacity);
 typedef void (*fn_UGameterface_RunningDeferredLoadingScreenFade_t)(void* self,
                                                                     float duration,
                                                                     int direction,
@@ -158,6 +161,10 @@ extern fn_ComputePedCollisionWithPedResponse_t g_orig_compute_ped_collision_with
 extern fn_CCamera_RunDeferredFadeIfBound_t g_run_deferred_fade_if_bound;
 extern fn_CCamera_Fade_t g_ccamera_fade;
 extern fn_CCamera_GetScreenFadeStatus_t g_get_screen_fade_status;
+extern fn_UGTAViewportClient_GetTransitionManager_t g_get_transition_manager;
+extern fn_UUITransition_Continue_Base_t g_ui_transition_continue_base;
+extern fn_UUITransitionScreen_ForceCurrentFadeOpacity_t
+    g_ui_transition_screen_force_fade_opacity;
 extern fn_CCamera_RunDeferredFadeIfBound_t g_orig_ccamera_run_deferred_fade_if_bound;
 extern fn_CCamera_Fade_t g_orig_ccamera_fade;
 extern fn_UGameterface_RunningDeferredLoadingScreenFade_t

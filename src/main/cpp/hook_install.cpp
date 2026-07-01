@@ -202,6 +202,15 @@ void hook_thread_func() {
     RESOLVE_SYM(lib, g_ccamera_fade, "_ZN7CCamera4FadeEfs", fn_CCamera_Fade_t);
     RESOLVE_SYM(lib, g_get_screen_fade_status,
                 "_ZN7CCamera19GetScreenFadeStatusEv", fn_CCamera_GetScreenFadeStatus_t);
+    RESOLVE_SYM(lib, g_get_transition_manager,
+                "_ZN18UGTAViewportClient20GetTransitionManagerEv",
+                fn_UGTAViewportClient_GetTransitionManager_t);
+    RESOLVE_SYM(lib, g_ui_transition_continue_base,
+                "_ZN13UUITransition13Continue_BaseEb11TEnumAsByteI19EGTATransitionStateE",
+                fn_UUITransition_Continue_Base_t);
+    RESOLVE_SYM(lib, g_ui_transition_screen_force_fade_opacity,
+                "_ZN19UUITransitionScreen23ForceCurrentFadeOpacityEf",
+                fn_UUITransitionScreen_ForceCurrentFadeOpacity_t);
     {
         void* fade_sym = xdl_sym(lib, "_ZN7CCamera4FadeEfs", nullptr);
         if (fade_sym) {
