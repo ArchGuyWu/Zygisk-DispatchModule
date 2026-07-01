@@ -635,10 +635,18 @@ static inline bool is_post_load_task_hotpath_paused() {
     return false;
 }
 
-// Task-manager queries / ControlSubTask reads: pause during ms_bLoading + gameState 9 hydration.
-// CALL_PREV on half-hydrated slots crashes (#14–16, #32–34, #39–40).
+// Task-manager queries: block only gameState==9 hydration tail — NOT during GenericLoad sync
+// or gameState 0/8 fade (blanket ms_bLoading pause hung load before fade, log 9f8b684).
 static inline bool is_task_manager_query_paused() {
-    if (read_ms_b_loading()) return true;
+    if (is_generic_load_in_progress()) return false;
+    if (read_ms_b_loading()) {
+        uint8_t game_state = 0;
+        if (!read_game_state(&game_state) || game_state != kGameStateIdle) {
+            return false;
+        }
+        return true;
+    }
+    if (is_engine_load_transition_active()) return false;
     if (is_save_load_hydration_phase()) return true;
     const int64_t quiesce_until =
         g_save_load_quiesce_until_ms.load(std::memory_order_acquire);
@@ -661,6 +669,8 @@ static inline bool is_task_manager_query_paused() {
 
 // Extended lookup gate: task queries + post-hydration tail (#40).
 static inline bool is_task_manager_lookup_paused() {
+    if (is_generic_load_in_progress()) return false;
+    if (is_engine_load_transition_active()) return false;
     if (is_task_manager_query_paused()) return true;
     if (is_manage_tasks_execution_paused()) return true;
     if (is_save_load_active()) return true;
@@ -1479,7 +1489,7 @@ void* proxy_find_active_task(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_load_transition_engine_fastpath()) {
-        return find_active_task_by_type_readonly(self, type);
+        return SHADOWHOOK_CALL_PREV(proxy_find_active_task, self, type);
     }
     if (is_task_manager_lookup_paused()) return nullptr;
     if (task_manager_has_unsafe_slot(self, 11, 0x28)) {
@@ -1526,7 +1536,7 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (is_load_transition_engine_fastpath()) {
-        return intel_find_task_by_type_readonly(self, type);
+        return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
     }
     if (is_task_manager_lookup_paused()) return nullptr;
     if (is_post_load_hydration_paused()) return nullptr;
@@ -2306,6 +2316,9 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
+    if (is_load_transition_engine_fastpath()) {
+        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
+    }
     if (is_task_manager_lookup_paused()) return nullptr;
     if (task_manager_has_unsafe_slot(self, 5, 0x18)) {
         LOGW("⚠️ [GetSimplestActiveTask] unsafe task mgr %p — skip (tombstone_40)", self);
@@ -2336,6 +2349,9 @@ fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
 void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
+    if (is_load_transition_engine_fastpath()) {
+        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
+    }
     if (is_task_manager_lookup_paused()) return nullptr;
     if (index < 0 || index > 10) return nullptr;
     if (!is_stability_sanitize_paused()) {
