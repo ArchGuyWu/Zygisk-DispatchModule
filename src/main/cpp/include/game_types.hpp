@@ -100,4 +100,4 @@ typedef void (*fn_GiveWeapon_t)(void*, eWeaponType, unsigned int, bool);
 typedef void (*fn_SetCurrentWeapon_t)(void*, eWeaponType);
 typedef void (*fn_GiveWeaponAtStartOfFight_t)(void*);
 typedef void* (*fn_CreateCarForScript_t)(int modelid, CVector posn, unsigned char missionCleanUpFlag);
-typedef void (*fn_FlyAIHeliToTarget_FixedOrientation_t)(void* pHeli, float orientation, CVector posn);
+typedef void (*fn_FlyAIHeliToTarget_FixedOrientation_t)(void* pHeli, float orientation, CVector posn, bool bAvoidCollision);

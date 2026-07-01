@@ -112,7 +112,7 @@ static CVector compute_heli_spawn_pos(CVector incident_anchor) {
 static void command_heli_to_scene(void* heli, CVector incident_anchor) {
     if (!heli || !g_FlyAIHeliToTarget_FixedOrientation) return;
     CVector hover_target = compute_hover_target(incident_anchor);
-    g_FlyAIHeliToTarget_FixedOrientation(heli, 0.0f, hover_target);
+    g_FlyAIHeliToTarget_FixedOrientation(heli, 0.0f, hover_target, false);
 }
 
 static void finalize_spawned_heli(

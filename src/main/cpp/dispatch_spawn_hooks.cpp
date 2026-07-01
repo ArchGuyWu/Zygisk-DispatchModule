@@ -260,10 +260,10 @@ void proxy_add_criminal_to_kill(void* cop, CPed* criminal) {
 void* g_stub_fly_ai_heli_to_target = nullptr;
 fn_FlyAIHeliToTarget_FixedOrientation_t g_orig_fly_ai_heli_to_target = nullptr;
 
-void proxy_fly_ai_heli_to_target(void* pHeli, float orientation, CVector posn) {
+void proxy_fly_ai_heli_to_target(void* pHeli, float orientation, CVector posn, bool bAvoidCollision) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_scene_transition_active()) {
         return;
     }
-    SHADOWHOOK_CALL_PREV(proxy_fly_ai_heli_to_target, pHeli, orientation, posn);
+    SHADOWHOOK_CALL_PREV(proxy_fly_ai_heli_to_target, pHeli, orientation, posn, bAvoidCollision);
 }

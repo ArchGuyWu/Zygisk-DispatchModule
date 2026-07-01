@@ -56,7 +56,7 @@ extern fn_AddCriminalToKill_t g_orig_add_criminal_to_kill;
 extern void proxy_add_criminal_to_kill(void* cop, CPed* criminal);
 extern void* g_stub_fly_ai_heli_to_target;
 extern fn_FlyAIHeliToTarget_FixedOrientation_t g_orig_fly_ai_heli_to_target;
-extern void proxy_fly_ai_heli_to_target(void* pHeli, float orientation, CVector posn);
+extern void proxy_fly_ai_heli_to_target(void* pHeli, float orientation, CVector posn, bool bAvoidCollision);
 
 // =====================================================================
 // Pure Virtual Function Safe Patching
@@ -168,7 +168,7 @@ void hook_thread_func() {
         "_ZN8CCarCtrl18CreateCarForScriptEi7CVectorh",
         fn_CreateCarForScript_t);
     RESOLVE_SYM(lib, g_FlyAIHeliToTarget_FixedOrientation,
-        "_ZN8CCarCtrl35FlyAIHeliToTarget_FixedOrientationEP5CHelif7CVector",
+        "_ZN8CCarCtrl34FlyAIHeliToTarget_FixedOrientationEP5CHelif7CVectorb",
         fn_FlyAIHeliToTarget_FixedOrientation_t);
     RESOLVE_SYM(lib, g_AddPoliceOccupants,
         "_ZN6CCarAI21AddPoliceCarOccupantsEP8CVehicleb",
@@ -364,10 +364,10 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CCopPed::AddCriminalToKill: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    // Hook CCarCtrl::FlyAIHeliToTarget_FixedOrientation
+    // Hook CCarCtrl::FlyAIHeliToTarget_FixedOrientation (DE build adds trailing bool param)
     g_stub_fly_ai_heli_to_target = shadowhook_hook_sym_name(
         TARGET_LIB,
-        "_ZN8CCarCtrl35FlyAIHeliToTarget_FixedOrientationEP5CHelif7CVector",
+        "_ZN8CCarCtrl34FlyAIHeliToTarget_FixedOrientationEP5CHelif7CVectorb",
         reinterpret_cast<void*>(proxy_fly_ai_heli_to_target),
         reinterpret_cast<void**>(&g_orig_fly_ai_heli_to_target));
     if (g_stub_fly_ai_heli_to_target) LOGI("✅ Hooked CCarCtrl::FlyAIHeliToTarget_FixedOrientation");
@@ -560,7 +560,11 @@ void hook_thread_func() {
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
 
-    // Hook CTaskManager Destructor D1+D2 (tombstone_41 crashes in D2Ev, not D1Ev alone)
+    // Hook CTaskManager Destructor D1+D2 (tombstone_41 crashes in D2Ev, not D1Ev alone).
+    // DE build aliases D1Ev/D2Ev to the same address — hook once to avoid duplicate-hook error.
+    void* task_mgr_d1_sym = xdl_sym(lib, "_ZN12CTaskManagerD1Ev", nullptr);
+    void* task_mgr_d2_sym = xdl_sym(lib, "_ZN12CTaskManagerD2Ev", nullptr);
+
     g_stub_task_manager_destructor = shadowhook_hook_sym_name(
         TARGET_LIB,
         "_ZN12CTaskManagerD1Ev",
@@ -570,14 +574,20 @@ void hook_thread_func() {
     else LOGE("❌ Failed to hook CTaskManager D1: %s",
               shadowhook_to_errmsg(shadowhook_get_errno()));
 
-    g_stub_task_manager_destructor_d2 = shadowhook_hook_sym_name(
-        TARGET_LIB,
-        "_ZN12CTaskManagerD2Ev",
-        reinterpret_cast<void*>(proxy_task_manager_destructor),
-        reinterpret_cast<void**>(&g_orig_task_manager_destructor_d2));
-    if (g_stub_task_manager_destructor_d2) LOGI("✅ Hooked CTaskManager::~CTaskManager (D2)");
-    else LOGE("❌ Failed to hook CTaskManager D2: %s",
-              shadowhook_to_errmsg(shadowhook_get_errno()));
+    if (task_mgr_d1_sym && task_mgr_d2_sym && task_mgr_d1_sym == task_mgr_d2_sym) {
+        g_stub_task_manager_destructor_d2 = g_stub_task_manager_destructor;
+        g_orig_task_manager_destructor_d2 = g_orig_task_manager_destructor;
+        LOGI("ℹ️ CTaskManager D2Ev aliases D1Ev @ %p — single hook covers both", task_mgr_d1_sym);
+    } else {
+        g_stub_task_manager_destructor_d2 = shadowhook_hook_sym_name(
+            TARGET_LIB,
+            "_ZN12CTaskManagerD2Ev",
+            reinterpret_cast<void*>(proxy_task_manager_destructor),
+            reinterpret_cast<void**>(&g_orig_task_manager_destructor_d2));
+        if (g_stub_task_manager_destructor_d2) LOGI("✅ Hooked CTaskManager::~CTaskManager (D2)");
+        else LOGE("❌ Failed to hook CTaskManager D2: %s",
+                  shadowhook_to_errmsg(shadowhook_get_errno()));
+    }
 
     // Hook CTaskComplexPartnerGreet::GetPartnerSequence (防止在伙伴问候任务中读取已销毁或零填充任务虚表闪退)
     g_stub_partner_greet_get_sequence = shadowhook_hook_sym_name(
