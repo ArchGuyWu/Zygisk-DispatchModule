@@ -779,6 +779,7 @@ using TaskVtableWalkFn_t = void* (*)(void*);
 
 inline void* call_task_vtable_fn_at(void* task, size_t vtable_offset) {
     if (!task || task_slot_unsafe_for_vtable_call(task, vtable_offset)) return nullptr;
+    if (is_stability_sanitize_paused() || is_post_load_task_hotpath_paused()) return nullptr;
     void** vtable = reinterpret_cast<void**>(task);
     auto fn = reinterpret_cast<TaskVtableWalkFn_t>(
         *reinterpret_cast<void**>(reinterpret_cast<char*>(*vtable) + vtable_offset));
@@ -1555,7 +1556,7 @@ fn_PlayLoadedSound_t g_orig_play_loaded_sound = nullptr;
 void proxy_play_loaded_sound(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
-    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return;
+    if (is_task_manager_lookup_paused() || is_post_load_task_hotpath_paused()) return;
     if (!ped_field_range_readable(self, 0x1c, 8)) return;
 
     void** p_ped = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x8);
@@ -1729,6 +1730,7 @@ void proxy_process_buoyancy(void* self) {
     if (is_manage_tasks_execution_paused()) return;
     if (is_ped_physics_hotpath_paused()) return;
     if (is_post_load_hydration_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
     if (!ped_physics_tick_ready(self)) return;
     if (ped_buoyancy_unsafe(self)) {
         LOGW("⚠️ [ProcessBuoyancy] unsafe ped %p — skip (tombstone_44)", self);
@@ -1783,6 +1785,7 @@ void proxy_process_static_counter(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
     if (is_ped_physics_hotpath_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
     if (intelligence_static_counter_unsafe(self)) {
         LOGW("⚠️ [ProcessStaticCounter] unsafe intel %p — skip (tombstone_28)", self);
         return;
@@ -1841,7 +1844,10 @@ int32_t proxy_u_strlen(const void* s) {
         LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_03)", s);
         return 0;
     }
-    // Load tail: vm_readv only — blanket 0 caused engine stack_chk_fail (#09).
+    if (is_u_strlen_post_load_hard_paused()) {
+        return 0;
+    }
+    // Load tail: vm_readv only — never CALL_PREV (#09/#11).
     // Never CALL_PREV — bounded UTF-16 walk for all readable pointers.
     const int32_t len = safe_utf16_strlen_bounded(s);
     if (len == 0) {
@@ -2901,10 +2907,10 @@ fn_ProcessAfterProcCol_t g_orig_process_after_proc_col = nullptr;
 void proxy_process_after_proc_col(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
-    if (is_task_manager_query_paused()) return;
-    STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_process_after_proc_col, self);
+    if (is_task_manager_lookup_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
     // RE: self null → no cbz 55debf4; zero-filled vtable → no cbz.
-    if (!self || !is_pointer_readable(self) || intelligence_zero_filled(self)) return;
+    if (intelligence_zero_filled(self)) return;
     void* task_mgr = reinterpret_cast<char*>(self) + 8;
     sanitize_task_manager_slots(task_mgr, "ProcessAfterProcCol", 0x18);
     sanitize_task_manager_primary_chains(task_mgr, "ProcessAfterProcCol", 0x18);
@@ -2918,6 +2924,7 @@ void proxy_process_after_proc_col(void* self) {
             return;
         }
     }
+    if (is_stability_sanitize_paused()) return;
     SHADOWHOOK_CALL_PREV(proxy_process_after_proc_col, self);
 }
 
@@ -3044,12 +3051,11 @@ void* proxy_facial_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_facial_control_sub_task, self, ped);
+    if (is_task_manager_lookup_paused()) return nullptr;
+    if (is_post_load_task_hotpath_paused()) return nullptr;
+    if (is_stability_sanitize_paused()) return nullptr;
 
-    if (!is_stability_sanitize_paused()) {
-        sanitize_unsafe_subtask_at(self, 0x10);
-    }
+    sanitize_unsafe_subtask_at(self, 0x10);
     // Original dereferences [self+0x10] without null check (tombstone_16, fault 0x0).
     void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x10);
     if (!is_pointer_readable(sub_slot) || !*sub_slot) {
@@ -3071,17 +3077,22 @@ fn_IKManagerProcessPed_t g_orig_ik_manager_process_ped = nullptr;
 
 void proxy_ik_manager_process_ped(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (!self || !is_pointer_readable(self)) return;
-        SHADOWHOOK_CALL_PREV(proxy_ik_manager_process_ped, self, ped);
-        return;
-    }
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
+    if (is_task_manager_lookup_paused()) return;
+    if (is_post_load_hydration_paused()) return;
+    if (is_post_load_task_hotpath_paused()) return;
+    // Save-load / hydration: never CALL_PREV — subtask vtable+0x48 (#11–12).
+    if (is_stability_sanitize_paused()) return;
 
-    if (self) {
-        for (size_t off : {0x10u, 0x18u}) {
-            sanitize_unsafe_subtask_at(self, off);
+    for (size_t off : {0x10u, 0x18u}) {
+        sanitize_unsafe_subtask_at(self, off);
+        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + off);
+        if (!is_pointer_readable(sub_slot)) continue;
+        void* sub = *sub_slot;
+        if (sub && task_vtable_fn_at_unsafe(sub, 0x48)) {
+            LOGW("⚠️ [IKManager::ProcessPed] unsafe subtask %p vtable+0x48 — skip (tombstone_12)", sub);
+            return;
         }
     }
     if (ped && is_ped_pointer_valid_safe(ped)) {
