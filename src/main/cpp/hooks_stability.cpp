@@ -111,7 +111,8 @@ static void refresh_manage_tasks_force_safe();
 static void notify_generic_load_returned(int slot, bool load_ok);
 static void maybe_log_load_transition_heartbeat(const char* via);
 static void try_kick_fade_in_after_black(const char* via);
-static bool should_block_fade_cancel_during_load_transition();
+static void try_dismiss_deferred_loading_screen(const char* via);
+static bool should_block_ccamera_fade_cancel_during_load_transition();
 static int read_streaming_num_requested();
 static bool read_ms_b_loading();
 static bool read_game_state(uint8_t* out);
@@ -191,15 +192,23 @@ static int16_t read_screen_fade_status() {
     return g_get_screen_fade_status(g_TheCamera);
 }
 
-static bool should_block_fade_cancel_during_load_transition() {
+// Only block CCamera::Fade(0,0) — NOT RunningDeferredLoadingScreenFade (that dismisses UE
+// loading HUD; blocking it caused loading+game overlay, log 003036).
+static bool should_block_ccamera_fade_cancel_during_load_transition() {
     if (!is_engine_load_transition_active()) return false;
-    // GenericLoad tail must reset/start fade — blocking (0,0,*) here stuck fadeStatus=1
-    // and leaves loading HUD over gameplay (log 001214).
     if (is_generic_load_in_progress() || read_ms_b_loading()) return false;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return false;
-    const int16_t fade_status = read_screen_fade_status();
-    return fade_status >= 1;
+    return read_screen_fade_status() >= 1;
+}
+
+static void try_dismiss_deferred_loading_screen(const char* via) {
+    if (!g_orig_running_deferred_loading_screen_fade) return;
+    void* self = get_menu_gameterface_self();
+    if (!self || !is_pointer_readable(self)) return;
+    g_orig_running_deferred_loading_screen_fade(self, 0.0f, 0, false);
+    LOGI("💾 [SaveLoad] Dismiss loading HUD — RunningDeferredLoadingScreenFade(0,0,0) via %s",
+         via);
 }
 
 static void try_kick_fade_in_after_black(const char* via) {
@@ -212,12 +221,12 @@ static void try_kick_fade_in_after_black(const char* via) {
     if (cleared <= 0 || now_ms() - cleared < 300) return;
     const int16_t fade_status = read_screen_fade_status();
     if (fade_status != 2) {
-        // Overlay stall: fade-out blocked mid-flight — kick fade-in after longer dwell.
-        if (fade_status != 1 || now_ms() - cleared < 1000) return;
+        if (fade_status != 1 || now_ms() - cleared < 400) return;
     }
     fn_CCamera_Fade_t fade_fn = g_orig_ccamera_fade ? g_orig_ccamera_fade : g_ccamera_fade;
     if (!fade_fn || !g_TheCamera || !is_pointer_readable(g_TheCamera)) return;
     g_fade_in_kick_attempted.store(true, std::memory_order_release);
+    try_dismiss_deferred_loading_screen(via);
     fade_fn(g_TheCamera, 2.0f, 0);
     vanilla_qol_schedule_touch_rehydrate("fade-in kick");
     LOGW("💾 [SaveLoad] Fade-in kick — CCamera::Fade(2.0,0) fadeStatus=%d via %s "
@@ -261,6 +270,7 @@ static void notify_generic_load_returned(int slot, bool load_ok) {
              have_game_state ? game_state : 255u,
              slot,
              load_ok ? 1 : 0);
+        vanilla_qol_schedule_touch_rehydrate("ms_bLoading cleared");
     } else {
         LOGI("💾 [SaveLoad] GenericLoad return — ms_bLoading still 1 gameState=%u slot=%d",
              have_game_state ? game_state : 255u,
@@ -913,7 +923,7 @@ static inline bool is_ped_physics_hotpath_paused() {
 #define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
     do { \
         if (is_load_transition_engine_fastpath()) { \
-            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
+            return false; \
         } \
         if (is_stability_sanitize_paused()) { \
             return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
@@ -925,7 +935,7 @@ static inline bool is_ped_physics_hotpath_paused() {
         if (is_load_transition_engine_fastpath()) { \
             if (!self || !is_pointer_readable(self)) return nullptr; \
             if (ped && !is_pointer_readable(ped)) return nullptr; \
-            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped); \
+            return nullptr; \
         } \
         if (is_stability_sanitize_paused()) { \
             if (!self || !is_pointer_readable(self)) return nullptr; \
@@ -2479,27 +2489,11 @@ fn_GetSimplestActiveTask_t g_orig_get_simplest_active_task = nullptr;
 void* proxy_get_simplest_active_task(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_load_transition_engine_fastpath()) {
-        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_active_task, self);
-    }
-    if (is_task_manager_lookup_paused()) return nullptr;
-    if (task_manager_has_unsafe_slot(self, 5, 0x18)) {
-        LOGW("⚠️ [GetSimplestActiveTask] unsafe task mgr %p — skip (tombstone_40)", self);
-        return nullptr;
-    }
-    if (!is_stability_sanitize_paused()) {
+    const bool fastpath = is_load_transition_engine_fastpath();
+    if (!fastpath && is_task_manager_lookup_paused()) return nullptr;
+    if (!fastpath && !is_stability_sanitize_paused()) {
         sanitize_task_manager_slots(self, "GetSimplestActiveTask", 0x18);
         sanitize_task_manager_primary_chains(self, "GetSimplestActiveTask", 0x18);
-    }
-    for (int i = 0; i < 5; ++i) {
-        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + i * 8);
-        if (!is_pointer_readable(task_slot)) continue;
-        void* task = *task_slot;
-        if (!task) continue;
-        if (task_subtask_chain_field_unsafe(task, 0x10)) {
-            LOGW("⚠️ [GetSimplestActiveTask] unsafe chain slot %d — skip (tombstone_40)", i);
-            return nullptr;
-        }
     }
     return simplest_active_task_from_mgr_readonly(self);
 }
@@ -2512,12 +2506,10 @@ fn_GetSimplestTaskEi_t g_orig_get_simplest_task_ei = nullptr;
 void* proxy_get_simplest_task_ei(void* self, int index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_load_transition_engine_fastpath()) {
-        return SHADOWHOOK_CALL_PREV(proxy_get_simplest_task_ei, self, index);
-    }
-    if (is_task_manager_lookup_paused()) return nullptr;
+    const bool fastpath = is_load_transition_engine_fastpath();
+    if (!fastpath && is_task_manager_lookup_paused()) return nullptr;
     if (index < 0 || index > 10) return nullptr;
-    if (!is_stability_sanitize_paused()) {
+    if (!fastpath && !is_stability_sanitize_paused()) {
         sanitize_task_manager_slots(self, "GetSimplestTaskEi", 0x18);
         if (index < 5) {
             sanitize_task_manager_primary_chains(self, "GetSimplestTaskEi", 0x18);
@@ -2632,7 +2624,7 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
     if (duration == 0.0f && direction == 0 &&
-        should_block_fade_cancel_during_load_transition()) {
+        should_block_ccamera_fade_cancel_during_load_transition()) {
         LOGW("💾 [SaveLoad] Block Fade(0,0) — fadeStatus=%d gameState=%u",
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u);
@@ -2653,17 +2645,9 @@ void proxy_running_deferred_loading_screen_fade(void* self,
                                                 int direction,
                                                 bool flag) {
     SHADOWHOOK_STACK_SCOPE();
+    notify_menu_gameterface_self(self);
     uint8_t game_state = 0;
     const bool have_game_state = read_game_state(&game_state);
-    if (duration == 0.0f && direction == 0 &&
-        should_block_fade_cancel_during_load_transition()) {
-        LOGW("💾 [SaveLoad] Block RunningDeferredLoadingScreenFade(0,0,%d) — "
-             "fadeStatus=%d gameState=%u",
-             flag ? 1 : 0,
-             static_cast<int>(read_screen_fade_status()),
-             have_game_state ? game_state : 255u);
-        return;
-    }
     if (is_engine_load_transition_active() || is_generic_load_in_progress()) {
         LOGI("💾 [SaveLoad] RunningDeferredLoadingScreenFade(%.2f,%d,%d) self=%p gameState=%u",
              duration,

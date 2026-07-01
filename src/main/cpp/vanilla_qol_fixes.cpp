@@ -45,7 +45,7 @@ static std::atomic<bool> g_touch_rehydrate_pending{false};
 static std::atomic<int64_t> g_touch_rehydrate_not_before_ms{0};
 static std::atomic<int> g_touch_rehydrate_attempts{0};
 static std::atomic<bool> g_prev_save_load_session{false};
-static constexpr int64_t kTouchRehydrateDeferMs = 500;
+static constexpr int64_t kTouchRehydrateDeferMs = 150;
 static constexpr int kTouchRehydrateMaxAttempts = 30;
 static constexpr int64_t kTouchRehydrateRetryMs = 500;
 
