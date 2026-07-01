@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "manage_tasks_guard.hpp"
+#include "pointer_sanitizer.hpp"
 #include "log.hpp"
 
 namespace {
@@ -15,18 +16,17 @@ namespace {
 #endif
 
 // RE offsets relative to CTaskManager::ManageTasks (ELF 0x57aaff8).
-// Patch ldr x8,[x20] before vtable dispatch; null x20 skips to after BLR.
-constexpr size_t kManageTasksGuardSite168 = 0x168; // VA +0x168 → ldr x8,[x20] @ +0x160
-constexpr size_t kManageTasksGuardSite248 = 0x248; // VA +0x248 → ldr x8,[x20] @ +0x240
-constexpr size_t kManageTasksGuardSite280 = 0x280; // VA +0x278 → ldr x8,[x20] after mov x20,xzr
-constexpr size_t kManageTasksNullSkip178 = 0x178;  // after BLR @ +0x170
-constexpr size_t kManageTasksNullSkip258 = 0x258;  // after BLR @ +0x250
-constexpr size_t kManageTasksNullSkip294 = 0x294;  // after BLR @ +0x28c
-constexpr size_t kManageTasksNonnull170 = 0x170;   // ldr x8,[x8,#0x20] @ +0x168
-constexpr size_t kManageTasksNonnull250 = 0x250;   // ldr x8,[x8,#0x20] @ +0x248
-constexpr size_t kManageTasksNonnull288 = 0x288;   // ldr x1,[x19,#0x58] @ +0x280
+constexpr size_t kManageTasksGuardSite168 = 0x168;
+constexpr size_t kManageTasksGuardSite248 = 0x248;
+constexpr size_t kManageTasksGuardSite280 = 0x280;
+constexpr size_t kManageTasksNullSkip178 = 0x178;
+constexpr size_t kManageTasksNullSkip258 = 0x258;
+constexpr size_t kManageTasksNullSkip294 = 0x294;
+constexpr size_t kManageTasksNonnull170 = 0x170;
+constexpr size_t kManageTasksNonnull250 = 0x250;
+constexpr size_t kManageTasksNonnull288 = 0x288;
 
-constexpr int64_t kArm64BranchRange = 0x7F000000; // ±128 MiB for unconditional B
+constexpr int64_t kArm64BranchRange = 0x7F000000;
 
 struct GuardSiteState {
     void* site = nullptr;
@@ -45,6 +45,16 @@ uint32_t arm64_b(uintptr_t from, uintptr_t to) {
 uint32_t arm64_cbz(uintptr_t from, uintptr_t to, unsigned reg) {
     const int64_t off = (static_cast<int64_t>(to) - static_cast<int64_t>(from)) / 4;
     return 0xB4000000u | ((static_cast<uint32_t>(off) & 0x7FFFFu) << 5) | (reg & 0x1Fu);
+}
+
+uint32_t arm64_cbzw(uintptr_t from, uintptr_t to, unsigned reg) {
+    const int64_t off = (static_cast<int64_t>(to) - static_cast<int64_t>(from)) / 4;
+    return 0x34000000u | ((static_cast<uint32_t>(off) & 0x7FFFFu) << 5) | (reg & 0x1Fu);
+}
+
+uint32_t arm64_ldr_x9_literal(uintptr_t insn_pc, uintptr_t literal_addr) {
+    const int64_t off = (static_cast<int64_t>(literal_addr) - static_cast<int64_t>(insn_pc)) / 4;
+    return 0x58000000u | ((static_cast<uint32_t>(off) & 0x7FFFFu) << 5) | 9u;
 }
 
 bool branch_reachable(uintptr_t from, uintptr_t to) {
@@ -128,8 +138,10 @@ void* allocate_near(void* target, size_t size) {
     return fallback;
 }
 
-bool install_cbz_x20_tramp(GuardSiteState* state, uintptr_t base, size_t site_off,
-                           size_t nonnull_resume_off, size_t null_skip_off, const char* label) {
+// Null or unreadable x20 → skip BLR (fade); garbage x20 → skip too (Continue #43).
+bool install_validated_x20_tramp(GuardSiteState* state, uintptr_t base, size_t site_off,
+                                 size_t nonnull_resume_off, size_t null_skip_off,
+                                 const char* label) {
     void* site = reinterpret_cast<void*>(base + site_off);
     void* nonnull_resume = reinterpret_cast<void*>(base + nonnull_resume_off);
     void* null_skip = reinterpret_cast<void*>(base + null_skip_off);
@@ -144,23 +156,35 @@ bool install_cbz_x20_tramp(GuardSiteState* state, uintptr_t base, size_t site_of
     }
 
     const uintptr_t tramp_addr = reinterpret_cast<uintptr_t>(tramp);
-    uint32_t words[5] = {};
-    words[0] = arm64_cbz(tramp_addr + 0, tramp_addr + 16, 20);
-    words[1] = 0xF9400288u;  // ldr x8, [x20]
-    words[2] = 0xAA1403E0u;  // mov x0, x20
-    words[3] = arm64_b(tramp_addr + 12, reinterpret_cast<uintptr_t>(nonnull_resume));
-    words[4] = arm64_b(tramp_addr + 16, reinterpret_cast<uintptr_t>(null_skip));
+    const uintptr_t literal_addr = tramp_addr + 40;
+    const uintptr_t insn0_pc = tramp_addr;
+    const uintptr_t insn4_pc = tramp_addr + 4;
+    const uintptr_t insn16_pc = tramp_addr + 16;
+    const uintptr_t insn32_pc = tramp_addr + 32;
 
-    if (!branch_reachable(tramp_addr + 12, reinterpret_cast<uintptr_t>(nonnull_resume)) ||
-        !branch_reachable(tramp_addr + 16, reinterpret_cast<uintptr_t>(null_skip))) {
+    uint32_t words[12] = {};
+    words[0] = arm64_ldr_x9_literal(insn0_pc, literal_addr);
+    words[1] = arm64_cbz(insn4_pc, insn32_pc, 20);
+    words[2] = 0xAA1403E0u;  // mov x0, x20
+    words[3] = 0xD63F0120u;  // blr x9
+    words[4] = arm64_cbzw(insn16_pc, insn32_pc, 0);
+    words[5] = 0xF9400288u;  // ldr x8, [x20]
+    words[6] = 0xAA1403E0u;  // mov x0, x20
+    words[7] = arm64_b(tramp_addr + 28, reinterpret_cast<uintptr_t>(nonnull_resume));
+    words[8] = arm64_b(insn32_pc, reinterpret_cast<uintptr_t>(null_skip));
+
+    if (!branch_reachable(tramp_addr + 28, reinterpret_cast<uintptr_t>(nonnull_resume)) ||
+        !branch_reachable(insn32_pc, reinterpret_cast<uintptr_t>(null_skip))) {
         LOGE("❌ [ManageTasksGuard] tramp exit out of range for %s", label);
         munmap(tramp, static_cast<size_t>(page_size));
         return false;
     }
 
-    std::memcpy(tramp, words, sizeof(words));
+    std::memcpy(tramp, words, 36);
+    const uint64_t fn_ptr = reinterpret_cast<uint64_t>(&manage_tasks_x20_safe_to_ldr);
+    std::memcpy(reinterpret_cast<char*>(tramp) + 40, &fn_ptr, sizeof(fn_ptr));
 
-    if (!finalize_trampoline_page(tramp, sizeof(words))) {
+    if (!finalize_trampoline_page(tramp, 48)) {
         munmap(tramp, static_cast<size_t>(page_size));
         return false;
     }
@@ -180,6 +204,13 @@ bool install_cbz_x20_tramp(GuardSiteState* state, uintptr_t base, size_t site_of
 
 } // namespace
 
+extern "C" int manage_tasks_x20_safe_to_ldr(void* x20) {
+    if (!x20 || !is_userspace_address(x20) || !is_pointer_readable(x20)) {
+        return 0;
+    }
+    return 1;
+}
+
 void set_manage_tasks_force_safe(bool enabled, const char* reason) {
     (void)reason;
     (void)enabled;
@@ -193,14 +224,14 @@ bool install_manage_tasks_inbody_guards(void* manage_tasks_fn) {
     if (!manage_tasks_fn) return false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(manage_tasks_fn);
 
-    const bool ok168 = install_cbz_x20_tramp(&g_guard168, base, kManageTasksGuardSite168,
-                                             kManageTasksNonnull170, kManageTasksNullSkip178,
-                                             "cbz-x20@57ab160");
-    const bool ok248 = install_cbz_x20_tramp(&g_guard248, base, kManageTasksGuardSite248,
-                                             kManageTasksNonnull250, kManageTasksNullSkip258,
-                                             "cbz-x20@57ab240");
-    const bool ok280 = install_cbz_x20_tramp(&g_guard280, base, kManageTasksGuardSite280,
-                                             kManageTasksNonnull288, kManageTasksNullSkip294,
-                                             "cbz-x20@57ab278");
+    const bool ok168 = install_validated_x20_tramp(&g_guard168, base, kManageTasksGuardSite168,
+                                                   kManageTasksNonnull170, kManageTasksNullSkip178,
+                                                   "valid-x20@57ab160");
+    const bool ok248 = install_validated_x20_tramp(&g_guard248, base, kManageTasksGuardSite248,
+                                                   kManageTasksNonnull250, kManageTasksNullSkip258,
+                                                   "valid-x20@57ab240");
+    const bool ok280 = install_validated_x20_tramp(&g_guard280, base, kManageTasksGuardSite280,
+                                                   kManageTasksNonnull288, kManageTasksNullSkip294,
+                                                   "valid-x20@57ab278");
     return ok168 && ok248 && ok280;
 }

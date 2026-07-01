@@ -111,8 +111,11 @@ static void notify_generic_load_returned(int slot, bool load_ok);
 static void maybe_log_load_transition_heartbeat(const char* via);
 static void maybe_nudge_fade_stall(uint8_t game_state, bool have_game_state);
 static int read_streaming_num_requested();
+static bool read_ms_b_loading();
+static bool read_game_state(uint8_t* out);
 
 static std::atomic<bool> g_fade_nudge_attempted{false};
+static std::atomic<bool> g_save_load_watchdog_running{false};
 
 void notify_menu_read_save_path(const char* via) {
     // Kind flags only — do NOT begin session here. Starting session before
@@ -152,6 +155,28 @@ static bool read_game_state(uint8_t* out) {
     return true;
 }
 
+static void start_save_load_fade_watchdog() {
+    if (g_save_load_watchdog_running.exchange(true, std::memory_order_acq_rel)) return;
+    std::thread([]() {
+        for (int tick = 0; tick < 45; ++tick) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            poll_save_load_hydration_state();
+            uint8_t game_state = 0;
+            if (read_game_state(&game_state) && game_state != 0) {
+                LOGI("💾 [SaveLoad] Watchdog exit — gameState=%u after %ds",
+                     game_state, tick + 1);
+                break;
+            }
+            if (tick == 2 || tick == 4 || tick == 9 || tick == 19) {
+                LOGI("💾 [SaveLoad] Watchdog tick %ds — gameState=0 ms_bLoading=%d",
+                     tick + 1,
+                     read_ms_b_loading() ? 1 : 0);
+            }
+        }
+        g_save_load_watchdog_running.store(false, std::memory_order_release);
+    }).detach();
+}
+
 static void maybe_log_load_transition_heartbeat(const char* via) {
     static int64_t last_ms = 0;
     uint8_t game_state = 0;
@@ -175,7 +200,7 @@ static void maybe_nudge_fade_stall(uint8_t game_state, bool have_game_state) {
     if (g_fade_nudge_attempted.load(std::memory_order_acquire)) return;
     const int64_t cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
-    if (cleared <= 0 || now_ms() - cleared < 5000) return;
+    if (cleared <= 0 || now_ms() - cleared < 3000) return;
     if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return;
     g_fade_nudge_attempted.store(true, std::memory_order_release);
     *g_cgame_logic_game_state = kGameStateLoadingStarted;
@@ -201,6 +226,9 @@ static void notify_generic_load_returned(int slot, bool load_ok) {
         begin_save_load_session();
     }
     poll_save_load_hydration_state();
+    if (!ms_loading && have_game_state && game_state == 0) {
+        start_save_load_fade_watchdog();
+    }
 }
 
 void notify_ue_menu_load_committed(const char* via, int slot) {
@@ -2400,6 +2428,9 @@ bool proxy_ik_chain_is_facing_target(void* self, void* ped, int index) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return false;
     if (ped && !is_pointer_readable(ped)) return false;
+    if (is_load_transition_engine_fastpath()) {
+        return SHADOWHOOK_CALL_PREV(proxy_ik_chain_is_facing_target, self, ped, index);
+    }
     if (self && ik_chain_has_null_entity_slot(self)) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
