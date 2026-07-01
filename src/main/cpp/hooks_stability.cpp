@@ -591,7 +591,16 @@ static inline bool is_u_strlen_paused() {
     if (quiesce_until > 0 && now_ms() < quiesce_until) return true;
     if (is_manage_tasks_execution_paused()) return true;
     if (is_task_manager_query_paused()) return true;
-    return is_post_load_hydration_paused();
+    if (is_post_load_hydration_paused()) return true;
+    // Post ms_bLoading clear: stale ICU pointers until world fully stable (#01).
+    const int64_t loading_cleared =
+        g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kUstrlenPostLoadHardCapMs &&
+        !is_gameplay_world_stable()) {
+        return true;
+    }
+    return false;
 }
 
 // Buoyancy / ProcessStaticCounter: intel task + IK chains (tombstone_11–13, #17–29).
@@ -1768,8 +1777,8 @@ int32_t proxy_u_strlen(const void* s) {
         LOGW("⚠️ [u_strlen_64] wild pointer %p — return 0", s);
         return 0;
     }
-    if (!is_pointer_readable(s) || !vma_is_readable(s)) {
-        LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_48)", s);
+    if (!is_pointer_readable(s) || !vma_is_readable(s) || !is_pointer_readable_strict(s)) {
+        LOGW("⚠️ [u_strlen_64] unreadable string %p — return 0 (tombstone_01)", s);
         return 0;
     }
     // Never CALL_PREV — vm_readv bounded UTF-16 walk only.
@@ -2879,19 +2888,25 @@ inline bool intel_task_chains_safe_for_scan_readonly(void* intel, size_t vtable_
 void proxy_scan_for_events(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!ped || !is_pointer_readable(ped)) return;
-    if (is_task_manager_query_paused() || is_manage_tasks_execution_paused()) return;
-    if (is_save_load_active() || is_post_load_hydration_paused()) return;
+    if (is_task_manager_lookup_paused()) return;
+    if (is_post_load_hydration_paused()) return;
     if (!ped_physics_tick_ready(ped)) return;
-    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
-        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel tasks — skip (tombstone_45)", ped);
-        return;
-    }
     void* intel = get_ped_intelligence_safe(ped);
     if (!intel || !is_pointer_readable(intel) || intelligence_zero_filled(intel)) return;
-    if (!intel_task_chains_safe_for_scan_readonly(intel, 0x28)) {
-        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel chains — skip (tombstone_45)", ped);
+    if (intelligence_process_hotpath_unsafe(intel, 0x28)) {
+        LOGW("⚠️ [ScanForEvents] unsafe intel %p hotpath — skip (tombstone_00)", intel);
         return;
     }
+    if (ped_intel_primary_tasks_unsafe_for_event(ped, 0x28)) {
+        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel tasks — skip (tombstone_00)", ped);
+        return;
+    }
+    if (!intel_task_chains_safe_for_scan_readonly(intel, 0x28)) {
+        LOGW("⚠️ [ScanForEvents] unsafe ped %p intel chains — skip (tombstone_00)", ped);
+        return;
+    }
+    // Save-load / hydration: never CALL_PREV — engine walks vtable+0x28 (#00).
+    if (is_stability_sanitize_paused()) return;
     sanitize_intel_for_task_lookup(intel);
     SHADOWHOOK_CALL_PREV(proxy_scan_for_events, self, ped);
 }
