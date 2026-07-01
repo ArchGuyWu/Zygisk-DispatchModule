@@ -390,6 +390,10 @@ void poll_save_load_hydration_state() {
         game_state != kGameStateFrontendIdle) {
         LOGI("💾 [SaveLoad] Left frontend idle — gameState=%u", game_state);
     }
+    if (have_game_state && prev_game_state == 0 && game_state == kGameStateLoadingStarted) {
+        LOGI("💾 [SaveLoad] Entered loading_started — gameState=8 (release force_safe)");
+        refresh_manage_tasks_force_safe();
+    }
 
     if (ms_loading || (have_game_state && game_state == kGameStateLoadingStarted)) {
         begin_save_load_session();
@@ -490,30 +494,23 @@ static bool is_gameplay_world_stable() {
     return true;
 }
 
-// Keep ManageTasks inbody sites on safe path until gameState==9 + world stable.
-// Tombstone 25/26: force_safe dropped at GenericLoad return while gameState=0
-// and stale x20 vtable still BLR-crashes @ ManageTasks+0x154.
-static void refresh_manage_tasks_force_safe() {
+// Brief post-deserialize tail (gameState==0) before LOADING_STARTED.
+// ms_bLoading / gameState 7-8 must keep ManageTasks on tramp path — force_safe hangs load fade.
+static inline bool is_early_deserialize_tail_paused() {
+    if (is_generic_load_in_progress()) return true;
+    if (!g_save_load_session.load(std::memory_order_acquire)) return false;
     uint8_t game_state = 0;
-    const bool have_game_state = read_game_state(&game_state);
-    const bool session = g_save_load_session.load(std::memory_order_acquire);
-    const bool want =
-        is_generic_load_in_progress() ||
-        read_ms_b_loading() ||
-        (session &&
-         (!have_game_state || game_state != kGameStateIdle || !is_gameplay_world_stable()));
+    if (!read_game_state(&game_state)) return true;
+    return game_state == 0;
+}
 
-    const char* reason = "hydration";
+// Tramp @ +0x168/+0x278 + pursuit +0x29c hook cover stale paths; force_safe only GenericLoad/+0 tail.
+static void refresh_manage_tasks_force_safe() {
+    const bool want = is_early_deserialize_tail_paused();
+    const char* reason = "deserialize tail";
     if (is_generic_load_in_progress()) {
         reason = "GenericLoad";
-    } else if (read_ms_b_loading()) {
-        reason = "ms_bLoading";
-    } else if (session && have_game_state && game_state != kGameStateIdle) {
-        reason = "session pre-idle";
-    } else if (session) {
-        reason = "session hydration";
     }
-
     set_manage_tasks_force_safe(want, reason);
 }
 
@@ -1818,13 +1815,9 @@ void* g_stub_player_info_process = nullptr;
 fn_PlayerInfoProcess_t g_orig_player_info_process = nullptr;
 
 static inline bool is_player_info_process_paused() {
-    if (read_ms_b_loading()) return true;
-    if (is_generic_load_in_progress()) return true;
-    if (is_disk_deserialize_active()) return true;
-    if (is_save_load_active()) return true;
-    if (g_save_load_session.load(std::memory_order_acquire)) return true;
-    if (is_ped_physics_hotpath_paused()) return true;
+    if (is_early_deserialize_tail_paused()) return true;
     if (is_post_load_task_hotpath_paused()) return true;
+    if (is_manage_tasks_execution_paused()) return true;
     return false;
 }
 
@@ -3263,7 +3256,6 @@ inline bool vehicle_ai_subobject_chain_safe(void* vehicle) {
 }
 
 static inline void* vehicle_pursuit_subobject_or_null(void* vehicle, const char* site) {
-    if (is_player_info_process_paused()) return nullptr;
     if (!vehicle || !is_pointer_readable(vehicle)) {
         LOGW("⚠️ [IsPoliceVehicleInPursuit %s] null vehicle — skip (tombstone_31/32)", site);
         return nullptr;
@@ -3285,7 +3277,6 @@ void* proxy_vehicle_pursuit_ldr_thunk_29c(void* vehicle) {
 
 void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_player_info_process_paused()) return nullptr;
     if (!vehicle_ai_subobject_chain_safe(vehicle)) {
         LOGW("⚠️ [IsPoliceVehicleInPursuit +0x2b8] vehicle %p ai chain unsafe — skip", vehicle);
         return nullptr;
@@ -3296,8 +3287,8 @@ void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
 bool proxy_is_police_vehicle_in_pursuit(int vehicle_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (vehicle_index < 0) return false;
-    if (is_player_info_process_paused()) {
-        LOGW("⚠️ [IsPoliceVehicleInPursuit] idx=%d — skip load (tombstone_29/30)",
+    if (is_early_deserialize_tail_paused()) {
+        LOGW("⚠️ [IsPoliceVehicleInPursuit] idx=%d — skip deserialize tail (tombstone_29/30)",
              vehicle_index);
         return false;
     }
