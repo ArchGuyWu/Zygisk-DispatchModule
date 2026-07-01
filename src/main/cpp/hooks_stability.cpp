@@ -172,6 +172,9 @@ void* get_menu_gameterface_self() {
 void notify_menu_read_save_path(const char* via) {
     // Kind flags only — do NOT begin session here. Starting session before
     // ms_bLoading/game_state==8 skips ManageTasks during the loading screen (hang).
+    const bool continue_load =
+        g_save_load_kind.load(std::memory_order_acquire) ==
+        static_cast<uint8_t>(SaveLoadKind::Continue);
     g_deferred_fade_in_kick.store(false, std::memory_order_release);
     g_fade_in_kick_count.store(0, std::memory_order_release);
     g_last_fade_in_kick_ms.store(0, std::memory_order_release);
@@ -179,9 +182,13 @@ void notify_menu_read_save_path(const char* via) {
     g_loading_hud_dismissed.store(false, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
-    g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
-                           std::memory_order_release);
-    LOGI("💾 [SaveLoad] Menu read-save via %s (direct scene, no intro expected)", via);
+    if (!continue_load) {
+        g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
+                               std::memory_order_release);
+        LOGI("💾 [SaveLoad] Menu read-save via %s (direct scene, no intro expected)", via);
+    } else {
+        LOGI("💾 [SaveLoad] Continue load chain via %s (preserve Continue kind)", via);
+    }
 }
 
 void notify_explicit_new_game_bootstrap(const char* via) {
@@ -343,6 +350,7 @@ static void maybe_advance_game_state_after_fade_clear(const char* via) {
 }
 
 static void try_nudge_game_state_loading_started(const char* via, bool immediate) {
+    if (is_continue_load_path()) return;
     if (g_game_state_nudge_attempted.load(std::memory_order_acquire)) return;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != 0) return;
@@ -371,7 +379,7 @@ static void kick_post_load_fade_in_once(const char* via) {
     g_deferred_fade_in_kick.store(false, std::memory_order_release);
     g_loading_hud_dismissed.store(true, std::memory_order_release);
     const int16_t before = read_screen_fade_status();
-    force_complete_post_load_fade(g_TheCamera, via, true);
+    force_complete_post_load_fade(g_TheCamera, via, !is_continue_load_path());
     LOGW("💾 [SaveLoad] Fade-in kick #%d — force-complete fadeStatus=%d→%d via %s "
          "streaming=%d",
          attempts + 1,
@@ -393,7 +401,7 @@ static void try_dismiss_deferred_loading_screen(const char* via) {
     if (!g_orig_running_deferred_loading_screen_fade) return;
     if (g_TheCamera && is_pointer_readable(g_TheCamera) &&
         is_post_load_fade_recovery_active()) {
-        force_complete_post_load_fade(g_TheCamera, via, true);
+        force_complete_post_load_fade(g_TheCamera, via, !is_continue_load_path());
     }
     g_loading_hud_dismissed.store(true, std::memory_order_release);
     g_orig_running_deferred_loading_screen_fade(self, 0.0f, 0, false);
@@ -1663,7 +1671,9 @@ void proxy_generic_game_storage_restore_for_start_load() {
 void proxy_generic_game_storage_generic_load(int slot, bool* out) {
     SHADOWHOOK_STACK_SCOPE();
     notify_menu_read_save_path("GenericLoad");
-    LOGI("💾 [SaveLoad] GenericLoad(slot=%d)", slot);
+    LOGI("💾 [SaveLoad] GenericLoad(slot=%d) kind=%u",
+         slot,
+         g_save_load_kind.load(std::memory_order_acquire));
     g_generic_load_in_progress.store(true, std::memory_order_release);
     refresh_manage_tasks_force_safe();
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_generic_load, slot, out);
@@ -1677,9 +1687,14 @@ void proxy_generic_game_storage_generic_load(int slot, bool* out) {
 
 void proxy_generic_game_storage_after_success_load() {
     SHADOWHOOK_STACK_SCOPE();
+    const bool continue_load =
+        g_save_load_kind.load(std::memory_order_acquire) ==
+        static_cast<uint8_t>(SaveLoadKind::Continue);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
-    g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
-                           std::memory_order_release);
+    if (!continue_load) {
+        g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
+                               std::memory_order_release);
+    }
     SHADOWHOOK_CALL_PREV(proxy_generic_game_storage_after_success_load);
     refresh_manage_tasks_force_safe();
     LOGI("💾 [SaveLoad] DoGameSpecificStuffAfterSucessLoad — deserialize done");
@@ -1695,7 +1710,10 @@ void proxy_cgame_logic_init_at_start_of_game() {
     const bool have_game_state = read_game_state(&game_state);
     const bool explicit_new_game =
         g_explicit_new_game_bootstrap.load(std::memory_order_acquire);
-    if (kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad) || menu_load_seen) {
+    if (kind == static_cast<uint8_t>(SaveLoadKind::Continue)) {
+        LOGI("💾 [SaveLoad] CGameLogic::InitAtStartOfGame — Continue (gameState=%u)",
+             have_game_state ? game_state : 255u);
+    } else if (kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad) || menu_load_seen) {
         if (kind != static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad)) {
             g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad),
                                    std::memory_order_release);
@@ -2852,7 +2870,7 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u,
              g_save_load_kind.load(std::memory_order_acquire));
-        force_complete_post_load_fade(self, "Skip Fade(0,0)", true);
+        force_complete_post_load_fade(self, "Skip Fade(0,0)", !is_continue_load_path());
         g_deferred_fade_in_kick.store(true, std::memory_order_release);
         return;
     }
