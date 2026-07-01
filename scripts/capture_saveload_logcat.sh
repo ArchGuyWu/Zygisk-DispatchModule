@@ -4,7 +4,7 @@
 #
 # 用法（重启刷模组后）:
 #   ./scripts/capture_saveload_logcat.sh          # 清缓冲 → 实时抓，Ctrl+C 结束
-#   ./scripts/capture_saveload_logcat.sh --dump   # 不清缓冲，闪退后一次性导出
+#   ./scripts/capture_saveload_logcat.sh --dump   # 闪退后导出（保留缓冲，需 su，含 INFO）
 #   ./scripts/capture_saveload_logcat.sh --no-clear   # 实时抓但保留已有缓冲
 #
 # 输出目录: logcat_watch/saveload_YYYYMMDD_HHMMSS.{full,summary}.log
@@ -46,7 +46,7 @@ logcat_cmd() {
     fi
 }
 
-FILTER_RE='GenericLoad|LoadDataInSlot|LoadGameFromSlot|ms_bLoading|Session begin|Session end|Hydration|Skip pipeline|u_strlen|ms_bFailed|deserialize|Left frontend|Menu read-save|RestoreForStartLoad|All hooks installed|VanillaQoL|SaveLoad'
+FILTER_RE='GenericLoad|LoadDataInSlot|LoadDataInSlotEvent|LoadGameFromSlot|ms_bLoading|Session begin|Session end|Hydration|Skip pipeline|u_strlen|ms_bFailed|deserialize|Left frontend|Menu read-save|RestoreForStartLoad|All hooks installed|safe to Load Game|committed|VanillaQoL|SaveLoad|done — ok'
 
 echo "=== SaveLoad logcat capture ==="
 echo "Mode: $MODE | clear buffer: $CLEAR"
@@ -58,20 +58,23 @@ if (( CLEAR )); then
     echo "🧹 Clearing logcat buffer..."
     logcat_cmd "logcat -c" || true
     echo "✅ Buffer cleared."
-    echo "   1) 启动游戏，等 logcat 出现「All hooks installed」"
+    echo "   1) 启动游戏，等 logcat 出现「All hooks installed」或「safe to Load Game」"
     echo "   2) 主菜单 Load Game → 选 slot（不要点继续）"
     echo ""
 fi
 
 if [[ "$MODE" == "dump" ]]; then
-    echo "📥 Dumping current logcat (dispatchCenter)..."
-    logcat_cmd "logcat -d -v time -s ${TAG}:I ${TAG}:W" > "$FULL" || true
+    echo "📥 Post-crash dump (su + dispatchCenter:*, keeps buffer)..."
+    if ! command -v su >/dev/null 2>&1 || ! su -c "true" 2>/dev/null; then
+        echo "⚠️ 无 su — INFO 级 SaveLoad 日志可能缺失，建议 root 环境运行"
+    fi
+    logcat_cmd "logcat -d -v time -s ${TAG}:*" > "$FULL" || true
 else
     echo "⏳ Live capture (dispatchCenter). Reproduce load-save crash, then Ctrl+C."
     echo "   Tip: run in another terminal: ./scripts/watch_tombstones.sh --once"
     echo ""
     trap 'echo ""; echo "⏹ Stopping capture..."' INT TERM
-    logcat_cmd "logcat -v time -s ${TAG}:I ${TAG}:W" | tee "$FULL" || true
+    logcat_cmd "logcat -v time -s ${TAG}:*" | tee "$FULL" || true
 fi
 
 if [[ ! -s "$FULL" ]]; then
@@ -101,6 +104,16 @@ else
 fi
 echo "========================================================="
 echo ""
+echo "==================== Key timeline ========================="
+KEY_RE='GenericLoad\(slot=|done — ok=|ms_bLoading cleared|Session begin|Session end|LoadDataInSlotEvent.*committed'
+if rg -i "$KEY_RE" "$FULL" >/dev/null 2>&1; then
+    rg -i "$KEY_RE" "$FULL" || true
+else
+    echo "(key lines not found — check full log)"
+fi
+echo "========================================================="
+echo ""
 echo "📤 Send for analysis:"
 echo "   $SUMMARY"
+echo "   $FULL"
 echo "   (+ tombstones_temp/tombstone_XX if crashed)"

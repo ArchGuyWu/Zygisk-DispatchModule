@@ -1152,4 +1152,6 @@ void hook_thread_func() {
 
     LOGI("=== All hooks installed ===");
     LOGI("=== Police Intervention System ACTIVE ===");
+    // Termux logcat often drops INFO from game UID — duplicate as WARN for capture script.
+    LOGW("✅ [Mod] All hooks installed — safe to Load Game / Continue");
 }
