@@ -1079,6 +1079,20 @@ void hook_thread_func() {
 
     void* pursuit_sym = xdl_sym(lib, "_ZN8CCarCtrl24IsPoliceVehicleInPursuitEi", nullptr);
     if (pursuit_sym) {
+        void* ldr_thunk_addr = reinterpret_cast<void*>(
+            reinterpret_cast<uintptr_t>(pursuit_sym) + 0x29c);
+        g_stub_vehicle_pursuit_ldr_thunk_29c = shadowhook_hook_func_addr(
+            ldr_thunk_addr,
+            reinterpret_cast<void*>(proxy_vehicle_pursuit_ldr_thunk_29c),
+            reinterpret_cast<void**>(&g_orig_vehicle_pursuit_ldr_thunk_29c));
+        if (g_stub_vehicle_pursuit_ldr_thunk_29c) {
+            LOGI("✅ Hooked IsPoliceVehicleInPursuit ldr thunk @ +0x29c (%p)",
+                 ldr_thunk_addr);
+        } else {
+            LOGE("❌ Failed to hook IsPoliceVehicleInPursuit +0x29c thunk: %s",
+                 shadowhook_to_errmsg(shadowhook_get_errno()));
+        }
+
         void* thunk_addr = reinterpret_cast<void*>(
             reinterpret_cast<uintptr_t>(pursuit_sym) + 0x2b8);
         g_stub_vehicle_pursuit_ai_thunk = shadowhook_hook_func_addr(
@@ -1086,9 +1100,10 @@ void hook_thread_func() {
             reinterpret_cast<void*>(proxy_vehicle_pursuit_ai_thunk),
             reinterpret_cast<void**>(&g_orig_vehicle_pursuit_ai_thunk));
         if (g_stub_vehicle_pursuit_ai_thunk) {
-            LOGI("✅ Hooked CCarCtrl::IsPoliceVehicleInPursuit vehicle-ai thunk @ %p", thunk_addr);
+            LOGI("✅ Hooked IsPoliceVehicleInPursuit vehicle-ai thunk @ +0x2b8 (%p)",
+                 thunk_addr);
         } else {
-            LOGE("❌ Failed to hook IsPoliceVehicleInPursuit thunk: %s",
+            LOGE("❌ Failed to hook IsPoliceVehicleInPursuit +0x2b8 thunk: %s",
                  shadowhook_to_errmsg(shadowhook_get_errno()));
         }
     }

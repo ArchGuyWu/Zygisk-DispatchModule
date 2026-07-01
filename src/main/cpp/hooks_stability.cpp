@@ -3242,9 +3242,11 @@ void proxy_ik_manager_process_ped(void* self, void* ped) {
 }
 
 // --- CCarCtrl::IsPoliceVehicleInPursuit Hook ---
-// Outer entry takes pool index; inner thunk at +0x2b8 loads vehicle+0x10 without guard (tombstone_14/21/22/24).
+// Outer entry takes pool index; +0x29c/+0x2b8 thunks load vehicle+0x10 without guard (tombstone_29–32).
 void* g_stub_is_police_vehicle_in_pursuit = nullptr;
 fn_IsPoliceVehicleInPursuit_t g_orig_is_police_vehicle_in_pursuit = nullptr;
+void* g_stub_vehicle_pursuit_ldr_thunk_29c = nullptr;
+fn_VehiclePursuitAiThunk_t g_orig_vehicle_pursuit_ldr_thunk_29c = nullptr;
 void* g_stub_vehicle_pursuit_ai_thunk = nullptr;
 fn_VehiclePursuitAiThunk_t g_orig_vehicle_pursuit_ai_thunk = nullptr;
 
@@ -3260,11 +3262,32 @@ inline bool vehicle_ai_subobject_chain_safe(void* vehicle) {
     return is_pointer_readable(fn_slot) && *fn_slot && is_pointer_readable(*fn_slot);
 }
 
+static inline void* vehicle_pursuit_subobject_or_null(void* vehicle, const char* site) {
+    if (is_player_info_process_paused()) return nullptr;
+    if (!vehicle || !is_pointer_readable(vehicle)) {
+        LOGW("⚠️ [IsPoliceVehicleInPursuit %s] null vehicle — skip (tombstone_31/32)", site);
+        return nullptr;
+    }
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
+    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
+        LOGW("⚠️ [IsPoliceVehicleInPursuit %s] vehicle %p +0x10 null — skip (tombstone_31/32)",
+             site, vehicle);
+        return nullptr;
+    }
+    return *sub_slot;
+}
+
+// +0x29c: ldr x0, [x0,#0x10]; ret — ManageTasks+0x258 BL target (tombstone_29–32).
+void* proxy_vehicle_pursuit_ldr_thunk_29c(void* vehicle) {
+    SHADOWHOOK_STACK_SCOPE();
+    return vehicle_pursuit_subobject_or_null(vehicle, "+0x29c");
+}
+
 void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_player_info_process_paused()) return nullptr;
     if (!vehicle_ai_subobject_chain_safe(vehicle)) {
-        LOGW("⚠️ [IsPoliceVehicleInPursuit thunk] vehicle %p ai chain unsafe — skip", vehicle);
+        LOGW("⚠️ [IsPoliceVehicleInPursuit +0x2b8] vehicle %p ai chain unsafe — skip", vehicle);
         return nullptr;
     }
     return SHADOWHOOK_CALL_PREV(proxy_vehicle_pursuit_ai_thunk, vehicle);

@@ -204,6 +204,7 @@ extern void* g_stub_get_simplest_task_ei;
 extern void* g_stub_flush_tasks;
 extern void* g_stub_ik_manager_process_ped;
 extern void* g_stub_is_police_vehicle_in_pursuit;
+extern void* g_stub_vehicle_pursuit_ldr_thunk_29c;
 extern void* g_stub_vehicle_pursuit_ai_thunk;
 extern void* g_stub_wander_look_for_chat_partners;
 extern void* g_stub_ik_chain_is_facing_target;
