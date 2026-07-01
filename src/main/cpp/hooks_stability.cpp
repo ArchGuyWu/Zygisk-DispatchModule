@@ -3260,12 +3260,12 @@ static inline void* vehicle_pursuit_subobject_or_null(void* vehicle, const char*
         LOGW("⚠️ [IsPoliceVehicleInPursuit %s] null vehicle — skip (tombstone_31/32)", site);
         return nullptr;
     }
-    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
-    if (!is_pointer_readable(sub_slot) || !*sub_slot) {
-        LOGW("⚠️ [IsPoliceVehicleInPursuit %s] vehicle %p +0x10 null — skip (tombstone_31/32)",
+    if (!vehicle_ai_subobject_chain_safe(vehicle)) {
+        LOGW("⚠️ [IsPoliceVehicleInPursuit %s] vehicle %p ai chain unsafe — skip (tombstone_33/34)",
              site, vehicle);
         return nullptr;
     }
+    void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
     return *sub_slot;
 }
 
