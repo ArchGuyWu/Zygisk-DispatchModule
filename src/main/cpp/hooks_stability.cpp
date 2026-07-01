@@ -730,8 +730,12 @@ static inline bool is_ped_physics_hotpath_paused() {
 }
 
 // Script ControlSubTask / MakeAbortable: CALL_PREV during save-load (intro/load scripts, tombstone 27/28).
+// gameState 0/8 fade: is_stability_sanitize_paused() is false — use load-transition fastpath too (log 204335).
 #define MAKE_ABORTABLE_SAVE_LOAD_FASTPATH(proxy_fn, self, ped, priority, event) \
     do { \
+        if (is_load_transition_engine_fastpath()) { \
+            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
+        } \
         if (is_stability_sanitize_paused()) { \
             return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped, priority, event); \
         } \
@@ -739,6 +743,11 @@ static inline bool is_ped_physics_hotpath_paused() {
 
 #define CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_fn, self, ped) \
     do { \
+        if (is_load_transition_engine_fastpath()) { \
+            if (!self || !is_pointer_readable(self)) return nullptr; \
+            if (ped && !is_pointer_readable(ped)) return nullptr; \
+            return SHADOWHOOK_CALL_PREV(proxy_fn, self, ped); \
+        } \
         if (is_stability_sanitize_paused()) { \
             if (!self || !is_pointer_readable(self)) return nullptr; \
             /* Save-load: half-hydrated subtask/other-ped chains crash (#37, #39). */ \
@@ -750,6 +759,11 @@ static inline bool is_ped_physics_hotpath_paused() {
 
 #define STABILITY_VOID_SAVE_LOAD_FASTPATH(proxy_fn, self) \
     do { \
+        if (is_load_transition_engine_fastpath()) { \
+            if (!self || !is_pointer_readable(self)) return; \
+            SHADOWHOOK_CALL_PREV(proxy_fn, self); \
+            return; \
+        } \
         if (is_stability_sanitize_paused()) { \
             if (!self || !is_pointer_readable(self)) return; \
             /* Save-load: stale task slots in Flush/Buoyancy/etc. (#43–44). */ \
@@ -1387,10 +1401,10 @@ void* g_stub_ccgf_control = nullptr;
 fn_ControlSubTask_t g_orig_ccgf_control = nullptr;
 void* proxy_ccgf_control(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_ccgf_control, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     if (is_task_manager_query_paused()) return nullptr;
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_ccgf_control, self, ped);
 
     if (!is_stability_sanitize_paused()) {
         if (ped && is_ped_pointer_valid_safe(ped)) {
@@ -2102,10 +2116,10 @@ fn_BeInGroupControlSubTask_t g_orig_be_in_group_control_sub_task = nullptr;
 
 void* proxy_be_in_group_control_sub_task(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_be_in_group_control_sub_task, self, ped);
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
     if (is_task_manager_query_paused()) return nullptr;
-    CONTROL_SUB_TASK_SAVE_LOAD_FASTPATH(proxy_be_in_group_control_sub_task, self, ped);
     if (be_in_group_control_unsafe(self, ped)) {
         LOGW("⚠️ [BeInGroup::ControlSubTask] unsafe group/ped tasks — skip (tombstone_26)");
         return nullptr;
@@ -3334,11 +3348,20 @@ static inline void* vehicle_pursuit_subobject_or_null(void* vehicle, const char*
 // +0x29c: ldr x0, [x0,#0x10]; ret — ManageTasks+0x258 BL target (tombstone_29–32).
 void* proxy_vehicle_pursuit_ldr_thunk_29c(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_load_transition_engine_fastpath()) {
+        if (!vehicle || !is_pointer_readable(vehicle)) return nullptr;
+        void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
+        if (!is_pointer_readable(sub_slot)) return nullptr;
+        return *sub_slot;
+    }
     return vehicle_pursuit_subobject_or_null(vehicle, "+0x29c");
 }
 
 void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_load_transition_engine_fastpath()) {
+        return SHADOWHOOK_CALL_PREV(proxy_vehicle_pursuit_ai_thunk, vehicle);
+    }
     if (!vehicle_ai_subobject_chain_safe(vehicle)) {
         LOGW("⚠️ [IsPoliceVehicleInPursuit +0x2b8] vehicle %p ai chain unsafe — skip", vehicle);
         return nullptr;
@@ -3349,6 +3372,9 @@ void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
 bool proxy_is_police_vehicle_in_pursuit(int vehicle_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (vehicle_index < 0) return false;
+    if (is_load_transition_engine_fastpath()) {
+        return SHADOWHOOK_CALL_PREV(proxy_is_police_vehicle_in_pursuit, vehicle_index);
+    }
     if (is_early_deserialize_tail_paused()) {
         LOGW("⚠️ [IsPoliceVehicleInPursuit] idx=%d — skip deserialize tail (tombstone_29/30)",
              vehicle_index);
@@ -3416,6 +3442,12 @@ inline bool wander_chat_partner_cache_unsafe(void* ped) {
 
 void proxy_wander_look_for_chat_partners(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
+    if (is_load_transition_engine_fastpath()) {
+        if (!self || !is_pointer_readable(self)) return;
+        if (ped && !is_pointer_readable(ped)) return;
+        SHADOWHOOK_CALL_PREV(proxy_wander_look_for_chat_partners, self, ped);
+        return;
+    }
     if (!self || !is_pointer_readable(self)) return;
     if (ped && !is_pointer_readable(ped)) return;
     if (is_task_manager_query_paused()) return;
