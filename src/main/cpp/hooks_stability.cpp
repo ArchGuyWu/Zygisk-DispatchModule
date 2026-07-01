@@ -566,6 +566,12 @@ static inline bool is_task_manager_query_paused() {
         return true;
     }
     if (is_post_load_hydration_paused()) return true;
+    // Post ms_bLoading: queries stay off until gameplay_stable (#05–07, ~22s crash zone).
+    if (loading_cleared > 0 &&
+        now_ms() - loading_cleared < kUstrlenPostLoadHardCapMs &&
+        !is_gameplay_world_stable()) {
+        return true;
+    }
     return false;
 }
 
@@ -845,6 +851,22 @@ inline void* find_active_task_by_type_readonly(void* task_mgr, int type) {
         void* task = *task_slot;
         if (!task) continue;
         void* found = find_task_by_type_in_chain(task, type);
+        if (found) return found;
+    }
+    return nullptr;
+}
+
+// RE: CPedIntelligence::FindTaskByType — mgr slots + intel+0x20/+0x28; no CALL_PREV (#05–07).
+inline void* intel_find_task_by_type_readonly(void* intel, int type) {
+    if (!intel || !is_pointer_readable(intel)) return nullptr;
+    void* found = find_active_task_by_type_readonly(reinterpret_cast<char*>(intel) + 8, type);
+    if (found) return found;
+    for (size_t off : {0x20u, 0x28u}) {
+        void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(intel) + off);
+        if (!is_pointer_readable(task_slot)) continue;
+        void* task = *task_slot;
+        if (!task) continue;
+        found = find_task_by_type_in_chain(task, type);
         if (found) return found;
     }
     return nullptr;
@@ -1380,14 +1402,12 @@ inline void sanitize_intel_for_task_lookup(void* intel) {
 void* proxy_intel_find_task_by_type(void* self, int type) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
+    if (is_task_manager_lookup_paused()) return nullptr;
+    if (is_post_load_hydration_paused()) return nullptr;
     if (intelligence_zero_filled(self) ||
         intelligence_process_hotpath_unsafe(self, 0x28)) {
-        LOGW("⚠️ [Intel::FindTaskByType] unsafe intel %p — skip (tombstone_23)", self);
+        LOGW("⚠️ [Intel::FindTaskByType] unsafe intel %p — skip (tombstone_05)", self);
         return nullptr;
-    }
-    if (!is_stability_sanitize_paused()) {
-        sanitize_intel_for_task_lookup(self);
     }
     for (size_t off : {0x20u, 0x28u}) {
         void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + off);
@@ -1402,7 +1422,11 @@ void* proxy_intel_find_task_by_type(void* self, int type) {
         void* task = *task_slot;
         if (task && task_chain_walk_unsafe(task, 0x28)) return nullptr;
     }
-    return SHADOWHOOK_CALL_PREV(proxy_intel_find_task_by_type, self, type);
+    if (!is_stability_sanitize_paused()) {
+        sanitize_intel_for_task_lookup(self);
+    }
+    // Never CALL_PREV — engine walks vtable+0x28 on half-hydrated slots (#05–07).
+    return intel_find_task_by_type_readonly(self, type);
 }
 
 // --- CTaskManager Destructor Hook (D1/D2 — tombstone_41 hooks D2Ev, not D1 alone) ---
@@ -1917,12 +1941,15 @@ void* proxy_get_task_main(void* self, void* ped) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return nullptr;
     if (ped && !is_pointer_readable(ped)) return nullptr;
-    if (is_task_manager_query_paused()) return nullptr;
+    if (is_task_manager_lookup_paused()) return nullptr;
+    if (is_post_load_hydration_paused()) return nullptr;
     if (intelligence_zero_filled(self) ||
         intelligence_process_hotpath_unsafe(self, 0x28)) {
-        LOGW("⚠️ [GetTaskMain] unsafe group intel %p — skip (tombstone_26)", self);
+        LOGW("⚠️ [GetTaskMain] unsafe group intel %p — skip (tombstone_05)", self);
         return nullptr;
     }
+    // Save-load / hydration: never CALL_PREV — result vtable+0x28 deref (#05).
+    if (is_stability_sanitize_paused()) return nullptr;
     void* result = SHADOWHOOK_CALL_PREV(proxy_get_task_main, self, ped);
     if (!result || !is_task_vtable_safe(result)) {
         if (result) {
@@ -1945,10 +1972,9 @@ fn_GetNearestCarDoor_t g_orig_get_nearest_car_door = nullptr;
 
 bool proxy_get_nearest_car_door(void* ped, void* vehicle, void* out_vec, int* door_index) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_stability_sanitize_paused()) {
-        if (is_task_manager_query_paused()) return false;
-        return SHADOWHOOK_CALL_PREV(proxy_get_nearest_car_door, ped, vehicle, out_vec, door_index);
-    }
+    if (is_task_manager_lookup_paused() || is_post_load_hydration_paused()) return false;
+    // Save-load / hydration: never CALL_PREV — ped task slots vtable+0x28 (#06).
+    if (is_stability_sanitize_paused()) return false;
     if (ped && is_ped_pointer_valid_safe(ped)) {
         sanitize_ped_tasks(ped);
     }
