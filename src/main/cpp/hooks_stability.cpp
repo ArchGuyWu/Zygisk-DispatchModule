@@ -847,7 +847,7 @@ inline bool task_manager_has_unsafe_slot(void* task_mgr, int max_slots, size_t v
 }
 
 inline void sanitize_event_script_command_task_slot(void* self, const char* log_tag) {
-    if (is_stability_sanitize_paused()) return;
+    if (is_stability_sanitize_paused() || is_load_transition_engine_fastpath()) return;
     if (!self || !is_pointer_readable(self)) return;
     void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
     if (!is_pointer_readable(task_slot)) return;
@@ -2360,6 +2360,10 @@ fn_EventScriptCommandDtor_t g_orig_event_script_command_d1 = nullptr;
 void proxy_event_script_command_d0(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_event_script_command_d0, self);
+        return;
+    }
     sanitize_event_script_command_task_slot(self, "CEventScriptCommand::D0");
     void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
     if (is_pointer_readable(task_slot) && *task_slot &&
@@ -2373,6 +2377,10 @@ void proxy_event_script_command_d0(void* self) {
 void proxy_event_script_command_d1(void* self) {
     SHADOWHOOK_STACK_SCOPE();
     if (!self || !is_pointer_readable(self)) return;
+    if (is_load_transition_engine_fastpath()) {
+        SHADOWHOOK_CALL_PREV(proxy_event_script_command_d1, self);
+        return;
+    }
     sanitize_event_script_command_task_slot(self, "CEventScriptCommand::D1");
     void** task_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(self) + 0x18);
     if (is_pointer_readable(task_slot) && *task_slot &&
@@ -2441,9 +2449,7 @@ static inline bool cam_process_unsafe(void* self) {
 void proxy_process_follow_ped_sa(void* self, const CVector& target, float f1, float f2, float f3, bool b1) {
     SHADOWHOOK_STACK_SCOPE();
     if (is_load_transition_engine_fastpath()) {
-        if (!cam_process_unsafe(self)) {
-            SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
-        }
+        SHADOWHOOK_CALL_PREV(proxy_process_follow_ped_sa, self, target, f1, f2, f3, b1);
         return;
     }
     if (is_player_info_process_paused()) {
@@ -3348,7 +3354,8 @@ static inline void* vehicle_pursuit_subobject_or_null(void* vehicle, const char*
 // +0x29c: ldr x0, [x0,#0x10]; ret — ManageTasks+0x258 BL target (tombstone_29–32).
 void* proxy_vehicle_pursuit_ldr_thunk_29c(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_load_transition_engine_fastpath()) {
+    // Fade window only (gameState 0/8): bypass unsafe gate; gameState 9 uses safe null (Continue #43).
+    if (is_engine_load_transition_active()) {
         if (!vehicle || !is_pointer_readable(vehicle)) return nullptr;
         void** sub_slot = reinterpret_cast<void**>(reinterpret_cast<char*>(vehicle) + 0x10);
         if (!is_pointer_readable(sub_slot)) return nullptr;
@@ -3359,7 +3366,7 @@ void* proxy_vehicle_pursuit_ldr_thunk_29c(void* vehicle) {
 
 void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
     SHADOWHOOK_STACK_SCOPE();
-    if (is_load_transition_engine_fastpath()) {
+    if (is_engine_load_transition_active()) {
         return SHADOWHOOK_CALL_PREV(proxy_vehicle_pursuit_ai_thunk, vehicle);
     }
     if (!vehicle_ai_subobject_chain_safe(vehicle)) {
@@ -3372,7 +3379,7 @@ void* proxy_vehicle_pursuit_ai_thunk(void* vehicle) {
 bool proxy_is_police_vehicle_in_pursuit(int vehicle_index) {
     SHADOWHOOK_STACK_SCOPE();
     if (vehicle_index < 0) return false;
-    if (is_load_transition_engine_fastpath()) {
+    if (is_engine_load_transition_active()) {
         return SHADOWHOOK_CALL_PREV(proxy_is_police_vehicle_in_pursuit, vehicle_index);
     }
     if (is_early_deserialize_tail_paused()) {

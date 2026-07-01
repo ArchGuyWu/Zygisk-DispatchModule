@@ -460,16 +460,11 @@ void hook_thread_func() {
                        "CGameLogic::InitAtStartOfGame");
     #undef HOOK_SAVE_LOAD_SYM
 
-    void* manage_tasks_sym = xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
-    if (manage_tasks_sym) {
-        if (install_manage_tasks_inbody_guards(manage_tasks_sym)) {
-            LOGI("✅ Patched ManageTasks in-body null guards @ +0x168/+0x278");
-        } else {
-            LOGE("❌ Failed to patch ManageTasks in-body null guards");
-        }
-    } else {
-        LOGE("❌ ManageTasks symbol not found for in-body guard patch");
-    }
+    // In-body cbz-x20 tramps @ +0x168/+0x248/+0x280 disabled: stale x20 skips BLR → gameState=0
+    // fade hang (read-save); non-null garbage x20 → ldr fault @ +0x170 (Continue, tombstone_43).
+    // Null dispatch is handled by proxy_manage_tasks fastpath only.
+    (void)xdl_sym(lib, "_ZN12CTaskManager11ManageTasksEv", nullptr);
+    LOGI("ℹ️ ManageTasks in-body guards skipped — shadowhook proxy only");
 
     // Hook CTaskManager::ManageTasks (防止各种任务生命周期、清理或零值野指针导致的任务管理闪退)
     g_stub_manage_tasks = shadowhook_hook_sym_name(
