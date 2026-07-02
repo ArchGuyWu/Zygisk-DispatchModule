@@ -489,16 +489,26 @@ static void try_settle_gs9_overlay(const char* via) {
     if (!read_game_state(&game_state) || game_state != kGameStateIdle) return;
 
     const int64_t now = now_ms();
+    const int16_t before = read_screen_fade_status();
     const int64_t last = g_last_gs9_overlay_ms.load(std::memory_order_acquire);
-    if (last > 0 && now - last < kGs9OverlayRetryMs) return;
+    // advance_post_load primes last_ms — must not block CGameLogic fade=2 recovery (log 142821).
+    if (before <= 0 && last > 0 && now - last < kGs9OverlayRetryMs) return;
     g_last_gs9_overlay_ms.store(now, std::memory_order_release);
 
     const int attempt =
         g_gs9_overlay_attempts.fetch_add(1, std::memory_order_acq_rel) + 1;
-    const int16_t before = read_screen_fade_status();
+    if (before > 0) {
+        LOGW("💾 [SaveLoad] gs9 fade stall — fadeStatus=%d attempt=%d via %s",
+             static_cast<int>(before),
+             attempt,
+             via ? via : "?");
+    }
     hide_post_load_transition_overlay(via);
     if (before > 0 && g_TheCamera && is_pointer_readable(g_TheCamera)) {
         force_complete_post_load_fade(g_TheCamera, via, true);
+        if (g_orig_ccamera_run_deferred_fade_if_bound) {
+            g_orig_ccamera_run_deferred_fade_if_bound(g_TheCamera);
+        }
     }
     const int16_t after = read_screen_fade_status();
     const int64_t gs9_entered = g_gs9_entered_ms.load(std::memory_order_acquire);
@@ -548,7 +558,6 @@ static void advance_post_load_after_recovery(const char* via) {
     // Short-circuit DeferredFade at gs0 may have set this — must orig-dismiss at gs9 (log 141931).
     g_loading_hud_dismissed.store(false, std::memory_order_release);
     try_dismiss_deferred_loading_screen(via, false);
-    try_settle_gs9_overlay(via);
     uint8_t game_state = 0;
     read_game_state(&game_state);
     LOGI("💾 [SaveLoad] Post-recovery advance done — gameState=%u fadeStatus=%d via %s",
@@ -3132,6 +3141,11 @@ void proxy_ccamera_run_deferred_fade_if_bound(void* self) {
         g_orig_ccamera_run_deferred_fade_if_bound(self);
     }
     run_deferred_fade_in_kick_if_needed("RunDeferredFadeIfBound");
+    if (have_game_state && game_state == kGameStateIdle &&
+        g_save_load_session.load(std::memory_order_acquire) &&
+        read_screen_fade_status() > 0) {
+        try_settle_gs9_overlay("RunDeferredFadeIfBound");
+    }
 }
 
 void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
@@ -3205,6 +3219,17 @@ void proxy_running_deferred_loading_screen_fade(void* self,
         return;
     }
     if (duration == 0.0f && direction == 0 && !flag &&
+        g_post_load_fade_recovered.load(std::memory_order_acquire) &&
+        have_game_state && game_state == kGameStateIdle) {
+        LOGI("💾 [SaveLoad] Allow DeferredFade(0,0,0) at gs9 fadeStatus=%d",
+             static_cast<int>(read_screen_fade_status()));
+        if (g_orig_running_deferred_loading_screen_fade) {
+            g_orig_running_deferred_loading_screen_fade(self, duration, direction, flag);
+        }
+        try_settle_gs9_overlay("DeferredFade gs9");
+        return;
+    }
+    if (duration == 0.0f && direction == 0 && !flag &&
         (g_post_load_fade_recovered.load(std::memory_order_acquire) ||
          should_short_circuit_post_load_deferred_fade_zero())) {
         LOGI("💾 [SaveLoad] Short-circuit DeferredFade(0,0,0) — safe fadeStatus=%d gameState=%u",
@@ -3245,8 +3270,10 @@ void proxy_cgame_logic_update() {
     run_deferred_fade_in_kick_if_needed("CGameLogic::Update post");
     if (have_game_state && game_state == kGameStateIdle &&
         g_save_load_session.load(std::memory_order_acquire)) {
-        if (read_screen_fade_status() > 0) {
+        const int16_t post_fade = read_screen_fade_status();
+        if (post_fade > 0) {
             g_gs9_overlay_settled.store(false, std::memory_order_release);
+            g_last_gs9_overlay_ms.store(0, std::memory_order_release);
         }
         if (!g_loading_hud_dismissed.load(std::memory_order_acquire)) {
             try_dismiss_deferred_loading_screen("CGameLogic::Update post", false);
