@@ -281,8 +281,9 @@ static bool should_replace_post_load_deferred_fade_zero() {
 
 static bool should_short_circuit_post_load_deferred_fade_zero() {
     if (!is_load_fade_tail_active()) return false;
-    return g_deferred_fade_in_kick.load(std::memory_order_acquire) &&
-           read_screen_fade_status() >= 1;
+    // Short-circuit while gs0 recovery pending — orig DeferredFade(0,0,0) hangs after
+    // Skip Fade force-complete already cleared fadeStatus (log 121540).
+    return g_deferred_fade_in_kick.load(std::memory_order_acquire);
 }
 
 // GenericLoad Fade(0,0) at fadeStatus>=1 hangs in orig; force_complete here aborts
@@ -438,14 +439,14 @@ static void kick_post_load_fade_in_once(const char* via) {
     const int16_t before = read_screen_fade_status();
     force_complete_post_load_fade(g_TheCamera, via, true);
     int16_t after = read_screen_fade_status();
-    if (after > 0) {
-        fn_CCamera_Fade_t fade_fn = g_orig_ccamera_fade ? g_orig_ccamera_fade : g_ccamera_fade;
-        if (fade_fn) {
-            fade_fn(g_TheCamera, 2.0f, 0);
-            after = read_screen_fade_status();
-        }
+    fn_CCamera_Fade_t fade_fn = g_orig_ccamera_fade ? g_orig_ccamera_fade : g_ccamera_fade;
+    // Always kick Fade(2,0) at gs0 post-load — orig Fade(0,0) was skipped and fade may
+    // already read 0 after force-complete (log 121540: no fade-in → permanent dark hang).
+    if (fade_fn) {
+        fade_fn(g_TheCamera, 2.0f, 0);
+        after = read_screen_fade_status();
     }
-    if (after <= 0 && g_orig_ccamera_run_deferred_fade_if_bound) {
+    if (g_orig_ccamera_run_deferred_fade_if_bound) {
         g_orig_ccamera_run_deferred_fade_if_bound(g_TheCamera);
     }
     vanilla_qol_schedule_touch_rehydrate("fade-in kick");
@@ -472,7 +473,7 @@ static void try_dismiss_deferred_loading_screen(const char* via, bool /*from_fad
     if (g_loading_hud_dismissed.load(std::memory_order_acquire)) return;
     if (should_short_circuit_post_load_deferred_fade_zero()) {
         g_loading_hud_dismissed.store(true, std::memory_order_release);
-        LOGI("💾 [SaveLoad] Dismiss loading HUD — skip (fade recovery active) via %s",
+        LOGI("💾 [SaveLoad] Dismiss loading HUD — skip (gs0 recovery pending) via %s",
              via);
         return;
     }
@@ -496,7 +497,10 @@ static void try_kick_fade_in_after_black(const char* via) {
     const int64_t cleared =
         g_ms_b_loading_cleared_ms.load(std::memory_order_acquire);
     if (cleared <= 0 || now_ms() - cleared < 30) return;
-    if (read_screen_fade_status() < 1) return;
+    const int16_t fade = read_screen_fade_status();
+    // fadeStatus>=1: dark overlay pending. fadeStatus==0: Skip Fade force-complete already
+    // ran — still need Fade(2,0) recovery (log 121540).
+    if (fade < 0) return;
     const int64_t last_kick =
         g_last_fade_in_kick_ms.load(std::memory_order_acquire);
     if (last_kick > 0 && now_ms() - last_kick < kFadeInKickIntervalMs) return;
@@ -876,7 +880,11 @@ void poll_save_load_hydration_state() {
         if (cleared > 0 && now - cleared >= kFadeInKickPollMs) {
             run_deferred_fade_in_kick_if_needed("pollFadeStall");
             try_kick_fade_in_after_black("pollFadeStall");
+            // Recovery kick clears g_deferred_fade_in_kick — safe to dismiss after.
             try_dismiss_deferred_loading_screen("pollFadeStall", false);
+        } else if (cleared > 0 && g_deferred_fade_in_kick.load(std::memory_order_acquire) &&
+                   read_screen_fade_status() <= 0) {
+            try_kick_fade_in_after_black("pollFadeStall early");
         }
     } else if (have_game_state && game_state == kGameStateLoadingStarted) {
         const int64_t since_8 =
