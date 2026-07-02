@@ -116,7 +116,8 @@ static void try_dismiss_deferred_loading_screen(const char* via, bool from_fade_
 static void try_nudge_game_state_loading_started(const char* via);
 static void try_nudge_game_state_gameplay_idle_ex(const char* via, bool immediate);
 static void try_nudge_game_state_gameplay_idle(const char* via);
-static void try_unstick_fade_at_gameplay_idle(const char* via);
+static void hide_post_load_transition_overlay(const char* via);
+static void try_settle_gs9_overlay(const char* via);
 static bool post_load_spawn_streaming_ready();
 static bool is_post_load_fade_recovery_active();
 static bool is_continue_load_path();
@@ -162,8 +163,13 @@ static std::atomic<bool> g_loading_hud_dismissed{false};
 static std::atomic<bool> g_post_load_fade_recovered{false};
 static std::atomic<int64_t> g_post_load_fade_recovered_ms{0};
 static std::atomic<bool> g_post_load_fade_zero_completed{false};
+static std::atomic<bool> g_gs9_overlay_settled{false};
+static std::atomic<int64_t> g_last_gs9_overlay_ms{0};
+static std::atomic<int> g_gs9_overlay_attempts{0};
 
 static constexpr int kMaxFadeInKickAttempts = 1;
+static constexpr int kGs9OverlayMaxAttempts = 4;
+static constexpr int64_t kGs9OverlayRetryMs = 400;
 static constexpr int64_t kFadeInKickIntervalMs = 500;
 static constexpr int64_t kFadeInKickPollMs = 500;
 static constexpr int kGameState9StreamingMax = 40;
@@ -198,6 +204,9 @@ void notify_menu_read_save_path(const char* via) {
     g_post_load_fade_recovered.store(false, std::memory_order_release);
     g_post_load_fade_recovered_ms.store(0, std::memory_order_release);
     g_post_load_fade_zero_completed.store(false, std::memory_order_release);
+    g_gs9_overlay_settled.store(false, std::memory_order_release);
+    g_last_gs9_overlay_ms.store(0, std::memory_order_release);
+    g_gs9_overlay_attempts.store(0, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(true, std::memory_order_release);
     if (!continue_load) {
@@ -369,7 +378,6 @@ static bool force_complete_post_load_fade(void* camera, const char* via, bool ag
     }
 
     if (acted) {
-        vanilla_qol_schedule_touch_rehydrate("fade force-complete");
         const int16_t after = read_screen_fade_status();
         LOGW("💾 [SaveLoad] Force fade complete — fadeStatus %d→%d via %s aggressive=%d",
              static_cast<int>(before),
@@ -444,37 +452,55 @@ static void try_nudge_game_state_gameplay_idle(const char* via) {
     try_nudge_game_state_gameplay_idle_ex(via, false);
 }
 
-// Log 131318: manual 0→8→9 leaves fadeStatus=2 after CGameLogic::Update — dark overlay hang.
-static void try_unstick_fade_at_gameplay_idle(const char* via) {
+// Log 135931: half-screen loading overlay + fade 2↔0 loop after gs9 nudge.
+static void hide_post_load_transition_overlay(const char* via) {
+    void* screen = get_active_transition_screen();
+    if (screen) {
+        preclear_fade_wait_state(screen);
+        if (g_ui_transition_screen_force_fade_opacity) {
+            g_ui_transition_screen_force_fade_opacity(screen, 0.0f);
+        }
+    }
+    if (g_get_transition_manager && g_ui_transition_continue_base) {
+        void* transition = g_get_transition_manager();
+        if (transition && is_pointer_readable(transition)) {
+            g_ui_transition_continue_base(transition, true, 0);
+            g_ui_transition_continue_base(transition, true, 1);
+            g_ui_transition_continue_base(transition, true, 2);
+            g_ui_transition_continue_base(transition, true, 1);
+        }
+    }
+    LOGI("💾 [SaveLoad] Hide loading overlay — transition opacity=0 via %s",
+         via ? via : "?");
+}
+
+static void try_settle_gs9_overlay(const char* via) {
     if (!is_menu_save_load_path()) return;
     if (!g_save_load_session.load(std::memory_order_acquire)) return;
+    if (g_gs9_overlay_settled.load(std::memory_order_acquire)) return;
     uint8_t game_state = 0;
     if (!read_game_state(&game_state) || game_state != kGameStateIdle) return;
-    const int16_t before = read_screen_fade_status();
-    if (before <= 0) return;
-    if (!g_TheCamera || !is_pointer_readable(g_TheCamera)) return;
 
-    static int64_t last_log_ms = 0;
     const int64_t now = now_ms();
-    if (now - last_log_ms >= 1000) {
-        last_log_ms = now;
-        LOGW("💾 [SaveLoad] gs9 fade unstuck — fadeStatus=%d streaming=%d via %s",
-             static_cast<int>(before),
-             read_streaming_num_requested(),
-             via ? via : "?");
-    }
+    const int64_t last = g_last_gs9_overlay_ms.load(std::memory_order_acquire);
+    if (last > 0 && now - last < kGs9OverlayRetryMs) return;
+    g_last_gs9_overlay_ms.store(now, std::memory_order_release);
 
-    force_complete_post_load_fade(g_TheCamera, via, true);
-    if (read_screen_fade_status() > 0 &&
-        g_orig_ccamera_run_deferred_fade_if_bound) {
-        g_orig_ccamera_run_deferred_fade_if_bound(g_TheCamera);
+    const int attempt =
+        g_gs9_overlay_attempts.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const int16_t before = read_screen_fade_status();
+    hide_post_load_transition_overlay(via);
+    if (before > 0 && g_TheCamera && is_pointer_readable(g_TheCamera)) {
+        force_complete_post_load_fade(g_TheCamera, via, true);
     }
     const int16_t after = read_screen_fade_status();
-    if (after <= 0) {
-        vanilla_qol_schedule_touch_rehydrate("gs9 fade cleared");
-        LOGI("💾 [SaveLoad] gs9 fade cleared — fadeStatus %d→%d via %s",
+    if (after <= 0 || attempt >= kGs9OverlayMaxAttempts) {
+        g_gs9_overlay_settled.store(true, std::memory_order_release);
+        vanilla_qol_schedule_touch_rehydrate("gs9 overlay settled");
+        LOGI("💾 [SaveLoad] gs9 overlay settled — fadeStatus %d→%d attempt=%d via %s",
              static_cast<int>(before),
              static_cast<int>(after),
+             attempt,
              via ? via : "?");
     }
 }
@@ -505,10 +531,10 @@ static void advance_post_load_after_recovery(const char* via) {
         }
         return;
     }
-    try_dismiss_deferred_loading_screen(via, false);
     try_nudge_game_state_loading_started_ex(via, true);
     try_nudge_game_state_gameplay_idle_ex(via, true);
-    try_unstick_fade_at_gameplay_idle(via);
+    try_dismiss_deferred_loading_screen(via, false);
+    try_settle_gs9_overlay(via);
     uint8_t game_state = 0;
     read_game_state(&game_state);
     LOGI("💾 [SaveLoad] Post-recovery advance done — gameState=%u fadeStatus=%d via %s",
@@ -557,12 +583,30 @@ static void run_deferred_fade_in_kick_if_needed(const char* via) {
     try_kick_fade_in_after_black(via);
 }
 
-// Orig DeferredFade(0,0,0) hangs post-load (log 124752) — mark dismissed only.
+// Orig DeferredFade(0,0,0) hangs at gs0 (log 124752); safe at gs9 (log 135931 split-screen).
 static void try_dismiss_deferred_loading_screen(const char* via, bool /*from_fade_complete*/) {
     if (g_loading_hud_dismissed.load(std::memory_order_acquire)) return;
-    if (is_load_fade_tail_active() || g_post_load_fade_recovered.load(std::memory_order_acquire)) {
+    if (g_post_load_fade_recovered.load(std::memory_order_acquire)) {
+        uint8_t game_state = 0;
+        if (!read_game_state(&game_state) || game_state != kGameStateIdle) {
+            LOGI("💾 [SaveLoad] Defer loading HUD dismiss until gs9 via %s", via);
+            return;
+        }
+        hide_post_load_transition_overlay(via);
+        void* self = get_menu_gameterface_self();
+        if (self && g_orig_running_deferred_loading_screen_fade) {
+            g_orig_running_deferred_loading_screen_fade(self, 0.0f, 0, false);
+            LOGI("💾 [SaveLoad] Dismiss loading HUD — orig DeferredFade at gs9 via %s",
+                 via);
+        } else {
+            LOGI("💾 [SaveLoad] Dismiss loading HUD — gs9 overlay hide only via %s", via);
+        }
         g_loading_hud_dismissed.store(true, std::memory_order_release);
-        LOGI("💾 [SaveLoad] Dismiss loading HUD — safe mark via %s fadeStatus=%d",
+        return;
+    }
+    if (is_load_fade_tail_active()) {
+        g_loading_hud_dismissed.store(true, std::memory_order_release);
+        LOGI("💾 [SaveLoad] Dismiss loading HUD — load-tail mark via %s fadeStatus=%d",
              via,
              static_cast<int>(read_screen_fade_status()));
         return;
@@ -669,6 +713,9 @@ void notify_ue_menu_load_committed(const char* via, int slot) {
     g_post_load_fade_recovered.store(false, std::memory_order_release);
     g_post_load_fade_recovered_ms.store(0, std::memory_order_release);
     g_post_load_fade_zero_completed.store(false, std::memory_order_release);
+    g_gs9_overlay_settled.store(false, std::memory_order_release);
+    g_last_gs9_overlay_ms.store(0, std::memory_order_release);
+    g_gs9_overlay_attempts.store(0, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
     g_menu_read_save_path_seen.store(false, std::memory_order_release);
     g_save_load_kind.store(static_cast<uint8_t>(SaveLoadKind::Continue),
@@ -990,7 +1037,7 @@ void poll_save_load_hydration_state() {
         last_fade_stall_diag_ms = 0;
     } else if (have_game_state && game_state == kGameStateIdle &&
                g_save_load_session.load(std::memory_order_acquire)) {
-        try_unstick_fade_at_gameplay_idle("pollGs9");
+        try_settle_gs9_overlay("pollGs9");
         last_fade_stall_diag_ms = 0;
     } else {
         last_fade_stall_diag_ms = 0;
@@ -1198,13 +1245,6 @@ static inline bool is_manage_tasks_execution_paused() {
     }
     // Menu/Continue: release only when spawn streaming settled (unstable spawn fix).
     const uint8_t kind = g_save_load_kind.load(std::memory_order_acquire);
-    if ((kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad) ||
-         kind == static_cast<uint8_t>(SaveLoadKind::Continue)) &&
-        g_post_load_fade_recovered.load(std::memory_order_acquire) &&
-        read_screen_fade_status() > 0) {
-        // gs9 fadeStatus=2 after manual nudge — need ManageTasks for fade tick (log 131318).
-        return false;
-    }
     if ((kind == static_cast<uint8_t>(SaveLoadKind::MenuGenericLoad) ||
          kind == static_cast<uint8_t>(SaveLoadKind::Continue)) &&
         read_screen_fade_status() <= 0 && is_player_world_active() &&
@@ -3106,7 +3146,7 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
              static_cast<int>(read_screen_fade_status()),
              read_streaming_num_requested());
         force_complete_post_load_fade(self, "Skip Fade gs9", true);
-        try_unstick_fade_at_gameplay_idle("Skip Fade gs9");
+        try_settle_gs9_overlay("Skip Fade gs9");
         return;
     }
     if (duration == 0.0f && direction == 0 && is_load_fade_tail_active()) {
@@ -3194,7 +3234,7 @@ void proxy_cgame_logic_update() {
     run_deferred_fade_in_kick_if_needed("CGameLogic::Update post");
     if (have_game_state && game_state == kGameStateIdle &&
         g_save_load_session.load(std::memory_order_acquire)) {
-        try_unstick_fade_at_gameplay_idle("CGameLogic::Update post");
+        try_settle_gs9_overlay("CGameLogic::Update post");
     }
     if (have_game_state && game_state == 0 && !read_ms_b_loading()) {
         const int64_t cleared =

@@ -54,10 +54,15 @@ static constexpr int kGameplayWidgetIds[] = {
 };
 
 static void schedule_touch_rehydrate(const char* reason) {
+    const bool was_pending =
+        g_touch_rehydrate_pending.load(std::memory_order_acquire);
     g_touch_rehydrate_pending.store(true, std::memory_order_release);
-    g_touch_rehydrate_attempts.store(0, std::memory_order_release);
-    g_touch_rehydrate_not_before_ms.store(now_ms() + kTouchRehydrateDeferMs,
-                                          std::memory_order_release);
+    // Repeated schedules during fade loops were resetting defer — touch never ran (log 135931).
+    if (!was_pending) {
+        g_touch_rehydrate_attempts.store(0, std::memory_order_release);
+        g_touch_rehydrate_not_before_ms.store(now_ms() + kTouchRehydrateDeferMs,
+                                              std::memory_order_release);
+    }
     LOGI("🛠️ [VanillaQoL] Touch rehydrate scheduled — %s", reason);
 }
 
