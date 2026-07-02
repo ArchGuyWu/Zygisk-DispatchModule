@@ -158,6 +158,8 @@ void proxy_the_scripts_process() {
     if (g_orig_the_scripts_process) {
         g_orig_the_scripts_process();
     }
+    // Poll again after orig — load hang can block before next frame's pre-poll (log 125626).
+    poll_save_load_transition();
 
     if (!is_mod_dispatch_paused()) {
         on_main_thread_tick();
