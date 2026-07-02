@@ -232,15 +232,6 @@ static int16_t read_screen_fade_status() {
     return g_get_screen_fade_status(g_TheCamera);
 }
 
-// Post-load (ms_bLoading cleared, gameState==0): Fade(0,0) orig hangs at fadeStatus>=1
-// (011110 fadeStatus=1, 021221 fadeStatus=2). Menu read-save: skip orig; Continue: preclear+orig.
-static bool is_post_load_fade_recovery_active() {
-    if (read_ms_b_loading() || is_generic_load_in_progress()) return false;
-    uint8_t game_state = 0;
-    if (!read_game_state(&game_state) || game_state != 0) return false;
-    return g_ms_b_loading_cleared_ms.load(std::memory_order_acquire) > 0;
-}
-
 static bool is_continue_load_path() {
     return g_save_load_kind.load(std::memory_order_acquire) ==
            static_cast<uint8_t>(SaveLoadKind::Continue);
@@ -253,20 +244,52 @@ static bool is_menu_save_load_path() {
            g_menu_read_save_path_seen.load(std::memory_order_acquire);
 }
 
-// Post-load Fade(0,0) hangs at fadeStatus>=1; force-complete then optional Fade(2,0) kick.
-static bool should_skip_post_load_fade_zero() {
-    if (!is_post_load_fade_recovery_active()) return false;
+// Post-load fade tail: gameState 0 or 8 after ms_bLoading cleared (log 112907 gs8 Fade→2 hang).
+static bool is_load_fade_tail_active() {
+    if (read_ms_b_loading() || is_generic_load_in_progress()) return false;
+    if (!is_menu_save_load_path()) return false;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state)) return false;
+    if (game_state != 0 && game_state != kGameStateLoadingStarted) return false;
+    return g_ms_b_loading_cleared_ms.load(std::memory_order_acquire) > 0;
+}
+
+static bool is_post_load_fade_recovery_active() {
+    if (!is_load_fade_tail_active()) return false;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state) || game_state != 0) return false;
+    return true;
+}
+
+// gameState 8: any Fade(0,0) corrupts fade (112907). gameState 0: skip when fadeStatus>=1.
+static bool should_skip_load_tail_fade_zero() {
+    if (!is_load_fade_tail_active()) return false;
+    uint8_t game_state = 0;
+    if (!read_game_state(&game_state)) return false;
+    if (game_state == kGameStateLoadingStarted) return true;
     return read_screen_fade_status() >= 1;
 }
 
+static bool should_skip_post_load_fade_zero() {
+    return should_skip_load_tail_fade_zero();
+}
+
 static bool should_replace_post_load_deferred_fade_zero() {
-    if (!is_post_load_fade_recovery_active()) return false;
+    if (!is_load_fade_tail_active()) return false;
     if (g_deferred_fade_in_kick.load(std::memory_order_acquire)) return false;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
+        return true;
+    }
     return read_screen_fade_status() >= 1;
 }
 
 static bool should_short_circuit_post_load_deferred_fade_zero() {
-    if (!is_post_load_fade_recovery_active()) return false;
+    if (!is_load_fade_tail_active()) return false;
+    uint8_t game_state = 0;
+    if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
+        return true;
+    }
     return g_deferred_fade_in_kick.load(std::memory_order_acquire) &&
            read_screen_fade_status() >= 1;
 }
@@ -356,6 +379,7 @@ static bool force_complete_post_load_fade(void* camera, const char* via, bool ag
 }
 
 static void try_nudge_game_state_loading_started_impl(const char* via, bool immediate) {
+    if (is_continue_load_path()) return;
     if (g_game_state_nudge_attempted.load(std::memory_order_acquire)) return;
     if (!is_menu_save_load_path()) return;
     uint8_t game_state = 0;
@@ -380,7 +404,8 @@ static void try_nudge_game_state_loading_started(const char* via) {
     try_nudge_game_state_loading_started_impl(via, false);
 }
 
-static void try_nudge_game_state_gameplay_idle(const char* via) {
+static void try_nudge_game_state_gameplay_idle_impl(const char* via, bool immediate) {
+    if (is_continue_load_path()) return;
     if (g_game_state_9_nudge_attempted.load(std::memory_order_acquire)) return;
     if (!is_menu_save_load_path()) return;
     uint8_t game_state = 0;
@@ -389,7 +414,7 @@ static void try_nudge_game_state_gameplay_idle(const char* via) {
     const int64_t since_8 =
         g_game_state_8_since_ms.load(std::memory_order_acquire);
     if (since_8 <= 0) return;
-    if (now_ms() - since_8 < kGameState8To9StallMs) return;
+    if (!immediate && now_ms() - since_8 < kGameState8To9StallMs) return;
     if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return;
     g_game_state_9_nudge_attempted.store(true, std::memory_order_release);
     *g_cgame_logic_game_state = kGameStateIdle;
@@ -397,6 +422,10 @@ static void try_nudge_game_state_gameplay_idle(const char* via) {
          via,
          static_cast<int>(read_screen_fade_status()),
          read_streaming_num_requested());
+}
+
+static void try_nudge_game_state_gameplay_idle(const char* via) {
+    try_nudge_game_state_gameplay_idle_impl(via, false);
 }
 
 static void kick_post_load_fade_in_once(const char* via) {
@@ -432,8 +461,10 @@ static void kick_post_load_fade_in_once(const char* via) {
          via,
          read_streaming_num_requested(),
          g_save_load_kind.load(std::memory_order_acquire));
-    if (after <= 0) {
+    if (after <= 0 && !is_continue_load_path()) {
         try_nudge_game_state_loading_started_impl(via, true);
+        try_dismiss_deferred_loading_screen(via, false);
+    } else if (after <= 0) {
         try_dismiss_deferred_loading_screen(via, false);
     }
     poll_save_load_hydration_state();
@@ -860,6 +891,10 @@ void poll_save_load_hydration_state() {
             g_game_state_8_since_ms.load(std::memory_order_acquire);
         const int64_t now = now_ms();
         if (since_8 > 0) {
+            if (read_screen_fade_status() >= 1 && g_TheCamera &&
+                is_pointer_readable(g_TheCamera)) {
+                force_complete_post_load_fade(g_TheCamera, "pollGs8", true);
+            }
             if (read_screen_fade_status() <= 0) {
                 try_nudge_game_state_gameplay_idle("pollFadeStall");
             }
@@ -2946,16 +2981,23 @@ void proxy_ccamera_fade(void* self, float duration, int16_t direction) {
              static_cast<int>(read_screen_fade_status()));
         return;
     }
-    if (duration == 0.0f && direction == 0 && should_skip_post_load_fade_zero()) {
-        LOGW("💾 [SaveLoad] Skip Fade(0,0) — post-load fadeStatus=%d gameState=%u kind=%u",
+    if (duration == 0.0f && direction == 0 && should_skip_load_tail_fade_zero()) {
+        LOGW("💾 [SaveLoad] Skip Fade(0,0) — load-tail fadeStatus=%d gameState=%u kind=%u",
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u,
              g_save_load_kind.load(std::memory_order_acquire));
-        g_deferred_fade_in_kick.store(true, std::memory_order_release);
+        if (have_game_state && game_state == kGameStateLoadingStarted) {
+            if (read_screen_fade_status() >= 1) {
+                force_complete_post_load_fade(self, "Skip Fade gs8", true);
+            }
+            try_nudge_game_state_gameplay_idle_impl("Skip Fade gs8", true);
+        } else {
+            g_deferred_fade_in_kick.store(true, std::memory_order_release);
+        }
         return;
     }
-    if (duration == 0.0f && direction == 0 && is_post_load_fade_recovery_active()) {
-        LOGI("💾 [SaveLoad] Allow Fade(0,0) — post-load fadeStatus=%d gameState=%u",
+    if (duration == 0.0f && direction == 0 && is_load_fade_tail_active()) {
+        LOGI("💾 [SaveLoad] Allow Fade(0,0) — load-tail fadeStatus=%d gameState=%u",
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u);
     }
@@ -3050,6 +3092,10 @@ void proxy_cgame_logic_update() {
                  read_streaming_num_requested());
         }
     } else if (have_game_state && game_state == kGameStateLoadingStarted) {
+        if (read_screen_fade_status() >= 1 && g_TheCamera &&
+            is_pointer_readable(g_TheCamera)) {
+            force_complete_post_load_fade(g_TheCamera, "CGameLogic::Update gs8", true);
+        }
         if (read_screen_fade_status() <= 0) {
             try_nudge_game_state_gameplay_idle("CGameLogic::Update post");
         }
