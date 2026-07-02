@@ -114,6 +114,7 @@ static void maybe_log_load_transition_heartbeat(const char* via);
 static void try_kick_fade_in_after_black(const char* via);
 static void try_dismiss_deferred_loading_screen(const char* via, bool from_fade_complete = false);
 static void try_nudge_game_state_loading_started(const char* via);
+static void try_nudge_game_state_gameplay_idle_ex(const char* via, bool immediate);
 static void try_nudge_game_state_gameplay_idle(const char* via);
 static bool post_load_spawn_streaming_ready();
 static bool is_post_load_fade_recovery_active();
@@ -406,7 +407,7 @@ static void try_nudge_game_state_loading_started(const char* via) {
     try_nudge_game_state_loading_started_ex(via, false);
 }
 
-static void try_nudge_game_state_gameplay_idle(const char* via) {
+static void try_nudge_game_state_gameplay_idle_ex(const char* via, bool immediate) {
     if (g_game_state_9_nudge_attempted.load(std::memory_order_acquire)) return;
     if (!is_menu_save_load_path()) return;
     if (!g_post_load_fade_recovered.load(std::memory_order_acquire)) return;
@@ -418,21 +419,28 @@ static void try_nudge_game_state_gameplay_idle(const char* via) {
         }
         if (read_screen_fade_status() > 0) return;
     }
-    const int64_t since_8 =
-        g_game_state_8_since_ms.load(std::memory_order_acquire);
-    if (since_8 <= 0 || now_ms() - since_8 < kGameState8To9StallMs) return;
-    const int streaming = read_streaming_num_requested();
-    if (streaming > kGameState9StreamingMax &&
-        now_ms() - since_8 < kGameState8To9StreamingFallbackMs) {
-        return;
+    if (!immediate) {
+        const int64_t since_8 =
+            g_game_state_8_since_ms.load(std::memory_order_acquire);
+        if (since_8 <= 0 || now_ms() - since_8 < kGameState8To9StallMs) return;
+        const int streaming = read_streaming_num_requested();
+        if (streaming > kGameState9StreamingMax &&
+            now_ms() - since_8 < kGameState8To9StreamingFallbackMs) {
+            return;
+        }
     }
     if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return;
     g_game_state_9_nudge_attempted.store(true, std::memory_order_release);
     *g_cgame_logic_game_state = kGameStateIdle;
-    LOGW("💾 [SaveLoad] gameState stall nudge 8→9 via %s — fadeStatus=%d streaming=%d",
+    LOGW("💾 [SaveLoad] gameState %s nudge 8→9 via %s — fadeStatus=%d streaming=%d",
+         immediate ? "immediate" : "stall",
          via,
          static_cast<int>(read_screen_fade_status()),
          read_streaming_num_requested());
+}
+
+static void try_nudge_game_state_gameplay_idle(const char* via) {
+    try_nudge_game_state_gameplay_idle_ex(via, false);
 }
 
 static bool post_load_spawn_streaming_ready() {
@@ -463,10 +471,9 @@ static void advance_post_load_after_recovery(const char* via) {
     }
     try_dismiss_deferred_loading_screen(via, false);
     try_nudge_game_state_loading_started_ex(via, true);
+    try_nudge_game_state_gameplay_idle_ex(via, true);
     uint8_t game_state = 0;
-    if (read_game_state(&game_state) && game_state == kGameStateLoadingStarted) {
-        try_nudge_game_state_gameplay_idle(via);
-    }
+    read_game_state(&game_state);
     LOGI("💾 [SaveLoad] Post-recovery advance done — gameState=%u fadeStatus=%d via %s",
          game_state,
          static_cast<int>(read_screen_fade_status()),
