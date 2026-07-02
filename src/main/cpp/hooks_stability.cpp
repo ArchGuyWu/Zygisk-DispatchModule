@@ -164,12 +164,14 @@ static std::atomic<bool> g_post_load_fade_recovered{false};
 static std::atomic<int64_t> g_post_load_fade_recovered_ms{0};
 static std::atomic<bool> g_post_load_fade_zero_completed{false};
 static std::atomic<bool> g_gs9_overlay_settled{false};
+static std::atomic<int64_t> g_gs9_entered_ms{0};
 static std::atomic<int64_t> g_last_gs9_overlay_ms{0};
 static std::atomic<int> g_gs9_overlay_attempts{0};
 
 static constexpr int kMaxFadeInKickAttempts = 1;
-static constexpr int kGs9OverlayMaxAttempts = 4;
-static constexpr int64_t kGs9OverlayRetryMs = 400;
+static constexpr int kGs9OverlayMaxAttempts = 8;
+static constexpr int64_t kGs9OverlayRetryMs = 200;
+static constexpr int64_t kGs9CGameLogicSettleMs = 80;
 static constexpr int64_t kFadeInKickIntervalMs = 500;
 static constexpr int64_t kFadeInKickPollMs = 500;
 static constexpr int kGameState9StreamingMax = 40;
@@ -205,6 +207,7 @@ void notify_menu_read_save_path(const char* via) {
     g_post_load_fade_recovered_ms.store(0, std::memory_order_release);
     g_post_load_fade_zero_completed.store(false, std::memory_order_release);
     g_gs9_overlay_settled.store(false, std::memory_order_release);
+    g_gs9_entered_ms.store(0, std::memory_order_release);
     g_last_gs9_overlay_ms.store(0, std::memory_order_release);
     g_gs9_overlay_attempts.store(0, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
@@ -441,6 +444,10 @@ static void try_nudge_game_state_gameplay_idle_ex(const char* via, bool immediat
     if (!g_cgame_logic_game_state || !is_pointer_readable(g_cgame_logic_game_state)) return;
     g_game_state_9_nudge_attempted.store(true, std::memory_order_release);
     *g_cgame_logic_game_state = kGameStateIdle;
+    g_gs9_entered_ms.store(now_ms(), std::memory_order_release);
+    g_gs9_overlay_settled.store(false, std::memory_order_release);
+    g_gs9_overlay_attempts.store(0, std::memory_order_release);
+    g_last_gs9_overlay_ms.store(0, std::memory_order_release);
     LOGW("💾 [SaveLoad] gameState %s nudge 8→9 via %s — fadeStatus=%d streaming=%d",
          immediate ? "immediate" : "stall",
          via,
@@ -494,13 +501,18 @@ static void try_settle_gs9_overlay(const char* via) {
         force_complete_post_load_fade(g_TheCamera, via, true);
     }
     const int16_t after = read_screen_fade_status();
-    if (after <= 0 || attempt >= kGs9OverlayMaxAttempts) {
+    const int64_t gs9_entered = g_gs9_entered_ms.load(std::memory_order_acquire);
+    const int64_t since_gs9 = gs9_entered > 0 ? now - gs9_entered : 0;
+    const bool past_cgame_tick = since_gs9 >= kGs9CGameLogicSettleMs;
+    if ((after <= 0 && past_cgame_tick) || attempt >= kGs9OverlayMaxAttempts) {
         g_gs9_overlay_settled.store(true, std::memory_order_release);
         vanilla_qol_schedule_touch_rehydrate("gs9 overlay settled");
-        LOGI("💾 [SaveLoad] gs9 overlay settled — fadeStatus %d→%d attempt=%d via %s",
+        LOGI("💾 [SaveLoad] gs9 overlay settled — fadeStatus %d→%d attempt=%d "
+             "sinceGs9=%lldms via %s",
              static_cast<int>(before),
              static_cast<int>(after),
              attempt,
+             static_cast<long long>(since_gs9),
              via ? via : "?");
     }
 }
@@ -533,6 +545,8 @@ static void advance_post_load_after_recovery(const char* via) {
     }
     try_nudge_game_state_loading_started_ex(via, true);
     try_nudge_game_state_gameplay_idle_ex(via, true);
+    // Short-circuit DeferredFade at gs0 may have set this — must orig-dismiss at gs9 (log 141931).
+    g_loading_hud_dismissed.store(false, std::memory_order_release);
     try_dismiss_deferred_loading_screen(via, false);
     try_settle_gs9_overlay(via);
     uint8_t game_state = 0;
@@ -714,6 +728,7 @@ void notify_ue_menu_load_committed(const char* via, int slot) {
     g_post_load_fade_recovered_ms.store(0, std::memory_order_release);
     g_post_load_fade_zero_completed.store(false, std::memory_order_release);
     g_gs9_overlay_settled.store(false, std::memory_order_release);
+    g_gs9_entered_ms.store(0, std::memory_order_release);
     g_last_gs9_overlay_ms.store(0, std::memory_order_release);
     g_gs9_overlay_attempts.store(0, std::memory_order_release);
     g_explicit_new_game_bootstrap.store(false, std::memory_order_release);
@@ -3187,15 +3202,11 @@ void proxy_running_deferred_loading_screen_fade(void* self,
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u);
         g_deferred_fade_in_kick.store(true, std::memory_order_release);
-        g_loading_hud_dismissed.store(true, std::memory_order_release);
         return;
     }
     if (duration == 0.0f && direction == 0 && !flag &&
         (g_post_load_fade_recovered.load(std::memory_order_acquire) ||
          should_short_circuit_post_load_deferred_fade_zero())) {
-        if (!g_loading_hud_dismissed.load(std::memory_order_acquire)) {
-            g_loading_hud_dismissed.store(true, std::memory_order_release);
-        }
         LOGI("💾 [SaveLoad] Short-circuit DeferredFade(0,0,0) — safe fadeStatus=%d gameState=%u",
              static_cast<int>(read_screen_fade_status()),
              have_game_state ? game_state : 255u);
@@ -3234,6 +3245,12 @@ void proxy_cgame_logic_update() {
     run_deferred_fade_in_kick_if_needed("CGameLogic::Update post");
     if (have_game_state && game_state == kGameStateIdle &&
         g_save_load_session.load(std::memory_order_acquire)) {
+        if (read_screen_fade_status() > 0) {
+            g_gs9_overlay_settled.store(false, std::memory_order_release);
+        }
+        if (!g_loading_hud_dismissed.load(std::memory_order_acquire)) {
+            try_dismiss_deferred_loading_screen("CGameLogic::Update post", false);
+        }
         try_settle_gs9_overlay("CGameLogic::Update post");
     }
     if (have_game_state && game_state == 0 && !read_ms_b_loading()) {
