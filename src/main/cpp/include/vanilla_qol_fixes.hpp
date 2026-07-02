@@ -9,4 +9,5 @@ void vanilla_qol_on_save_load_session_ended();
 void vanilla_qol_on_skip_pipeline_cleared();
 void vanilla_qol_on_deserialize_complete();
 void vanilla_qol_schedule_touch_rehydrate(const char* reason);
+void vanilla_qol_on_gameplay_idle_entered();
 bool vanilla_qol_touch_rehydrate_pending();

@@ -75,9 +75,9 @@ static bool touch_rehydrate_world_ready() {
     if (is_scene_transition_active()) return false;
     if (is_skip_cutscene_pipeline_active()) return false;
     if (is_disk_deserialize_active() || is_generic_load_in_progress()) return false;
-    // gameState 0/8 overlay: player exists but world_query_ready may still be false.
-    if (is_player_world_active()) return true;
-    return is_player_ped_present();
+    // Prefer ped present over world_query_ready — streaming queue may still be draining.
+    if (is_player_ped_present()) return true;
+    return is_player_world_active();
 }
 
 static void clear_widget_hide_flags(int widget_id) {
@@ -277,6 +277,14 @@ void vanilla_qol_on_deserialize_complete() {
 
 void vanilla_qol_schedule_touch_rehydrate(const char* reason) {
     schedule_touch_rehydrate(reason);
+}
+
+void vanilla_qol_on_gameplay_idle_entered() {
+    g_touch_rehydrate_pending.store(true, std::memory_order_release);
+    g_touch_rehydrate_attempts.store(0, std::memory_order_release);
+    g_touch_rehydrate_not_before_ms.store(now_ms(), std::memory_order_release);
+    LOGI("🛠️ [VanillaQoL] Touch rehydrate on gameplay idle — gameState=9");
+    try_rehydrate_touch_controls();
 }
 
 void install_vanilla_qol_fixes(void* lib_handle) {
