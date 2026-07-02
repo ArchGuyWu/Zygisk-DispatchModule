@@ -280,11 +280,7 @@ void vanilla_qol_schedule_touch_rehydrate(const char* reason) {
 }
 
 void vanilla_qol_on_gameplay_idle_entered() {
-    g_touch_rehydrate_pending.store(true, std::memory_order_release);
-    g_touch_rehydrate_attempts.store(0, std::memory_order_release);
-    g_touch_rehydrate_not_before_ms.store(now_ms(), std::memory_order_release);
-    LOGI("🛠️ [VanillaQoL] Touch rehydrate on gameplay idle — gameState=9");
-    try_rehydrate_touch_controls();
+    schedule_touch_rehydrate("gameplay idle — gameState=9");
 }
 
 void install_vanilla_qol_fixes(void* lib_handle) {
