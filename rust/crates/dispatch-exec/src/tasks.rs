@@ -41,9 +41,24 @@ fn read_ptr(base: *const std::ffi::c_void, offset: usize) -> *const std::ffi::c_
     }
 }
 
+/// Reject pointer patterns that are clearly not valid heap/stack addresses.
+/// On ARM64 Android (39/48-bit VA), valid user-space addresses, after masking
+/// the top byte (MTE/PAC tag), have bits 48-55 as 0x00.  Sentinels like
+/// `0x00FFFFFFFFFFFFFE` (uninitialised task slot during loading) pass `is_null()`
+/// but are not valid addresses — dereferencing them faults.
+#[inline]
+fn is_plausible_ptr(ptr: *const std::ffi::c_void) -> bool {
+    const MAX_USER_ADDR: usize = (1u64 << 52) as usize;
+    let addr = ptr as usize;
+    (addr & 0x00FF_FFFF_FFFF_FFFF) < MAX_USER_ADDR && addr >= 0x1000
+}
+
 /// Fail-closed: null task, null vtable, or null fn at `vt_off` → not usable.
 #[inline]
 fn task_vtable_fn_ok(task: *const std::ffi::c_void, vt_off: usize) -> bool {
+    if !is_plausible_ptr(task) {
+        return false;
+    }
     if task.is_null() {
         return false;
     }
@@ -277,16 +292,18 @@ pub fn intelligence_has_unwalkable_task(intel: *const std::ffi::c_void) -> bool 
         return true;
     }
     let mgr = unsafe { (intel as *const u8).add(TASK_MANAGER_OFFSET) };
-    // CTaskManager is at intel+8; slots 0..10 = intel+0x8 .. +0x58.
-    // ProcessStaticCounter scans the first non-null among +0x8..+0x28 then vtable+0x18.
-    for i in 0..11 {
+    // CTaskManager is at intel+8.  Scan an extended range (32 slots × 8 bytes =
+    // 256 bytes) to catch task pointers stored beyond the primary task array
+    // (active-task list, sub-task references, etc.).
+    for i in 0..32 {
         let task = read_ptr(mgr as *const _, i * 8);
         if task_slot_unwalkable(task) {
             return true;
         }
     }
-    // Secondary intelligence task pointers (legacy offsets; overlap slots 3–4).
-    for off in [0x20usize, 0x28] {
+    // Also scan the intel tail area for any late-stored task pointers that
+    // ProcessBuoyancy or ControlSubTask may walk (fault 0x18 / 0x38).
+    for off in (0x100usize..0x180).step_by(8) {
         let task = read_ptr(intel, off);
         if task_slot_unwalkable(task) {
             return true;
@@ -296,12 +313,12 @@ pub fn intelligence_has_unwalkable_task(intel: *const std::ffi::c_void) -> bool 
 }
 
 /// CTaskManager slots only — used by the `ManageTasks` gate (this = CTaskManager*).
-/// Scans slots 0..10; secondary intel pointers overlap slots 3–4 so they're covered.
+/// Scans 32 slots (same extended range as intelligence_has_unwalkable_task).
 pub fn task_manager_has_unwalkable_task(mgr: *const std::ffi::c_void) -> bool {
     if mgr.is_null() {
         return true;
     }
-    for i in 0..11 {
+    for i in 0..32 {
         let task = read_ptr(mgr, i * 8);
         if task_slot_unwalkable(task) {
             return true;
