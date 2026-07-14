@@ -1,0 +1,17 @@
+[package]
+name = "dispatch-zygisk"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = { workspace = true }
+dispatch-hook = { path = "../dispatch-hook" }
+dispatch-engine = { path = "../dispatch-engine" }
+tracing = { workspace = true, features = ["max_level_warn", "release_max_level_off"] }
+tracing-subscriber = { workspace = true }
+
+[build-dependencies]
+cc = "1"

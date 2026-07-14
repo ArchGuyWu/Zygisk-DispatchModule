@@ -29,6 +29,10 @@
     主动拦截官方原版不稳定的异步 C++ 行为（如伴随/打招呼任务 `CTaskComplexPartner::GetPartnerSequence` 与寻路任务 `CTaskComplexGoToPointAnyMeans::CreateSubTask`）。集成深层指针对齐与零值安全检测器，在官方引擎即将崩溃前，动态清除已被虚空释放/填零的不安全任务与实体引用，使引擎能安全走向 native 空值回退逻辑，彻底根治原版的内存解引用闪退问题。
 *   **轻量 ECS 调度层**：
     使用 header-only ECS 管理警员/载具组件与每帧系统，与原生引擎指针对接；存在正常的 map 查找与锁开销，并非「零成本」抽象。
+*   **911 / 对讲机真实调度**：
+    市民走 911 占线排队链路（`[911Busy]` / `[911Connect]` / `[911Transfer]` / `[911Revoke]`）；警员/救护/消防走电台；玩家纵火/伤人不会自报 EMS/火警。详见 [`docs/911_DISPATCH.md`](docs/911_DISPATCH.md)。
+*   **感知 v2（AV vs 确认威胁）**：
+    听/看分离反应延迟；仅 `CONFIRMED` 或活跃威胁立即追击，普通目击先调查再 mobilize。
 
 ---
 
@@ -153,6 +157,7 @@ mod-workspace/
 │   ├── ecs_engine.hpp           # 轻量 ECS 及事件总线
 │   └── module.cpp               # 主逻辑（Hook + 派发 + ECS 装配）
 ├── docs/
+│   ├── 911_DISPATCH.md          # 911/对讲机调度架构与测试清单
 │   ├── CRASH_STATUS.md
 │   └── MODULE_LAYOUT.md
 ├── third_party/

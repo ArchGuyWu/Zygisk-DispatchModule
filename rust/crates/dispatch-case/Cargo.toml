@@ -1,0 +1,9 @@
+[package]
+name = "dispatch-case"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dispatch-core = { path = "../dispatch-core" }
+slotmap = { workspace = true }
+tracing = { workspace = true, features = ["max_level_warn", "release_max_level_off"] }

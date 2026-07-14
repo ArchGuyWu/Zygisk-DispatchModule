@@ -1,0 +1,11 @@
+[package]
+name = "dispatch-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dispatch-case = { path = "../dispatch-case" }
+dispatch-core = { path = "../dispatch-core" }
+dispatch-native = { path = "../dispatch-native" }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["max_level_warn", "release_max_level_off"] }

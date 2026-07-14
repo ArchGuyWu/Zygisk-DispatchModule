@@ -17,10 +17,15 @@ pub fn set_orig_control_sub_task(f: OrigControlSubTask) {
 }
 
 /// Gate only: dangerous ped task graph → skip orig. No memory writes.
+/// During loading (zone inactive), forward directly — task memory may be uninitialised.
 pub unsafe extern "C" fn detour_control_sub_task(
     self_: *mut std::ffi::c_void,
     ped: *mut std::ffi::c_void,
 ) {
+    if !crate::gate::zone_active_cached() {
+        if let Some(orig) = ORIG_CONTROL_SUB_TASK { orig(self_, ped); }
+        return;
+    }
     if ped.is_null() {
         return;
     }

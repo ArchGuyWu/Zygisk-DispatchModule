@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dispatch-native",
+    "crates/dispatch-core",
+    "crates/dispatch-engine",
+    "crates/dispatch-case",
+    "crates/dispatch-exec",
+    "crates/dispatch-hook",
+    "crates/dispatch-zygisk",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+anyhow = "1"
+slotmap = "1"
+thiserror = "1"
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"

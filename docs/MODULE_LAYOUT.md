@@ -31,6 +31,9 @@ mod-workspace/
 │   ├── dispatch_tick_main.cpp      # tick 编排、刷车、全局 GC (~320 行)
 │   ├── dispatch_tick_civilian.cpp  # 应急车平民避让场 (~210 行)
 │   ├── dispatch_tick_states.cpp    # 案件状态机 IDLE/TIMING/ON_SCENE (~490 行)
+│   ├── dispatch_awareness.cpp     # 911/对讲机/拖车电台、目击校验 (~1500 行)
+│   ├── dispatch_player_offense.cpp # 玩家纵火/伤人时间戳 (~70 行)
+│   ├── dispatch_emergency_staging.cpp # EMS 待命区封路 (~170 行)
 │   ├── dispatch_emergency.cpp   # 急救/消防脱困导航 (~500 行)
 │   ├── dispatch_spawn_hooks.cpp # 通缉刷车拦截、应急车距离修正 (~250 行)
 │   ├── hooks_stability.cpp      # 稳定性防御 Hook (~810 行)
@@ -39,6 +42,7 @@ mod-workspace/
 ├── third_party/
 │   └── shadowhook-src/          # ShadowHook 源码（构建时下载）
 ├── docs/
+│   ├── 911_DISPATCH.md          # 911/对讲机架构与测试场景
 │   ├── CRASH_STATUS.md          # 崩溃样本与修复状态
 │   └── MODULE_LAYOUT.md         # 本文件
 ├── build_in_container.sh        # Termux/proot 隔离构建（推荐）

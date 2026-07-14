@@ -1,0 +1,12 @@
+[package]
+name = "dispatch-exec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+dispatch-case = { path = "../dispatch-case" }
+dispatch-core = { path = "../dispatch-core" }
+dispatch-engine = { path = "../dispatch-engine" }
+slotmap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["max_level_warn", "release_max_level_off"] }
