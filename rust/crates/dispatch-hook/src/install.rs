@@ -27,6 +27,9 @@ use crate::static_counter_gate::{
 use crate::control_sub_task_gate::{
     detour_control_sub_task, set_orig_control_sub_task,
 };
+use crate::manage_tasks_gate::{
+    detour_manage_tasks, set_orig_manage_tasks,
+};
 use crate::wanted_population::{
     detour_report_crime, detour_report_crime_now, detour_set_wanted_level,
     detour_set_wanted_level_no_drop, set_orig_report_crime, set_orig_report_crime_now,
@@ -83,6 +86,7 @@ pub fn install_lifecycle_hooks() -> Result<()> {
     hook_bit(12, hook_scan_for_events_gate(&lib));
     hook_bit(13, hook_process_static_counter_gate(&lib));
     hook_bit(14, hook_control_sub_task_gate(&lib));
+    hook_bit(15, hook_manage_tasks_gate(&lib));
     std::mem::forget(lib);
     info!(hooks = installed, failed, "rust dispatch hooks installed");
     let logic = if crate::config::MOD_LOGIC_ENABLED {
@@ -337,6 +341,21 @@ fn hook_control_sub_task_gate(lib: &Library) -> Result<usize> {
         "ControlSubTaskGate",
     )?;
     set_orig_control_sub_task(unsafe { std::mem::transmute(orig) });
+    Ok(1)
+}
+
+/// Fail-closed gate: unwalkable CTaskManager slot → skip ManageTasks (fault 0x18/0x20/0x28/…).
+/// One hook covers all per-frame vtable-offset variants.
+fn hook_manage_tasks_gate(lib: &Library) -> Result<usize> {
+    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
+    install_hook(
+        lib,
+        "_ZN12CTaskManager11ManageTasksEv",
+        detour_manage_tasks as *const () as usize,
+        &mut orig,
+        "ManageTasksGate",
+    )?;
+    set_orig_manage_tasks(unsafe { std::mem::transmute(orig) });
     Ok(1)
 }
 

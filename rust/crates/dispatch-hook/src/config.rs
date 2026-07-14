@@ -12,6 +12,7 @@ pub const MOD_LOGIC_ENABLED: bool = true;
 /// bit12 ScanForEvents fail-closed gate,
 /// bit13 ProcessStaticCounter fail-closed gate.
 /// bit14 ControlSubTask fail-closed gate.
+/// bit15 ManageTasks fail-closed gate (one hook covers all vtable-offset variants).
 /// Gates never sanitize / write task slots — dangerous graphs are not entered.
 /// `0xffff` = all.
 pub const HOOK_INSTALL_MASK: u16 = 0xffff;
