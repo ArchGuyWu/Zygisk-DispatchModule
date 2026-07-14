@@ -277,18 +277,16 @@ pub fn intelligence_has_unwalkable_task(intel: *const std::ffi::c_void) -> bool 
         return true;
     }
     let mgr = unsafe { (intel as *const u8).add(TASK_MANAGER_OFFSET) };
-    // CTaskManager is at intel+8.  Scan an extended range (32 slots × 8 bytes =
-    // 256 bytes) to catch task pointers stored beyond the primary task array
-    // (active-task list, sub-task references, etc.).
-    for i in 0..32 {
+    // CTaskManager is at intel+8; slots 0..10 = intel+0x8 .. +0x58.
+    // ProcessStaticCounter scans the first non-null among +0x8..+0x28 then vtable+0x18.
+    for i in 0..11 {
         let task = read_ptr(mgr as *const _, i * 8);
         if task_slot_unwalkable(task) {
             return true;
         }
     }
-    // Also scan the intel tail area for any late-stored task pointers that
-    // ProcessBuoyancy or ControlSubTask may walk (fault 0x18 / 0x38).
-    for off in (0x100usize..0x180).step_by(8) {
+    // Secondary intelligence task pointers (legacy offsets; overlap slots 3–4).
+    for off in [0x20usize, 0x28] {
         let task = read_ptr(intel, off);
         if task_slot_unwalkable(task) {
             return true;
@@ -298,12 +296,12 @@ pub fn intelligence_has_unwalkable_task(intel: *const std::ffi::c_void) -> bool 
 }
 
 /// CTaskManager slots only — used by the `ManageTasks` gate (this = CTaskManager*).
-/// Scans 32 slots (same extended range as intelligence_has_unwalkable_task).
+/// Scans slots 0..10; secondary intel pointers overlap slots 3–4 so they're covered.
 pub fn task_manager_has_unwalkable_task(mgr: *const std::ffi::c_void) -> bool {
     if mgr.is_null() {
         return true;
     }
-    for i in 0..32 {
+    for i in 0..11 {
         let task = read_ptr(mgr, i * 8);
         if task_slot_unwalkable(task) {
             return true;
