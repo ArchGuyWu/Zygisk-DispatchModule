@@ -20,12 +20,7 @@ pub fn set_orig_manage_tasks(f: OrigManageTasks) {
 }
 
 /// Gate only: unwalkable task manager slot → skip orig. No memory writes.
-/// During loading (zone inactive), forward directly — task memory may be uninitialised.
 pub unsafe extern "C" fn detour_manage_tasks(self_: *mut std::ffi::c_void) {
-    if !crate::gate::zone_active_cached() {
-        if let Some(orig) = ORIG_MANAGE_TASKS { orig(self_); }
-        return;
-    }
     if task_manager_has_unwalkable_task(self_ as *const _) {
         return;
     }
