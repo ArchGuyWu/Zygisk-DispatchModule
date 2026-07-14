@@ -1,8 +1,6 @@
 //! Emergency vehicle spawn (ported from `dispatch_tick_main.cpp::dispatch_spawn_emergency_vehicle`).
 
 use std::f32::consts::PI;
-use std::sync::Mutex;
-use std::time::Instant;
 
 use dispatch_core::{VehicleId, WorldPos};
 use dispatch_engine::{entity_model_index, CVector};
@@ -13,11 +11,11 @@ use crate::models::{is_police_dispatch_model, MODEL_AMBULANCE, MODEL_FIRETRUCK};
 use crate::spawn_gate::set_custom_spawn_active;
 
 const SPAWN_RING_DIST_M: f32 = 85.0;
-/// Minimum interval between two script car spawns (ms).  Creating vehicles too
-/// rapidly exhausts CCarCtrl internal generator state and triggers a null write
-/// at offset 0x919 inside GenerateEmergencyServicesCar.
-const SPAWN_COOLDOWN_MS: u64 = 1200;
-static LAST_SPAWN: Mutex<Option<Instant>> = Mutex::new(None);
+/// Maximum distance from player for emergency vehicle spawn.  Beyond this range
+/// the engine's navmesh / CCarCtrl state isn't loaded, causing a null write at
+/// offset 0x919 inside `GenerateEmergencyServicesCar`.
+const STREAMING_MAX_DIST_M: f32 = 75.0;
+const STREAMING_TARGET_DIST_M: f32 = 60.0;
 
 pub fn resolve_road_spawn_pos(anchor: WorldPos, unit_index: usize) -> WorldPos {
     let angle = (unit_index as f32) * PI / 2.0;
@@ -28,32 +26,39 @@ pub fn resolve_road_spawn_pos(anchor: WorldPos, unit_index: usize) -> WorldPos {
     }
 }
 
+/// Clamp a spawn position to within streaming range of the player so that
+/// CCarCtrl navmesh/generator state is loaded.  Spawning beyond this range
+/// hits a null write at offset 0x919 in GenerateEmergencyServicesCar.
+pub fn clamp_spawn_to_streaming_range(player_pos: WorldPos, proposed: WorldPos) -> WorldPos {
+    let dx = proposed.x - player_pos.x;
+    let dy = proposed.y - player_pos.y;
+    let dist_xy = (dx * dx + dy * dy).sqrt();
+    if dist_xy <= STREAMING_MAX_DIST_M {
+        return proposed;
+    }
+    let scale = STREAMING_TARGET_DIST_M / dist_xy;
+    WorldPos {
+        x: player_pos.x + dx * scale,
+        y: player_pos.y + dy * scale,
+        z: proposed.z,
+    }
+}
+
 pub fn dispatch_spawn_emergency_vehicle(
     env: &mut ExecEnv<'_>,
     model: u32,
     pos: WorldPos,
-    _incident_anchor: WorldPos,
+    incident_anchor: WorldPos,
 ) -> Option<VehicleId> {
-    // Throttle script car creation to avoid exhausting internal CCarCtrl generator
-    // state (null deref at offset 0x919 in GenerateEmergencyServicesCar).
-    {
-        let mut last = LAST_SPAWN.lock().unwrap();
-        if let Some(t) = *last {
-            if t.elapsed().as_millis() < SPAWN_COOLDOWN_MS as u128 {
-                tracing::debug!(model, "vehicle spawn throttled (cooldown)");
-                return None;
-            }
-        }
-        *last = Some(Instant::now());
-    }
-
-    // Reject invalid positions that would confuse the engine pathfinder.
-    if pos.x.is_nan() || pos.y.is_nan() || pos.z.is_nan()
-        || pos.x.abs() > 100_000.0 || pos.y.abs() > 100_000.0
-    {
-        tracing::warn!(model, x = pos.x, y = pos.y, "vehicle spawn: invalid position");
-        return None;
-    }
+    // Clamp ambulance/firetruck spawns to streaming range to prevent the engine's
+    // GenerateEmergencyServicesCar from writing to a null CCarCtrl member at
+    // offset 0x919 when navmesh data isn't loaded at the target position.
+    let pos = if model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK {
+        let player_pos = env.symbols.entity_world_pos(env.symbols.player_ped(0));
+        clamp_spawn_to_streaming_range(player_pos, pos)
+    } else {
+        pos
+    };
 
     let cvec = CVector {
         x: pos.x,
