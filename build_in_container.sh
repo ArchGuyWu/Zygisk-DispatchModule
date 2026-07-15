@@ -1,4 +1,7 @@
 #!/bin/bash
+# LEGACY / NOT SHIP PATH: builds C++ libpolicemod.so.
+# Baseline ship path is Rust: bash rust/build_rust.sh && bash pack_module.sh
+# See docs/BASELINE.md
 # =============================================================
 # build_in_container.sh
 # 在 proot-distro Ubuntu 容器内运行

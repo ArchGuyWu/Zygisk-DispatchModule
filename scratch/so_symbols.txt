@@ -1,0 +1,95 @@
+# Ship .so NEEDED + key symbols
+path: build/rust/arm64-v8a/arm64-v8a.so
+-rwxr-xr-x. 1 u0_a294 u0_a294 753368 Jul 15 14:59 build/rust/arm64-v8a/arm64-v8a.so
+
+## Dynamic NEEDED
+  0x0000000000000001 (NEEDED)       Shared library: [liblog.so]
+  0x0000000000000001 (NEEDED)       Shared library: [libdl.so]
+  0x0000000000000001 (NEEDED)       Shared library: [libm.so]
+  0x0000000000000001 (NEEDED)       Shared library: [libc.so]
+
+## Dynamic symbols (UND + exports sample)
+                 U __android_log_print
+                 U __android_log_write
+                 U __cxa_atexit@LIBC
+                 U __cxa_finalize@LIBC
+                 U __errno@LIBC
+                 U __register_atfork@LIBC
+                 U __sF@LIBC
+                 U __system_property_get@LIBC
+                 U abort@LIBC
+                 U android_set_abort_message@LIBC
+                 U calloc@LIBC
+                 U clock_gettime@LIBC
+                 U clock_nanosleep@LIBC
+                 U close@LIBC
+                 U closelog@LIBC
+000000000005ff20 T dispatch_bootstrap_rust
+                 U dl_iterate_phdr@LIBC
+                 U dlclose@LIBC
+                 U dlopen@LIBC
+                 U dlsym@LIBC
+                 U fflush@LIBC
+                 U fprintf@LIBC
+                 U fputc@LIBC
+                 U free@LIBC
+                 U fstat@LIBC
+                 U ftruncate@LIBC
+                 U fwrite@LIBC
+                 U getauxval@LIBC
+                 U getcwd@LIBC
+                 U getenv@LIBC
+                 w getrandom@LIBC_P
+                 w gettid@LIBC
+                 U lseek64@LIBC
+                 U malloc@LIBC
+                 U memchr@LIBC
+                 U memcmp@LIBC
+                 U memcpy@LIBC
+                 U memfd_create
+                 U memmove@LIBC
+                 U memset@LIBC
+                 U mmap@LIBC
+                 U mprotect@LIBC
+                 U munmap@LIBC
+                 U open@LIBC
+                 U openlog@LIBC
+                 U poll@LIBC
+                 U posix_memalign@LIBC
+                 U pthread_cond_broadcast@LIBC
+                 U pthread_cond_wait@LIBC
+                 U pthread_create@LIBC
+                 U pthread_detach@LIBC
+                 U pthread_getspecific@LIBC
+                 U pthread_key_create@LIBC
+                 U pthread_key_delete@LIBC
+                 U pthread_mutex_lock@LIBC
+                 U pthread_mutex_unlock@LIBC
+                 U pthread_once@LIBC
+                 U pthread_rwlock_rdlock@LIBC
+                 U pthread_rwlock_unlock@LIBC
+                 U pthread_rwlock_wrlock@LIBC
+                 U pthread_setspecific@LIBC
+                 U read@LIBC
+                 U readlink@LIBC
+                 U realloc@LIBC
+                 U realpath@LIBC
+                 U sincosf@LIBC
+                 U snprintf@LIBC
+                 U stat@LIBC
+                 U strcmp@LIBC
+                 U strerror_r@LIBC
+                 U strlen@LIBC
+                 U strncmp@LIBC
+                 U strstr@LIBC
+                 U syscall@LIBC
+                 U sysconf@LIBC
+                 U syslog@LIBC
+                 U vasprintf@LIBC
+                 U vfprintf@LIBC
+                 U write@LIBC
+                 U writev@LIBC
+
+## Size
+   text	   data	    bss	    dec	    hex	filename
+ 717078	  31912	  12040	 761030	  b9cc6	build/rust/arm64-v8a/arm64-v8a.so

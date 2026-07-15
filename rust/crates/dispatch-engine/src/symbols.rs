@@ -2,7 +2,7 @@ use dispatch_core::WorldPos;
 
 use crate::entity::entity_pos;
 use crate::pool::{entity_pool_key, open_entity_pool};
-use crate::xdl::Library;
+use crate::library::Library;
 use thiserror::Error;
 
 pub const TARGET_LIB: &str = "libUE4.so";

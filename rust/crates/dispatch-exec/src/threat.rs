@@ -463,8 +463,18 @@ mod tests {
 
     #[test]
     fn firearm_case_escalates_with_density() {
+        // Empty criminals + is_firearm → max_threat = FirearmInactive.
+        // Density mid-band [5, 8) is Cat2; Cat3 needs score ≥ 22 or higher max_threat.
         let case = sample_case(true);
-        assert_eq!(classify_response_category(&case, 8), ResponseCategory::Three);
+        assert_eq!(classify_response_category(&case, 5), ResponseCategory::Two);
+
+        // Six FirearmInactive criminals → threat_score 24 ≥ THREAT_SCORE_CAT3_MIN (22).
+        let mut dense = sample_case(true);
+        dense.criminals = vec![dispatch_core::PedId::default(); 6];
+        assert_eq!(
+            classify_response_category(&dense, 1),
+            ResponseCategory::Three
+        );
     }
 
     #[test]
@@ -477,9 +487,12 @@ mod tests {
 
     #[test]
     fn reinforcement_triggers_on_ongoing_gunfire_not_cop_death() {
+        // Gate: non-empty criminals + police_script_active (department_needs.police).
         let mut case = sample_case(true);
-        case.mark_live_kind(CausalKind::WeaponDischarge);
         case.criminals = vec![dispatch_core::PedId::default()];
+        case.mark_live_kind(CausalKind::WeaponDischarge);
+        case.refresh_department_needs();
+        assert!(case.police_script_active());
         assert!(on_scene_needs_reinforcement(&case, 2));
         assert_eq!(case.cops_killed, 0);
     }

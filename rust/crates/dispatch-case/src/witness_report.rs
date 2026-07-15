@@ -683,7 +683,7 @@ mod tests {
         assert_eq!(coord.try_start_reports(&mut incidents, &cases, 2_000), 1);
         assert!(!cases.has_case_for_incident(incident_id));
 
-        coord.on_report_task_active(reporter, &incidents, &mut cases, |_| Vec::new(), 3_000);
+        coord.on_report_task_active(reporter, &incidents, &mut cases, |_, out| { out.clear(); }, 3_000);
         assert!(cases.has_case_for_incident(incident_id));
     }
 
@@ -720,7 +720,7 @@ mod tests {
             None,
         ));
         coord.try_start_reports(&mut incidents, &cases, 1_500);
-        coord.on_report_task_active(reporter, &incidents, &mut cases, |_| Vec::new(), 2_000);
+        coord.on_report_task_active(reporter, &incidents, &mut cases, |_, out| { out.clear(); }, 2_000);
         let case_id = coord
             .session_for_reporter(reporter)
             .expect("session")
@@ -855,7 +855,7 @@ mod tests {
             None,
         ));
         coord.try_start_reports(&mut incidents, &cases, 1_500);
-        coord.on_report_task_active(reporter, &incidents, &mut cases, |_| Vec::new(), 2_000);
+        coord.on_report_task_active(reporter, &incidents, &mut cases, |_, out| { out.clear(); }, 2_000);
 
         incidents.ingest(
             CausalSignal::Explosion {
@@ -880,7 +880,7 @@ mod tests {
             incident_id,
             &incidents,
             &mut cases,
-            |_| Vec::new(),
+            |_, out| { out.clear(); },
         );
 
         let case_id = coord

@@ -1,7 +1,7 @@
-//! Ped task assignment helpers (ported from `ped_engine_guards.cpp` offsets).
+//! Ped task assignment helpers (offsets for intel/task-manager layout).
 //!
-//! Lifecycle rule: never sanitize / write-null into engine task slots.
-//! Dangerous pointers are not taken and not passed to engine APIs (fail-closed).
+//! Assign / phone / clear helpers only. No task-manager slot scans and no
+//! engine-wide “skip ManageTasks” crash gates (baseline: docs/BASELINE.md).
 
 use dispatch_core::PedId;
 

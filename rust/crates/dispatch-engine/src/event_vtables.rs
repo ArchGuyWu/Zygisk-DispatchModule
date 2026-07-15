@@ -1,6 +1,6 @@
 use dispatch_case::{NativeEventKind, NATIVE_EVENT_KINDS};
 
-use crate::xdl::Library;
+use crate::library::Library;
 
 /// Address stored in `CEvent` vptr (Itanium: skip typeinfo + offset slots).
 pub fn event_vptr_identity(vtable_array: *const std::ffi::c_void) -> *const std::ffi::c_void {

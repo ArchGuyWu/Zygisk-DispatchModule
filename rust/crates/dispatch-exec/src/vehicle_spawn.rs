@@ -163,3 +163,44 @@ fn vehicle_has_driver(symbols: &ExecSymbols, vehicle: *mut std::ffi::c_void) -> 
     }
     false
 }
+
+#[cfg(test)]
+mod spawn_pos_tests {
+    use super::*;
+
+    /// Drive the real shipped `resolve_road_spawn_pos` (not a reimplementation).
+    #[test]
+    fn unit_zero_is_east_of_anchor_at_ring_radius() {
+        let anchor = WorldPos {
+            x: 100.0,
+            y: 200.0,
+            z: 10.0,
+        };
+        let p = resolve_road_spawn_pos(anchor, 0);
+        let dx = p.x - anchor.x;
+        let dy = p.y - anchor.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        assert!((dist - SPAWN_RING_DIST_M).abs() < 0.01);
+        assert!((dx - SPAWN_RING_DIST_M).abs() < 0.01);
+        assert!(dy.abs() < 0.01);
+        assert_eq!(p.z, anchor.z);
+    }
+
+    #[test]
+    fn successive_indices_are_quarter_turns_apart() {
+        let anchor = WorldPos {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let p0 = resolve_road_spawn_pos(anchor, 0);
+        let p1 = resolve_road_spawn_pos(anchor, 1);
+        // index 1 → angle π/2 → north (+Y)
+        assert!(p0.x > 0.0 && p0.y.abs() < 0.01);
+        assert!(p1.y > 0.0 && p1.x.abs() < 0.01);
+        let d0 = (p0.x * p0.x + p0.y * p0.y).sqrt();
+        let d1 = (p1.x * p1.x + p1.y * p1.y).sqrt();
+        assert!((d0 - SPAWN_RING_DIST_M).abs() < 0.01);
+        assert!((d1 - SPAWN_RING_DIST_M).abs() < 0.01);
+    }
+}

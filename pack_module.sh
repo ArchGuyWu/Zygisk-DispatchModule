@@ -1,81 +1,75 @@
 #!/data/data/com.termux/files/usr/bin/bash
 #
-# pack_module.sh - 将编译好的 .so 和 module.prop 打包成 Zygisk 模块 Zip
+# pack_module.sh — package the **Rust Zygisk** baseline into Magisk/KernelSU zip.
 #
-# 用法:
-#   1. 先在 Android Studio 中执行 Build -> Make Project，或使用 ./gradlew assembleRelease
-#   2. 然后运行: bash pack_module.sh
-#   3. 输出: Zygisk-PoliceDispatch.zip (可直接在 Magisk/KernelSU 中刷入)
+# Ship path (baseline):
+#   1. bash rust/build_rust.sh
+#   2. bash pack_module.sh
+#   → Zygisk-PoliceDispatch.zip with zygisk/arm64-v8a.so
 #
-# 注意: 脚本会在项目的 build/outputs/ 目录下寻找编译产物
-
+# Legacy C++ libpolicemod.so is NOT packaged. See docs/BASELINE.md.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 OUTPUT_DIR="$PROJECT_ROOT/build/module_output"
 ZIP_NAME="Zygisk-PoliceDispatch.zip"
+ZIP_PATH="$PROJECT_ROOT/$ZIP_NAME"
+RUST_SO="$PROJECT_ROOT/build/rust/arm64-v8a/arm64-v8a.so"
 
-# Gradle 编译输出的 .so 路径 (默认位置)
-CMAKE_OUTPUT_BASE="$PROJECT_ROOT/build/intermediates/cmake/release/obj"
-
-echo "=== Zygisk-DispatchModule Module Packer ==="
+echo "=== Zygisk-PoliceDispatch packer (Rust baseline) ==="
 echo ""
 
-# 清理旧的输出
+if [ ! -f "$RUST_SO" ]; then
+    echo "[!] $RUST_SO missing — building Rust ship binary..."
+    bash "$PROJECT_ROOT/rust/build_rust.sh"
+fi
+
+if [ ! -f "$RUST_SO" ]; then
+    echo "ERROR: Rust .so not found after build: $RUST_SO"
+    exit 1
+fi
+
+if [ ! -f "$PROJECT_ROOT/module.prop" ]; then
+    echo "ERROR: module.prop not found"
+    exit 1
+fi
+
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR/zygisk"
-
-# 复制 module.prop
-if [ ! -f "$PROJECT_ROOT/module.prop" ]; then
-    echo "ERROR: module.prop not found at $PROJECT_ROOT/module.prop"
-    exit 1
-fi
 cp "$PROJECT_ROOT/module.prop" "$OUTPUT_DIR/"
-echo "[✓] module.prop copied"
+cp "$RUST_SO" "$OUTPUT_DIR/zygisk/arm64-v8a.so"
+echo "[✓] module.prop"
+echo "[✓] zygisk/arm64-v8a.so ← $RUST_SO"
+ls -lh "$OUTPUT_DIR/zygisk/arm64-v8a.so"
 
-# 复制各架构的 .so 文件
-# Zygisk 要求 .so 文件按架构命名：arm64-v8a.so, armeabi-v7a.so 等
-ABIS=("arm64-v8a" "armeabi-v7a")
-SO_FOUND=0
-
-for abi in "${ABIS[@]}"; do
-    SO_PATH="$CMAKE_OUTPUT_BASE/$abi/libpolicemod.so"
-    # 如果 Gradle 默认路径不存在，则尝试从 standalone CMake 编译路径获取
-    if [ ! -f "$SO_PATH" ]; then
-        SO_PATH="$PROJECT_ROOT/build/$abi/libpolicemod.so"
-    fi
-
-    if [ -f "$SO_PATH" ]; then
-        cp "$SO_PATH" "$OUTPUT_DIR/zygisk/${abi}.so"
-        echo "[✓] ${abi}.so copied"
-        SO_FOUND=$((SO_FOUND + 1))
-    else
-        echo "[!] WARNING: $SO_PATH not found, skipping $abi"
-    fi
-done
-
-if [ "$SO_FOUND" -eq 0 ]; then
-    echo ""
-    echo "ERROR: No compiled .so files found!"
-    echo "Please build the project first:"
-    echo "  cd $PROJECT_ROOT && ./gradlew assembleRelease"
-    echo ""
-    echo "Or specify a custom path if your build output is elsewhere."
+rm -f "$ZIP_PATH"
+if command -v zip >/dev/null 2>&1; then
+    (cd "$OUTPUT_DIR" && zip -r "$ZIP_PATH" .) > /dev/null
+    echo "[✓] $ZIP_NAME (zip)"
+elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$OUTPUT_DIR" "$ZIP_PATH" <<'PY'
+import pathlib, sys, zipfile
+src, zip_path = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    for p in sorted(src.rglob("*")):
+        if p.is_file():
+            zf.write(p, p.relative_to(src).as_posix())
+print("[✓] packed via python3 zipfile")
+PY
+else
+    echo "ERROR: need 'zip' or 'python3' to create $ZIP_NAME"
     exit 1
 fi
 
-# 打包 zip
-cd "$OUTPUT_DIR"
-zip -r "$PROJECT_ROOT/$ZIP_NAME" . > /dev/null
-cd "$PROJECT_ROOT"
+if [ ! -f "$ZIP_PATH" ]; then
+    echo "ERROR: failed to create $ZIP_PATH"
+    exit 1
+fi
 
 echo ""
-echo "=== Done! ==="
-echo "Module packaged: $PROJECT_ROOT/$ZIP_NAME"
-echo ""
-echo "Installation:"
-echo "  1. Transfer $ZIP_NAME to your phone"
-echo "  2. Open Magisk/KernelSU app"
-echo "  3. Go to Modules -> Install from storage"
-echo "  4. Select $ZIP_NAME and reboot"
+echo "=== Done ==="
+echo "Module: $ZIP_PATH"
+ls -lh "$ZIP_PATH"
+echo "Install: Magisk/KernelSU → Modules → Install from storage → reboot"

@@ -1,7 +1,7 @@
 id=zygisk-policedispatch
 name=GTA SA DE Dispatch Module
-version=v1.5.12-reentrancy-guard
-versionCode=65
+version=v2.0.0-baseline
+versionCode=200
 author=Grok
-description=GTA SA DE dispatch (ZN Linker compatible, static libc++).
+description=Baseline Rust Zygisk dispatch for GTA SA DE (business hooks only; no crash skip-orig gates). See docs/BASELINE.md.
 zygisk=true

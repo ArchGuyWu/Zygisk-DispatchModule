@@ -93,6 +93,38 @@ pub fn is_native_ems_emergency_model(model: u32) -> bool {
     dispatch_case::is_native_ems_emergency_model(model)
 }
 
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[test]
+    fn detect_map_region_drives_real_bounds() {
+        let ls = WorldPos {
+            x: 1000.0,
+            y: -1500.0,
+            z: 0.0,
+        };
+        assert_eq!(detect_map_region(ls), MapRegion::LosSantos);
+        assert_eq!(local_patrol_model(ls), MODEL_POLICE_CAR);
+
+        let sf = WorldPos {
+            x: -2000.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_eq!(detect_map_region(sf), MapRegion::SanFierro);
+        assert_eq!(local_patrol_model(sf), MODEL_POLICE_CAR_SF);
+    }
+
+    #[test]
+    fn police_dispatch_model_match_is_shipped_fn() {
+        assert!(is_police_dispatch_model(MODEL_POLICE_CAR));
+        assert!(is_police_dispatch_model(MODEL_SWAT_VAN));
+        assert!(!is_police_dispatch_model(MODEL_AMBULANCE));
+        assert!(is_ems_dispatch_model(MODEL_AMBULANCE));
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ResponseCategory {
     One = 1,
