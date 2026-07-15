@@ -144,19 +144,19 @@ Branches on `FirearmAirShoot` / `FirearmActive` / `count_high_threats` (needs Ai
 
 **After simplify remains:** Cat1/2 via density/consolidated/threat_score (tested); Cat3 via score≥22 path still valid with multi-criminal firearm cases.
 
-#### 2.3 Attack quotas ignore real case
+#### 2.3 Attack quotas vs live case — **already fixed** (historical)
 
-**Evidence:** `attack::compute_quotas` builds a **fresh empty** `CaseRecord::new(...)` then `compute_response_quota` — does not pass the live case’s `is_firearm` / criminals list density of clues.
+**Was (pre-fix):** `attack::compute_quotas` built a blank `CaseRecord::new(...)` and ignored live clues.
 
-**Simplify:** pass `&CaseRecord` into quota (one path) **or** hardcode simple foot/vehicle caps for on-scene pass.
+**Now:** `attack.rs` ~95–99 passes the live `case` into `compute_response_quota(case)`.
 
-**After simplify remains:** attack pass structure; real case threat scoring for **spawn** plan unchanged.
+**Remaining low-value (see L2):** quota table still multi-branch (1–4 caps) with weak in-game signal; coarsen caps, do not reintroduce blank-case bug.
 
 ### 3. Dual / overlapping paths (simplify structure, keep one effective channel)
 
 | Overlap | Evidence | After simplify remains |
 |---------|----------|------------------------|
-| **Native EventGroup observe** + **geometric_scan** both `witness_reports.observe` | `event_perception.rs`, `witness_scan.rs`, `runtime` deferred geometric | At least one witness feed so `try_start_reports` can elect; prefer native when it covers kind, geometric as supplement only for kinds that need it (`perception::needs_geometric_supplement`) — already partially structured |
+| **Native EventGroup observe** + **geometric_scan** both `witness_reports.observe` | `event_perception.rs`, `witness_scan.rs`, `runtime` | Kind gate already: geometric only if `needs_geometric_supplement` (`runtime::publish_signal`). Remaining cost: full ped-pool walk for those kinds — see L4 |
 | **Nearby mobilize** vs **offscreen spawn** | `commit_police_response` sequential | Keep both: nearby-first is core design |
 | **EMS native block** vs **EmergencyCoordinator spawn** | hook `spawn.rs` + `emergency_services.rs` | Keep both: block vanilla, mod spawns intentional |
 | **Quota APIs** (`compute_response_quota`, `compute_nearby_dispatch_quota`, Cat plan) | three related policies | Keep Cat for spawn composition; merge/delete unused quota call sites only after audit |
@@ -212,13 +212,13 @@ Action labels: **coarsen/merge** | **remove if unused** | **keep as core detail*
 |-----|------|---------------|--------------|
 | Density boosts 5 / 7 for Cat | `response_thresholds` | Density is a frame heuristic; player doesn’t see “density 5 vs 7”, only another car sometimes. | Single “busy area” bool or drop density from classify |
 | Cat3 “third patrol if no SWAT/FBI” | `build_category_spawn_plan` | Third car vs two is subtle; special units already gated tightly. | Cap initial plan at 2 patrols unless SWAT/FBI warranted |
-| Threat-weighted `compute_dispatch_anchor` | `threat.rs` | Weight by threat score then average positions — same as centroid if all criminals share case-level threat. | Plain average / primary position |
+| `compute_dispatch_anchor` dead `weight` | `threat.rs` ~116–131 | Computes `weight = threat_level_score(...)` then **never uses it** — result is always plain centroid (`sum/n`). Still pays for case-level threat lookup. | Drop unused `weight` / threat call; keep mean of positions (or primary) |
 
 ### L4. Dual witness / perception cost — **coarsen/merge** (CPU)
 
 | Now | Path | Why costly / low extra signal | Coarser keep |
 |-----|------|------------------------------|--------------|
-| EventGroup observe + deferred `geometric_scan` full ped pool | `event_perception`, `witness_scan`, `runtime` | Geometric path walks **entire ped pool** (capped candidates) for range; often overlaps native kinds. | Geometric **only** when `needs_geometric_supplement`; hard cap scan slots earlier |
+| Deferred `geometric_scan` full ped-pool walk | `witness_scan`, `runtime::publish_signal` | Gate **already** applies: only kinds with `needs_geometric_supplement` (e.g. Explosion / VehiclePropertyDamage) enqueue geometry (`runtime.rs` ~623–627). Remaining waste: for those kinds, still walks **entire ped pool** before distance filter / `MAX_GEOMETRIC_WITNESSES` cap. | Keep the kind gate; add earlier hard slot/distance short-circuit so full-pool walks are rarer/cheaper |
 | `clue_score` multi-weights (+3 entity, +2 kind, +1 saw/heard) | `witness_report::elect_reporter` | Elects one reporter; ranking fineness rarely changes who phones. | Prefer nearest non-panic who heard/saw |
 
 ### L5. On-scene tick weight — **coarsen/merge** carefully
