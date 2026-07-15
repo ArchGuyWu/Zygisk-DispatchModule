@@ -14,3 +14,7 @@ tombstone_*
 __pycache__/
 extracted_module/
 .agents/
+
+# Rust
+rust/target/
+rust/.cargo/
