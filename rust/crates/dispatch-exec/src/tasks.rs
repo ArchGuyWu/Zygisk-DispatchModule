@@ -19,6 +19,8 @@ const TASK_MANAGER_OFFSET: usize = 8;
 const TASK_ALLOC_SIZE: usize = 512;
 /// `GetSubTask` / walk slot used by buoyancy-style task walks (`ldr x8, [x8, #0x18]`).
 const TASK_VT_WALK_OFFSET: usize = 0x18;
+/// Vtable call slot used by ManageTasks dispatch loop (`ldr x8, [x8, #0x20]`).
+const TASK_VT_CALL_OFFSET: usize = 0x20;
 /// `Process` / type-query style vtable slot used by FindActiveTaskByType.
 const TASK_VT_PROCESS_OFFSET: usize = 0x28;
 
@@ -272,6 +274,7 @@ pub fn ped_has_phone_task(symbols: &ExecSymbols, ped: *const std::ffi::c_void) -
 ///
 /// Covers:
 /// - `+0x18` — GetSubTask / ProcessBuoyancy / ProcessStaticCounter (`fault 0x18`)
+/// - `+0x20` — ManageTasks dispatch loop vtable call slot (`fault 0x20`)
 /// - `+0x28` — Process / ScanForEvents (`fault 0x28`)
 ///
 /// Fail-closed gate only — never writes engine memory.
@@ -332,8 +335,10 @@ fn task_slot_unwalkable(task: *const std::ffi::c_void) -> bool {
     if task.is_null() {
         return false;
     }
-    // Non-null task with null/missing vtable fn at either hot offset is unsafe.
-    !task_vtable_fn_ok(task, TASK_VT_WALK_OFFSET) || !task_vtable_fn_ok(task, TASK_VT_PROCESS_OFFSET)
+    // Non-null task with null/missing vtable fn at any hot offset is unsafe.
+    !task_vtable_fn_ok(task, TASK_VT_WALK_OFFSET)
+        || !task_vtable_fn_ok(task, TASK_VT_CALL_OFFSET)
+        || !task_vtable_fn_ok(task, TASK_VT_PROCESS_OFFSET)
 }
 
 /// Engine `CPedIntelligence::ClearTasks(primary, secondary)` — legitimate teardown.
