@@ -11,11 +11,6 @@ use crate::models::{is_police_dispatch_model, MODEL_AMBULANCE, MODEL_FIRETRUCK};
 use crate::spawn_gate::set_custom_spawn_active;
 
 const SPAWN_RING_DIST_M: f32 = 85.0;
-/// Maximum distance from player for emergency vehicle spawn.  Beyond this range
-/// the engine's navmesh / CCarCtrl state isn't loaded, causing a null write at
-/// offset 0x919 inside `GenerateEmergencyServicesCar`.
-const STREAMING_MAX_DIST_M: f32 = 75.0;
-const STREAMING_TARGET_DIST_M: f32 = 60.0;
 
 pub fn resolve_road_spawn_pos(anchor: WorldPos, unit_index: usize) -> WorldPos {
     let angle = (unit_index as f32) * PI / 2.0;
@@ -26,40 +21,12 @@ pub fn resolve_road_spawn_pos(anchor: WorldPos, unit_index: usize) -> WorldPos {
     }
 }
 
-/// Clamp a spawn position to within streaming range of the player so that
-/// CCarCtrl navmesh/generator state is loaded.  Spawning beyond this range
-/// hits a null write at offset 0x919 in GenerateEmergencyServicesCar.
-pub fn clamp_spawn_to_streaming_range(player_pos: WorldPos, proposed: WorldPos) -> WorldPos {
-    let dx = proposed.x - player_pos.x;
-    let dy = proposed.y - player_pos.y;
-    let dist_xy = (dx * dx + dy * dy).sqrt();
-    if dist_xy <= STREAMING_MAX_DIST_M {
-        return proposed;
-    }
-    let scale = STREAMING_TARGET_DIST_M / dist_xy;
-    WorldPos {
-        x: player_pos.x + dx * scale,
-        y: player_pos.y + dy * scale,
-        z: proposed.z,
-    }
-}
-
 pub fn dispatch_spawn_emergency_vehicle(
     env: &mut ExecEnv<'_>,
     model: u32,
     pos: WorldPos,
-    incident_anchor: WorldPos,
+    _incident_anchor: WorldPos,
 ) -> Option<VehicleId> {
-    // Clamp ambulance/firetruck spawns to streaming range to prevent the engine's
-    // GenerateEmergencyServicesCar from writing to a null CCarCtrl member at
-    // offset 0x919 when navmesh data isn't loaded at the target position.
-    let pos = if model == MODEL_AMBULANCE || model == MODEL_FIRETRUCK {
-        let player_pos = env.symbols.entity_world_pos(env.symbols.player_ped(0));
-        clamp_spawn_to_streaming_range(player_pos, pos)
-    } else {
-        pos
-    };
-
     let cvec = CVector {
         x: pos.x,
         y: pos.y,

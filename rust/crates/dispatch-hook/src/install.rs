@@ -19,20 +19,6 @@ use crate::spawn::{
     detour_create_car_for_script, detour_generate_emergency_car, detour_script_generate_emergency_car,
     set_orig_create_car_for_script, set_orig_generate_emergency, set_orig_script_generate_emergency,
 };
-use crate::buoyancy_gate::{detour_process_buoyancy, set_orig_process_buoyancy};
-use crate::event_scan_gate::{detour_scan_for_events, set_orig_scan_for_events};
-use crate::static_counter_gate::{
-    detour_process_static_counter, set_orig_process_static_counter,
-};
-use crate::control_sub_task_gate::{
-    detour_control_sub_task, set_orig_control_sub_task,
-};
-use crate::manage_tasks_gate::{
-    detour_manage_tasks, set_orig_manage_tasks,
-};
-use crate::record_relationship_gate::{
-    detour_record_relationship, set_orig_record_relationship,
-};
 use crate::wanted_population::{
     detour_report_crime, detour_report_crime_now, detour_set_wanted_level,
     detour_set_wanted_level_no_drop, set_orig_report_crime, set_orig_report_crime_now,
@@ -85,12 +71,8 @@ pub fn install_lifecycle_hooks() -> Result<()> {
     hook_bit(8, hook_script_generate_emergency_car(&lib));
     hook_bit(9, hook_create_car_for_script(&lib));
     hook_bit(10, hook_event_group_add(&lib));
-    hook_bit(11, hook_process_buoyancy_gate(&lib));
-    hook_bit(12, hook_scan_for_events_gate(&lib));
-    hook_bit(13, hook_process_static_counter_gate(&lib));
-    hook_bit(14, hook_control_sub_task_gate(&lib));
-    hook_bit(15, hook_manage_tasks_gate(&lib));
-    hook_bit(16, hook_record_relationship_gate(&lib));
+    // Crash fail-closed gates (bits 11–16) removed: deepseek-era skip-orig
+    // defenses that false-positive froze AI (ManageTasks/ScanForEvents/etc.).
     std::mem::forget(lib);
     info!(hooks = installed, failed, "rust dispatch hooks installed");
     let logic = if crate::config::MOD_LOGIC_ENABLED {
@@ -289,91 +271,6 @@ fn hook_create_car_for_script(lib: &Library) -> Result<usize> {
         "CreateCarForScript",
     )?;
     set_orig_create_car_for_script(unsafe { std::mem::transmute(orig) });
-    Ok(1)
-}
-
-/// Fail-closed gate only: unwalkable task graph → skip ProcessBuoyancy (no slot writes).
-fn hook_process_buoyancy_gate(lib: &Library) -> Result<usize> {
-    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
-    install_hook(
-        lib,
-        "_ZN4CPed15ProcessBuoyancyEv",
-        detour_process_buoyancy as *const () as usize,
-        &mut orig,
-        "ProcessBuoyancyGate",
-    )?;
-    set_orig_process_buoyancy(unsafe { std::mem::transmute(orig) });
-    Ok(1)
-}
-
-/// Fail-closed gate: zeroed task at intel+0x28 → skip ScanForEvents (fault 0x28).
-fn hook_scan_for_events_gate(lib: &Library) -> Result<usize> {
-    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
-    install_hook(
-        lib,
-        "_ZN13CEventScanner13ScanForEventsER4CPed",
-        detour_scan_for_events as *const () as usize,
-        &mut orig,
-        "ScanForEventsGate",
-    )?;
-    set_orig_scan_for_events(unsafe { std::mem::transmute(orig) });
-    Ok(1)
-}
-
-/// Fail-closed gate: zeroed task on intelligence → skip ProcessStaticCounter (fault 0x18).
-fn hook_process_static_counter_gate(lib: &Library) -> Result<usize> {
-    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
-    install_hook(
-        lib,
-        "_ZN16CPedIntelligence20ProcessStaticCounterEv",
-        detour_process_static_counter as *const () as usize,
-        &mut orig,
-        "ProcessStaticCounterGate",
-    )?;
-    set_orig_process_static_counter(unsafe { std::mem::transmute(orig) });
-    Ok(1)
-}
-
-/// Fail-closed gate: child task with null vtable → skip ControlSubTask (fault 0x38).
-fn hook_control_sub_task_gate(lib: &Library) -> Result<usize> {
-    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
-    install_hook(
-        lib,
-        "_ZN18CTaskComplexFacial14ControlSubTaskEP4CPed",
-        detour_control_sub_task as *const () as usize,
-        &mut orig,
-        "ControlSubTaskGate",
-    )?;
-    set_orig_control_sub_task(unsafe { std::mem::transmute(orig) });
-    Ok(1)
-}
-
-/// Fail-closed gate: unwalkable CTaskManager slot → skip ManageTasks (fault 0x18/0x20/0x28/…).
-/// One hook covers all per-frame vtable-offset variants.
-fn hook_manage_tasks_gate(lib: &Library) -> Result<usize> {
-    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
-    install_hook(
-        lib,
-        "_ZN12CTaskManager11ManageTasksEv",
-        detour_manage_tasks as *const () as usize,
-        &mut orig,
-        "ManageTasksGate",
-    )?;
-    set_orig_manage_tasks(unsafe { std::mem::transmute(orig) });
-    Ok(1)
-}
-
-/// Fail-closed gate: null vtable on CPlayerRelationshipRecorder → skip RecordRelationshipWithPlayer.
-fn hook_record_relationship_gate(lib: &Library) -> Result<usize> {
-    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
-    install_hook(
-        lib,
-        "_ZN27CPlayerRelationshipRecorder28RecordRelationshipWithPlayerEPK4CPed",
-        detour_record_relationship as *const () as usize,
-        &mut orig,
-        "RecordRelationshipGate",
-    )?;
-    set_orig_record_relationship(unsafe { std::mem::transmute(orig) });
     Ok(1)
 }
 
