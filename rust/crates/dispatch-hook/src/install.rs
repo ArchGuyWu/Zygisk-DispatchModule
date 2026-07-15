@@ -359,7 +359,7 @@ fn hook_manage_tasks_gate(lib: &Library) -> Result<usize> {
     Ok(1)
 }
 
-/// xdl resolve + Rust aarch64 absolute-jump inline hook.
+/// Dlopen resolve + Rust aarch64 absolute-jump inline hook.
 fn install_hook(
     lib: &Library,
     mangled: &str,
@@ -369,7 +369,7 @@ fn install_hook(
 ) -> Result<()> {
     let addr = lib
         .sym(mangled)
-        .with_context(|| format!("xdl_sym missing: {label} ({mangled})"))?;
+        .with_context(|| format!("dlsym missing: {label} ({mangled})"))?;
     log_android(&format!("hook try {label} @ {addr:#x} detour {detour:#x}"));
     match inline_install(addr, detour) {
         Ok(tramp) => {

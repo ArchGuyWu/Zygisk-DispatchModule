@@ -9,6 +9,5 @@ dispatch-case = { path = "../dispatch-case" }
 dispatch-core = { path = "../dispatch-core" }
 dispatch-engine = { path = "../dispatch-engine" }
 dispatch-exec = { path = "../dispatch-exec" }
-dispatch-native = { path = "../dispatch-native" }
 libc = { workspace = true }
 tracing = { workspace = true, features = ["max_level_warn", "release_max_level_off"] }
