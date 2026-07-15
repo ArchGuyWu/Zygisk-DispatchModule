@@ -109,40 +109,42 @@ Each candidate cites **evidence** (unused / no call sites / hollow wiring / dual
 | `assign_stand_still_task`, `TASK_SIMPLE_STAND_STILL`, `ped_ptr_for_id` | never used | Phone/arrest/clear helpers still used |
 | `entity_ref_from_ped` | never used | Entity refs from signals/perception |
 | `MODEL_POLICE_HELI`, `is_police_bike`, `is_swat_model` (export-only), `is_ems_dispatch_model` | never used in ship graph | Patrol/SWAT/FBI models still used via spawn plan |
-| `build_reinforcement_spawn_plan` | **only** defined + `lib.rs` re-export; **zero** call from coordinator | Nearby/offscreen **initial** spawn + attack remain |
-| `criminal_in_custody` / `criminal_eligible_for_arrest` (if unused helpers) | never used warnings | `tick_case_arrests` path remains |
+| ~~`build_reinforcement_spawn_plan`~~ | **Replaced** by `build_on_scene_topup_plan` (see Applied) | Top-up + attempt cap |
+| `criminal_eligible_for_arrest` (if still unused) | thin sugar | `tick_case_arrests` / `criminal_in_custody` remain |
 | `reset_pending_native_queue`, `runtime_reentrant`, dead `refresh_zone_gate` pub wrapper | never used | Gate via `hook_logic_allowed` / runtime refresh |
 
 **Why suitable:** trims noise without changing player-visible chain if callers truly absent.
 
 ### 2. Hollow or misleading complexity (medium — simplify behavior *or* wire for real)
 
-#### 2.1 On-scene “reinforcement” is nearby-only with empty candidates
+#### 2.1 On-scene top-up — **already rewired** (historical)
 
-**Evidence:**
+**Was:** `ReinforcementNearby` + empty candidates + unused wave `build_reinforcement_spawn_plan`.
 
-- `coordinator` queues `PendingTask::ReinforcementNearby` after `on_scene_needs_reinforcement`.
-- Drain handler calls `dispatch_nearby_available_cops_for_crime_auto(..., &[], ...)` — **empty candidate slice**.
-- `build_reinforcement_spawn_plan` never schedules a second offscreen unit.
+**Now:** `PendingTask::ReinforcementTopUp { density }` → `build_on_scene_topup_plan` → spawn schedule; attempt cap 3; default patrol; SWAT/FBI gated.
 
-**Simplify options (pick one later):**
+**Remaining low-value:** top-up still re-runs full `classify` / threat helpers (see L1–L2); product behavior is intentional.
 
-- **A (minimal):** Drop reinforcement queue + wave bookkeeping; keep `on_scene_needs_reinforcement` only if a future spawn path needs it.  
-- **B (product):** Wire reinforcement to real nearby scan **or** `build_reinforcement_spawn_plan` + spawn chain.
+#### 2.2 Threat enum: dead tiers vs live-fire path
 
-**After simplify remains:** initial commit nearby/offscreen spawn; on-scene attack/arrest.
+**Evidence (`threat.rs` `estimate_criminal_threat` ~57–67):** returns exactly:
 
-#### 2.2 Threat enum levels never produced by estimator
+| Level | When |
+|-------|------|
+| `FirearmActive` | `has_live_kind(WeaponDischarge)` (ongoing gunfire) — **reachable, used** |
+| `FirearmInactive` | firearm clues / `is_firearm` without live discharge |
+| `MeleeActive` | casualty/injury clues or live kinds |
+| `MeleeInactive` | otherwise |
 
-**Evidence:** `estimate_criminal_threat` only returns `FirearmInactive` / `MeleeActive` / `MeleeInactive`.  
-Branches on `FirearmAirShoot` / `FirearmActive` / `count_high_threats` (needs AirShoot+) are largely **unreachable** unless `is_firearm` alone lifts to FirearmInactive.
+**Never produced:** `UnarmedActive`, `FirearmAirShoot` (and enum still carries them).  
+`count_high_threats` thresholds at AirShoot+ so only **live** `FirearmActive` counts as “high” today — AirShoot branch itself is dead.
 
 **Simplify options:**
 
-- Collapse levels to what ingress can actually set (e.g. unarmed / melee / firearm), **or**  
-- Feed real per-ped weapon state into estimate (keeps Cat detail, removes dead branches).
+- Drop dead enum variants (`UnarmedActive`, `FirearmAirShoot`); keep 3–4 real buckets aligned with estimate, **or**  
+- Coarsen further to non-gun / armed / active gunfire (see L1).
 
-**After simplify remains:** Cat1/2 via density/consolidated/threat_score (tested); Cat3 via score≥22 path still valid with multi-criminal firearm cases.
+**After simplify remains:** live-fire vs armed vs melee still drive Cat / SWAT exception paths.
 
 #### 2.3 Attack quotas vs live case — **already fixed** (historical)
 
