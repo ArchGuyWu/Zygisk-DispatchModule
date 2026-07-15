@@ -17,12 +17,11 @@ pub fn set_orig_process_buoyancy(f: OrigProcessBuoyancy) {
 }
 
 /// Gate only: dangerous task graph → skip orig. No memory writes.
-/// During loading (zone inactive), forward directly — task memory may be uninitialised.
+///
+/// No `zone_active` bypass: that only disables this check during load/cutscene,
+/// when sentinels are most common. `is_plausible_ptr` + 11-slot scan already
+/// handles uninitialised slots without needing to call orig blind.
 pub unsafe extern "C" fn detour_process_buoyancy(self_: *mut std::ffi::c_void) {
-    if !crate::gate::zone_active_cached() {
-        if let Some(orig) = ORIG_PROCESS_BUOYANCY { orig(self_); }
-        return;
-    }
     if self_.is_null() {
         return;
     }

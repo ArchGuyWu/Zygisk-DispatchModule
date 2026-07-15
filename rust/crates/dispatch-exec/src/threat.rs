@@ -444,7 +444,7 @@ pub fn get_case_threat_tier(case: &CaseRecord) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dispatch_case::report_channel::ReportClues;
+    use dispatch_case::ReportClues;
     use dispatch_core::CausalKind;
 
     fn sample_case(firearm: bool) -> CaseRecord {

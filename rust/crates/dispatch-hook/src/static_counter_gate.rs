@@ -18,12 +18,9 @@ pub fn set_orig_process_static_counter(f: OrigProcessStaticCounter) {
 }
 
 /// Gate only: dangerous intelligence task graph → skip orig. No memory writes.
-/// During loading (zone inactive), forward directly — task memory may be uninitialised.
+///
+/// No `zone_active` bypass (same rationale as buoyancy / ScanForEvents gates).
 pub unsafe extern "C" fn detour_process_static_counter(self_: *mut std::ffi::c_void) {
-    if !crate::gate::zone_active_cached() {
-        if let Some(orig) = ORIG_PROCESS_STATIC_COUNTER { orig(self_); }
-        return;
-    }
     if self_.is_null() {
         return;
     }

@@ -20,15 +20,12 @@ pub fn set_orig_scan_for_events(f: OrigScanForEvents) {
 }
 
 /// Gate only: dangerous ped task graph → skip orig. No memory writes.
-/// During loading (zone inactive), forward directly — task memory may be uninitialised.
+///
+/// No `zone_active` bypass (same rationale as buoyancy / static_counter gates).
 pub unsafe extern "C" fn detour_scan_for_events(
     self_: *mut std::ffi::c_void,
     ped: *mut std::ffi::c_void,
 ) {
-    if !crate::gate::zone_active_cached() {
-        if let Some(orig) = ORIG_SCAN_FOR_EVENTS { orig(self_, ped); }
-        return;
-    }
     if ped.is_null() {
         return;
     }
