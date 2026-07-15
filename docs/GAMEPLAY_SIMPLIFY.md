@@ -1,6 +1,6 @@
 # Gameplay simplify inventory (Rust ship baseline)
 
-**Scope:** only the shipped Zygisk path (`rust/crates/dispatch-*`, hooks bits 0–10).  
+**Scope:** shipped Zygisk **dispatch** module (`rust/crates/dispatch-*`, hooks bits 0–10) — police **and** EMS/fire.  
 **Not product surface:** `src/main/cpp`, ShadowHook, `docs/911_DISPATCH.md` multi-line PSAP narrative.  
 **Authority for build/pack:** [`docs/BASELINE.md`](BASELINE.md).
 
@@ -284,6 +284,29 @@ Do **not** coarsen by deleting SWAT gates, phone open-on-Active, or nearby-vs-sp
 | Model kinds table | `DispatchVehicleKind` + `is_*` via kinds |
 | Arrest thin helpers | `criminal_in_custody` wired in `sync_custody_criminals` |
 | Attack quotas | `compute_quotas` uses live `CaseRecord` |
+
+## EMS / Fire (department scripts)
+
+Playbook: `DepartmentNeeds` → `ems_script_active` / `fire_script_active` → `EmergencyCoordinator`.
+
+| Piece | Path | Role |
+|-------|------|------|
+| Needs derive | `playbook.rs` | Fire: fire/burn/explosion; EMS: casualties/injury |
+| Block vanilla EMS cars | `dispatch-hook/spawn.rs` bits 7–9 | While mod zone active, no dual native ambulance/firetruck |
+| Spawn + route | `emergency_services.rs` + `vehicle_spawn` | One firetruck and/or one ambulance per case; `CreateCarForScript` + occupants + drive to anchor |
+| On-scene medic/fire AI | engine | We only route; no SWAT-style threat ladder for EMS/fire |
+
+### EMS/fire simplify (applied + remaining)
+
+| Item | Status |
+|------|--------|
+| Finalize full **vehicle pool rescan** after spawn | **Removed** — spawn returns `VehicleId`, route immediately |
+| Separate random delay ranges fire vs EMS | **Keep** (light flavor; cheap) |
+| `ems_scene_abnormal` / `fire_scene_abnormal` | Defined for future on-scene scripts; **unused** in exec today — optional later or drop if still unused |
+| Same `dispatch_vehicle_to_disturbance` as police investigate | **Keep** — shared “go to scene” primitive |
+| Eval every `EMERGENCY_EVAL_INTERVAL_MS` | **Keep** — one pass over cases |
+
+**Core keep:** department needs, block vanilla EMS, one unit per dept per case, route to scene.
 
 ### Applied (coarsen pass — inventory L1–L4)
 

@@ -1,7 +1,8 @@
 # Dispatch module baseline (post-refactor)
 
-This tree is the **new baseline** for GTA SA DE police dispatch. Prefer this
-document over older crash-gate / dual-tree notes.
+This tree is the **new baseline** for GTA SA DE **emergency dispatch**
+(police, EMS, fire — police paths are the bulk of the logic, not the only
+department). Prefer this document over older crash-gate / dual-tree notes.
 
 ## Ship path (single)
 
@@ -46,10 +47,20 @@ Registered from `dispatch-hook` install (bits 0–10 when mask allows):
 | 3 | TheScripts::Process — frame tick |
 | 4–5 | Weapon/vehicle damage causal ingress |
 | 6 | Wanted / crime report suppression |
-| 7–9 | Emergency / script car creation |
+| 7–9 | Emergency / script car creation (block vanilla EMS; mod CreateCarForScript) |
 | 10 | EventGroup::Add — native event perception |
 
 **Not registered:** any task-graph crash skip-orig gate.
+
+## Departments (all part of this module)
+
+| Dept | When | Ship path |
+|------|------|-----------|
+| **Police** | criminals / gunfire / property damage | commit → nearby or patrol spawn; attack/arrest; wanted suppress |
+| **EMS** | casualties / injury kinds | `EmergencyCoordinator` → ambulance → route to scene |
+| **Fire** | fire / burning / explosion | same coordinator → firetruck → route to scene |
+
+Civilian report (phone) feeds **case + department needs** for all three.
 
 ## Mod business gating (not crash skip)
 

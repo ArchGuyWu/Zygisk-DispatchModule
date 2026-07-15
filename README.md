@@ -7,12 +7,12 @@
 
 **English Version** | [中文版本](README_CN.md)
 
-An advanced police dispatching module for **GTA: San Andreas – The Definitive Edition (Android)**, shipped as a **Rust Zygisk** `arm64-v8a.so` (business hooks only).
+An **emergency dispatch** module for **GTA: San Andreas – The Definitive Edition (Android)** — police, EMS, and fire (police is the largest surface). Shipped as a **Rust Zygisk** `arm64-v8a.so` (business hooks only).
 
 > **Baseline (authoritative):** [`docs/BASELINE.md`](docs/BASELINE.md) — single ship path, kept deps, hook bits 0–10.  
 > Do **not** flash C++ `libpolicemod.so` builds for current baseline installs.
 
-This module replaces/extends native AI dispatching for realistic police response, witness reports, wanted suppression as designed, and related business logic — **without** fail-closed “skip engine orig” crash gates.
+Witness reports open cases and **department needs**; the module mobilizes law enforcement, ambulance, and fire response as needed — **without** fail-closed “skip engine orig” crash gates.
 
 ---
 

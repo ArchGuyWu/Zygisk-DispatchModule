@@ -7,12 +7,12 @@
 
 [English Version](README.md) | **中文版本**
 
-面向 **侠盗猎车手：圣安地列斯 终极版 (GTA: SA DE Android)** 的警力派发 Zygisk 模组。**当前交付基线为 Rust** 编译的 `arm64-v8a.so`（仅业务 hooks）。
+面向 **侠盗猎车手：圣安地列斯 终极版 (GTA: SA DE Android)** 的 **应急调度** Zygisk 模组（警察 / 救护 / 消防；警力逻辑占比最大，但并非仅限警方）。**当前交付基线为 Rust** `arm64-v8a.so`（仅业务 hooks）。
 
 > **权威基线文档：** [`docs/BASELINE.md`](docs/BASELINE.md) — 单一打包路径、保留依赖、hook bits 0–10。  
 > **不要**再把 C++ `libpolicemod.so` 当作当前基线安装产物。
 
-模组接管并扩展原生 AI 派发（目击报告、通缉抑制、应急/脚本车等相关业务逻辑），**不包含** fail-closed 的「跳过引擎 orig」崩溃门控。
+目击报案开案并计算**部门需求**；按需出动执法、救护与消防，**不包含** fail-closed 的「跳过引擎 orig」崩溃门控。
 
 ---
 

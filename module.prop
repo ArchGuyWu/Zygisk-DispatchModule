@@ -3,5 +3,5 @@ name=GTA SA DE Dispatch Module
 version=v2.0.0-baseline
 versionCode=200
 author=Grok
-description=Baseline Rust Zygisk dispatch for GTA SA DE (business hooks only; no crash skip-orig gates). See docs/BASELINE.md.
+description=Emergency dispatch for GTA SA DE (police / EMS / fire). Rust Zygisk baseline; business hooks only. See docs/BASELINE.md.
 zygisk=true

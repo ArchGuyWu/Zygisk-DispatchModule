@@ -1,6 +1,6 @@
-//! Police dispatch execution layer — Rust port of C++ `dispatch_*` exec modules.
+//! Emergency **dispatch** execution (police / EMS / fire) — Rust port of C++ `dispatch_*`.
 //!
-//! Business logic is idiomatic Rust without `unsafe`; FFI is confined to [`ffi`].
+//! Police is the largest surface; EMS/fire share spawn + route. FFI is confined to [`ffi`].
 
 mod arrest;
 mod attack;
