@@ -1,6 +1,11 @@
 # Module Layout
 
-GTA SA DE Android 警力派发 Zygisk 模组源码结构说明。
+> **SUPERSEDED for the current ship baseline.**  
+> Authoritative ship path, deps, and hook bits: [`docs/BASELINE.md`](BASELINE.md).  
+> Primary sources: `rust/crates/dispatch-*`, `rust/build_rust.sh`, `pack_module.sh`.  
+> This document describes the **legacy C++** tree under `src/main/cpp` (ShadowHook / multi-hook layout). It is retained for archaeology only.
+
+GTA SA DE Android 警力派发 — **legacy C++** 源码结构说明（非当前交付树）。
 
 ## 目录树
 
@@ -45,9 +50,10 @@ mod-workspace/
 │   ├── 911_DISPATCH.md          # 911/对讲机架构与测试场景
 │   ├── CRASH_STATUS.md          # 崩溃样本与修复状态
 │   └── MODULE_LAYOUT.md         # 本文件
-├── build_in_container.sh        # Termux/proot 隔离构建（推荐）
+├── build_in_container.sh        # LEGACY C++ only (not ship; see docs/BASELINE.md)
+├── rust/build_rust.sh           # SHIP: Rust Zygisk arm64-v8a.so
 ├── auto_commit_push.sh          # 提交前编译 + push（SKIP_BUILD=1 可跳过）
-├── pack_module.sh
+├── pack_module.sh               # SHIP: packs Rust .so → Zygisk-PoliceDispatch.zip
 ├── module.prop
 └── android-arm64-toolchain.cmake
 ```

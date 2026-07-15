@@ -334,20 +334,26 @@ for abi in "${TARGET_ABIS[@]}"; do
     echo -e "  ${GREEN}Packed: zygisk/${abi}.so${NC}"
 done
 
-# 打包 zip
+# LEGACY pack only — never overwrite the Rust ship zip name.
+# Ship path: bash rust/build_rust.sh && bash pack_module.sh → Zygisk-PoliceDispatch.zip
+SHIP_ZIP="${PROJECT_DIR}/Zygisk-PoliceDispatch.zip"
+ZIP_PATH="${PROJECT_DIR}/Zygisk-PoliceDispatch-LEGACY-cpp.zip"
 cd "$OUTPUT_DIR"
-ZIP_PATH="${PROJECT_DIR}/Zygisk-PoliceDispatch.zip"
 rm -f "$ZIP_PATH"
 zip -r "$ZIP_PATH" . > /dev/null
 cd "$PROJECT_DIR"
 
 echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}          BUILD COMPLETE                ${NC}"
-echo -e "${GREEN}========================================${NC}"
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}   LEGACY C++ BUILD COMPLETE (not ship) ${NC}"
+echo -e "${YELLOW}========================================${NC}"
 echo ""
-echo -e "Output: ${CYAN}$ZIP_PATH${NC}"
-ls -lh "$ZIP_PATH"
+echo -e "Legacy output: ${CYAN}$ZIP_PATH${NC}"
+echo -e "Ship zip name reserved for Rust: ${CYAN}$SHIP_ZIP${NC}"
+echo -e "  (build with: ${GREEN}bash rust/build_rust.sh && bash pack_module.sh${NC})"
+ls -lh "$ZIP_PATH" 2>/dev/null || true
+if [ -f "$SHIP_ZIP" ]; then
+    echo -e "${YELLOW}Note: existing $SHIP_ZIP was NOT modified by this legacy pack.${NC}"
+fi
 echo ""
-echo -e "Install: ${YELLOW}adb push Zygisk-PoliceDispatch.zip /sdcard/${NC}"
-echo -e "Then flash via Magisk/KernelSU app"
+echo -e "For installs use the Rust baseline zip only — see docs/BASELINE.md"

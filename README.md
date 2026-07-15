@@ -7,9 +7,12 @@
 
 **English Version** | [中文版本](README_CN.md)
 
-An advanced police dispatching and intelligent vehicle control module for **GTA: San Andreas – The Definitive Edition (Android)**, powered by **Zygisk** and **ShadowHook**.
+An advanced police dispatching module for **GTA: San Andreas – The Definitive Edition (Android)**, shipped as a **Rust Zygisk** `arm64-v8a.so` (business hooks only).
 
-This module overwrites and optimizes the game's native AI dispatching algorithms to offer realistic police pursuits, robust anti-stuck pathfinding, regional quota consolidation, dynamic chasing quotas, and synchronized physics-momentum resetting during tactical teleportations/nudges.
+> **Baseline (authoritative):** [`docs/BASELINE.md`](docs/BASELINE.md) — single ship path, kept deps, hook bits 0–10.  
+> Do **not** flash C++ `libpolicemod.so` builds for current baseline installs.
+
+This module replaces/extends native AI dispatching for realistic police response, witness reports, wanted suppression as designed, and related business logic — **without** fail-closed “skip engine orig” crash gates.
 
 ---
 
@@ -150,57 +153,54 @@ mod-workspace/
 │   ├── zygisk/                  # Zygisk API headers
 │   ├── ecs_engine.hpp           # Lightweight ECS & event bus
 │   └── module.cpp               # Main logic (hooks + dispatch + ECS wiring)
+├── rust/                        # **SHIP** source (dispatch-* crates + build_rust.sh)
 ├── docs/
-│   ├── CRASH_STATUS.md
-│   └── MODULE_LAYOUT.md
-├── third_party/
-│   ├── shadowhook/              # Prebuilt headers for ShadowHook
-│   └── shadowhook-src/          # Full compiled source tree of ShadowHook
-├── android-arm64-toolchain.cmake# Android NDK CMake toolchain definitions
-├── build_in_container.sh       # Script for isolated compilation inside a Linux container
-├── pack_module.sh              # Local shell packaging script
-├── module.prop                 # Magisk module properties definition
-└── build.gradle                # Gradle configuration for Android Studio compilation
+│   ├── BASELINE.md              # **Authoritative** ship path / deps / hooks
+│   ├── CRASH_STATUS.md          # SUPERSEDED (legacy C++ crash notes)
+│   └── MODULE_LAYOUT.md         # SUPERSEDED (legacy C++ tree)
+├── third_party/                 # Legacy C++ only (ShadowHook) — not linked into ship .so
+├── build_in_container.sh        # LEGACY C++ libpolicemod (not ship zip)
+├── pack_module.sh               # SHIP packer → Zygisk-PoliceDispatch.zip
+├── module.prop                  # Magisk module properties (v2.0.0-baseline)
+└── build.gradle                 # Optional Android Studio / legacy tooling
 ```
 
 ---
 
-## 🏗️ How to Build
+## 🏗️ How to Build (baseline ship path)
 
-The module can be compiled in two ways: via isolated PRoot Linux containers (recommended for mobile/Termux developers), or locally via standard Android NDK tools.
+**Only one installable product:** the Rust Zygisk module. See [`docs/BASELINE.md`](docs/BASELINE.md).
 
-### Method 1: Isolated Container Build (Termux / Linux CLI)
+### Ship path (required)
 
-If you are developing in Termux or a clean Linux system, you can use the automated `build_in_container.sh` via PRoot Distro.
-
-1. Ensure `proot-distro` is installed on your system.
-2. Run the isolated build script:
+1. Ensure `proot-distro` + `ubuntu-build` (or an equivalent NDK host) is available — `rust/build_rust.sh` auto-enters the container from Termux when needed.
+2. Build the ship binary:
    ```bash
-   ./build_in_container.sh
-   # Or manually:
-   # proot-distro login --isolated --bind /path/to/Projects:/workspace ubuntu-build \
-   #   -- bash /workspace/mod-workspace/build_in_container.sh
+   bash rust/build_rust.sh
+   # → build/rust/arm64-v8a/arm64-v8a.so
    ```
-3. The script will automatically download the Android NDK (r27c), setup ShadowHook sources, compile `libpolicemod.so` for `arm64-v8a`, and output a flashable Magisk module zip:
-   *   **Output**: `Zygisk-PoliceDispatch.zip`
-
-### Method 2: Android Studio / Local Gradle Build
-
-1. Open this directory as a project in Android Studio.
-2. Run the `assembleRelease` Gradle task or run:
-   ```bash
-   ./gradlew assembleRelease
-   ```
-3. Run the local packaging script to compress the binary and Magisk file structures:
+3. Pack the Magisk/KernelSU zip:
    ```bash
    bash pack_module.sh
+   # → Zygisk-PoliceDispatch.zip  (module.prop + zygisk/arm64-v8a.so)
    ```
+
+Optional pure-logic tests (no libUE4):
+
+```bash
+# inside build container / with host cargo
+cd rust && cargo test -p dispatch-core -p dispatch-exec -p dispatch-case --lib
+```
+
+### Legacy C++ tree (not the ship path)
+
+`src/main/cpp` + `build_in_container.sh` remain for historical reference only. That path builds ShadowHook-based `libpolicemod.so` and, if you force a full legacy run, writes a **distinct** zip name (`Zygisk-PoliceDispatch-LEGACY-cpp.zip`) — **never** the ship zip `Zygisk-PoliceDispatch.zip`. Prefer `bash rust/build_rust.sh && bash pack_module.sh`.
 
 ---
 
 ## 📲 Installation & Usage
 
-1. Transfer the compiled `Zygisk-PoliceDispatch.zip` to your Android device.
+1. Transfer the compiled **`Zygisk-PoliceDispatch.zip`** from the Rust ship path above.
 2. Open the **Magisk** or **KernelSU** application.
 3. Navigate to **Modules** -> **Install from storage**.
 4. Select `Zygisk-PoliceDispatch.zip` and tap install.

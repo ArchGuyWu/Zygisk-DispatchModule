@@ -1,7 +1,12 @@
 # Crash Status (GTA SA DE Android)
 
+> **SUPERSEDED for the current ship baseline.**  
+> Authoritative layout / hooks / deps: [`docs/BASELINE.md`](BASELINE.md).  
+> Baseline ships **Rust** business hooks only (no ShadowHook skip-orig crash-gate suite).  
+> This file is a **historical** note about the legacy C++ `src/main/cpp` tree (ShadowHook 39-hook era). Do not treat it as the installed module’s current surface.
+
 > 数据来源：`crash_summary.txt`（50 条 tombstone，2026-06-28 采集）  
-> 本文件描述**当前已知崩溃面**，不代表模组已完全修复。
+> 下文描述的是 **legacy C++ 时期**已知崩溃面，不代表当前 Rust 基线模组行为。
 
 ## 摘要
 

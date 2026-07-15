@@ -7,9 +7,12 @@
 
 [English Version](README.md) | **中文版本**
 
-基于 **Zygisk** 和 **ShadowHook** 技术构建的高级警力派发与车辆战术控制模组，专为 **侠盗猎车手：圣安地列斯 终极版 (GTA: SA DE Android)** 开发。
+面向 **侠盗猎车手：圣安地列斯 终极版 (GTA: SA DE Android)** 的警力派发 Zygisk 模组。**当前交付基线为 Rust** 编译的 `arm64-v8a.so`（仅业务 hooks）。
 
-本模组接管并优化了游戏原生的 AI 派发算法，引入了更逼真的警力围捕、强健的防卡死路径规划、区域配额整合、动态追捕配额，以及在战术传送或推开逻辑时的物理动能重置机制。
+> **权威基线文档：** [`docs/BASELINE.md`](docs/BASELINE.md) — 单一打包路径、保留依赖、hook bits 0–10。  
+> **不要**再把 C++ `libpolicemod.so` 当作当前基线安装产物。
+
+模组接管并扩展原生 AI 派发（目击报告、通缉抑制、应急/脚本车等相关业务逻辑），**不包含** fail-closed 的「跳过引擎 orig」崩溃门控。
 
 ---
 
@@ -157,56 +160,54 @@ mod-workspace/
 │   ├── ecs_engine.hpp           # 轻量 ECS 及事件总线
 │   └── module.cpp               # 主逻辑（Hook + 派发 + ECS 装配）
 ├── docs/
-│   ├── 911_DISPATCH.md          # 911/对讲机调度架构与测试清单
-│   ├── CRASH_STATUS.md
-│   └── MODULE_LAYOUT.md
-├── third_party/
-│   ├── shadowhook/              # ShadowHook 预编译头文件
-│   └── shadowhook-src/          # ShadowHook 完整编译源码树
-├── android-arm64-toolchain.cmake# Android NDK CMake 工具链配置文件
-├── build_in_container.sh       # 适用于 Linux 容器环境的单步隔离编译脚本
-├── pack_module.sh              # 模块打包脚本
-├── module.prop                 # Magisk 模块属性定义文件
-└── build.gradle                # 供 Android Studio 编译的 Gradle 配置
+├── rust/                        # **交付**源码（dispatch-* crates + build_rust.sh）
+├── docs/
+│   ├── BASELINE.md              # **权威**交付路径 / 依赖 / hooks
+│   ├── 911_DISPATCH.md
+│   ├── CRASH_STATUS.md          # 已废弃（legacy C++ 崩溃笔记）
+│   └── MODULE_LAYOUT.md         # 已废弃（legacy C++ 目录树）
+├── third_party/                 # 仅 legacy C++（ShadowHook）— 不链入交付 .so
+├── build_in_container.sh        # LEGACY C++ libpolicemod（不写交付 zip 名）
+├── pack_module.sh               # 交付打包 → Zygisk-PoliceDispatch.zip
+├── module.prop                  # Magisk 属性（v2.0.0-baseline）
+└── build.gradle                 # 可选 Android Studio / 旧工具链
 ```
 
 ---
 
-## 🏗️ 如何编译
+## 🏗️ 如何编译（基线交付路径）
 
-模组支持两种编译方式：使用隔离的 PRoot Linux 容器（推荐移动端 / Termux 开发者使用），或在 PC 上通过 Android NDK 直接编译。
+**唯一可安装产物：Rust Zygisk 模组。** 详见 [`docs/BASELINE.md`](docs/BASELINE.md)。
 
-### 方法 1：隔离容器构建（推荐 Termux / Linux 命令行）
+### 交付路径（必用）
 
-如果您在 Termux 或纯净的 Linux 环境中开发，可以使用通过 PRoot Distro 运行的自动化编译脚本。
-
-1. 确保系统已安装 `proot-distro`。
-2. 运行隔离编译命令：
+1. 准备好 `proot-distro` + `ubuntu-build`（或等价 NDK 环境）。Termux 下 `rust/build_rust.sh` 会在需要时自动进入容器。
+2. 编译交付二进制：
    ```bash
-   ./build_in_container.sh
-   # 或手动：proot-distro login --isolated --bind /path/to/Projects:/workspace ubuntu-build \
-   #   -- bash /workspace/mod-workspace/build_in_container.sh
+   bash rust/build_rust.sh
+   # → build/rust/arm64-v8a/arm64-v8a.so
    ```
-3. 脚本会自动下载并配置 Android NDK (r27c) 以及 ShadowHook 源码，为 `arm64-v8a` 编译出 `libpolicemod.so`，并直接打包成可刷入的 Magisk 模块 Zip：
-   *   **输出路径**：`Zygisk-PoliceDispatch.zip`
-
-### 方法 2：Android Studio / 本地 Gradle 编译
-
-1. 在 Android Studio 中将此目录作为项目导入。
-2. 运行 `assembleRelease` 任务，或者在终端运行：
-   ```bash
-   ./gradlew assembleRelease
-   ```
-3. 运行本地打包脚本：
+3. 打包 Magisk/KernelSU zip：
    ```bash
    bash pack_module.sh
+   # → Zygisk-PoliceDispatch.zip  (module.prop + zygisk/arm64-v8a.so)
    ```
+
+可选纯逻辑单测（无需 libUE4）：
+
+```bash
+cd rust && cargo test -p dispatch-core -p dispatch-exec -p dispatch-case --lib
+```
+
+### 遗留 C++ 树（非交付路径）
+
+`src/main/cpp` 与 `build_in_container.sh` 仅作历史参考。该路径生成基于 ShadowHook 的 `libpolicemod.so`；若完整跑完 legacy 构建，只会写出**不同文件名**的 zip（`Zygisk-PoliceDispatch-LEGACY-cpp.zip`），**绝不会**覆盖交付用的 `Zygisk-PoliceDispatch.zip`。请使用 `bash rust/build_rust.sh && bash pack_module.sh`。
 
 ---
 
 ## 📲 安装与使用
 
-1. 将编译好的 `Zygisk-PoliceDispatch.zip` 传输至您的 Android 设备。
+1. 将上述 **Rust 交付路径** 生成的 **`Zygisk-PoliceDispatch.zip`** 传到设备。
 2. 打开 **Magisk** 或 **KernelSU** 应用程序。
 3. 进入 **模块 (Modules)** -> **从本地安装 (Install from storage)**。
 4. 选择并安装 `Zygisk-PoliceDispatch.zip`，然后重启设备。
