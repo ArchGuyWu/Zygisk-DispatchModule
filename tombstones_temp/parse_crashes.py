@@ -218,23 +218,6 @@ def analyze_tombstone(filepath, symbols):
         print(f"Error analyzing {filepath}: {e}")
         return None
 
-def format_report(res):
-    """Format a single crash analysis result as a string for use by collect_tombstones.sh."""
-    lines = []
-    lines.append("=" * 80)
-    lines.append(f"File: {res['file']} | Time: {res['timestamp']}")
-    lines.append(f"Signal: {res['signal']}")
-    if res['cause']:
-        lines.append(f"Cause: {res['cause']}")
-    if res['abort']:
-        lines.append(f"Abort Message: {res['abort']}")
-    lines.append("Backtrace:")
-    for frame in res['frames'][:6]:
-        vaddr_str = f" | ELF_vaddr: {hex(frame['elf_vaddr'])}" if frame.get('elf_vaddr') is not None else ""
-        lines.append(f"  #{frame['num']:02d} pc {hex(frame['pc'])}  {frame['lib']}{vaddr_str} -> {frame['symbol']}")
-    return "\n".join(lines)
-
-
 def main():
     print("Loading symbols...")
     symbols = load_symbols()
