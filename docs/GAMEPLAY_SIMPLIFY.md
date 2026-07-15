@@ -279,15 +279,25 @@ Do **not** coarsen by deleting SWAT gates, phone open-on-Active, or nearby-vs-sp
 | No mod force board/exit preference | `should_prefer_foot_mobilization` removed |
 | Escaper / anti-spin / temp closure later | `escaper.rs` removed; `temp_closures` dropped from globals |
 | Stand-still / engagement_near / staging_drive | Removed |
-| Pursuit config from **threat level** | `classify_response_category` threat-first; live discharge → `FirearmActive` |
+| Pursuit config from **threat level** | `classify_response_category` threat-first; live discharge → active fire |
 | On-scene top-up ≠ waves | `build_on_scene_topup_plan` + `ReinforcementTopUp { density }`; max **3 attempts** safety cap only |
 | Model kinds table | `DispatchVehicleKind` + `is_*` via kinds |
 | Arrest thin helpers | `criminal_in_custody` wired in `sync_custody_criminals` |
 | Attack quotas | `compute_quotas` uses live `CaseRecord` |
 
-Remaining optional: dual perception policy doc only; further dead export hygiene.
+### Applied (coarsen pass — inventory L1–L4)
 
-Do **not** reintroduce skip-orig gates, foot-prefer overrides of engine enter/exit, or wave-indexed reinforcement.
+| Decision | Landed |
+|----------|--------|
+| 3-bucket threat | `CriminalThreatLevel::{Melee, Armed, ActiveFire}` via `case_threat` |
+| Unified response size | `response_size` drives Cat + quota + nearby cap |
+| Single density busy | `DENSITY_BUSY = 6` (no 5/7 split) |
+| Cat3 no free third patrol | two patrols unless SWAT/FBI |
+| Anchor | plain centroid; dead weight removed |
+| Geometric scan | online top-K + XY early reject |
+| Elect reporter score | saw/heard + kind overlap only |
+
+Do **not** reintroduce skip-orig gates, foot-prefer overrides of engine enter/exit, wave-indexed reinforcement, or 7-level threat enums.
 
 ---
 

@@ -42,8 +42,12 @@ pub(crate) fn geometric_scan(rt: &mut DispatchRuntime, signal: CausalSignal) {
         None => return,
     };
 
-    let mut candidates: Vec<(u16, u8, *const std::ffi::c_void, WorldPos, bool, bool, f32)> =
-        Vec::new();
+    // Online top-K by distance — avoid unbounded Vec then sort of whole pool hits.
+    type Cand = (u16, u8, *const std::ffi::c_void, WorldPos, bool, bool, f32);
+    let mut candidates: Vec<Cand> = Vec::with_capacity(MAX_GEOMETRIC_WITNESSES);
+    let mut farthest_d2 = f32::MAX;
+    let max_range = heard_range.max(saw_range);
+    let max_range_sq = max_range * max_range;
 
     for slot in 0..pool.size as usize {
         let flag = pool.byte_map[slot];
@@ -71,8 +75,12 @@ pub(crate) fn geometric_scan(rt: &mut DispatchRuntime, signal: CausalSignal) {
         let dx = witness_pos.x - anchor.x;
         let dy = witness_pos.y - anchor.y;
         let d2_xy = dx * dx + dy * dy;
-        let max_range = heard_range.max(saw_range);
-        if d2_xy > max_range * max_range {
+        // Cheap XY reject before z / kind work.
+        if d2_xy > max_range_sq {
+            continue;
+        }
+        // If we already have K closer hits, skip farther XY (cannot beat farthest in top-K).
+        if candidates.len() >= MAX_GEOMETRIC_WITNESSES && d2_xy >= farthest_d2 {
             continue;
         }
         let d2 = d2_xy + (witness_pos.z - anchor.z).powi(2);
@@ -81,16 +89,27 @@ pub(crate) fn geometric_scan(rt: &mut DispatchRuntime, signal: CausalSignal) {
         if !heard && !saw {
             continue;
         }
-        candidates.push((key.slot, key.generation, ped, witness_pos, heard, saw, d2));
-    }
-
-    if candidates.len() > MAX_GEOMETRIC_WITNESSES {
-        candidates.select_nth_unstable_by(MAX_GEOMETRIC_WITNESSES, |a, b| {
-            a.6
-                .partial_cmp(&b.6)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        candidates.truncate(MAX_GEOMETRIC_WITNESSES);
+        let entry = (key.slot, key.generation, ped, witness_pos, heard, saw, d2);
+        if candidates.len() < MAX_GEOMETRIC_WITNESSES {
+            candidates.push(entry);
+            if candidates.len() == MAX_GEOMETRIC_WITNESSES {
+                farthest_d2 = candidates
+                    .iter()
+                    .map(|c| c.6)
+                    .fold(0.0_f32, f32::max);
+            }
+        } else if d2 < farthest_d2 {
+            let mut worst_i = 0usize;
+            let mut worst_d = candidates[0].6;
+            for (i, c) in candidates.iter().enumerate().skip(1) {
+                if c.6 > worst_d {
+                    worst_d = c.6;
+                    worst_i = i;
+                }
+            }
+            candidates[worst_i] = entry;
+            farthest_d2 = candidates.iter().map(|c| c.6).fold(0.0_f32, f32::max);
+        }
     }
 
     let suspect_pos = perpetrators

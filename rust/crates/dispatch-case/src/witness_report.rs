@@ -530,30 +530,20 @@ fn elect_reporter(
     best.map(|(obs, _, _)| (obs.ped, obs))
 }
 
+/// Prefer witnesses who share any incident kind and who saw (not multi-weight theater).
 fn clue_score(incident: &Incident, obs: &WitnessObservation) -> i32 {
-    let mut score = 0i32;
-    for entity in obs.perceived_entities() {
-        if incident.has_entity(*entity) {
-            score += 3;
-        }
+    if obs.perceived_kinds & incident.kinds == 0
+        && !obs
+            .perceived_entities()
+            .iter()
+            .any(|e| incident.has_entity(*e))
+    {
+        return 0;
     }
-    for kind in [
-        CausalKind::WeaponDischarge,
-        CausalKind::VehiclePropertyDamage,
-        CausalKind::VehicleBurning,
-        CausalKind::Explosion,
-        CausalKind::PedCasualty,
-        CausalKind::PedInjury,
-        CausalKind::FireOutbreak,
-    ] {
-        if incident.has_kind(kind) && obs.perceived_kinds & (1 << kind as u8) != 0 {
-            score += 2;
-        }
-    }
+    let mut score = 1i32;
     if obs.saw {
-        score += 1;
-    }
-    if obs.heard {
+        score += 2;
+    } else if obs.heard {
         score += 1;
     }
     score
