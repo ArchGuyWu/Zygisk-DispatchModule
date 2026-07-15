@@ -78,6 +78,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dispatch-model"
+version = "0.2.0"
+
+[[package]]
 name = "dispatch-zygisk"
 version = "0.2.0"
 dependencies = [

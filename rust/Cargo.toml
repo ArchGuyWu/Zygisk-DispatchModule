@@ -7,6 +7,7 @@ members = [
     "crates/dispatch-exec",
     "crates/dispatch-hook",
     "crates/dispatch-zygisk",
+    "crates/dispatch-model",
 ]
 
 [workspace.package]
