@@ -64,8 +64,9 @@ pub use threat::{
     build_category_spawn_plan, build_initial_spawn_plan, build_on_scene_topup_plan,
     classify_response_category, compute_case_threat_score, compute_dispatch_anchor,
     compute_nearby_dispatch_quota, compute_response_quota, count_active_threats, count_high_threats,
-    get_case_max_threat_level, get_case_threat_tier, is_firearm_case, on_scene_needs_reinforcement,
-    pick_criminal_target_for_cop, CriminalThreatLevel, ResponseQuota,
+    fbi_warranted, get_case_max_threat_level, get_case_threat_tier, is_firearm_case,
+    on_scene_needs_reinforcement, pick_criminal_target_for_cop, swat_warranted, CriminalThreatLevel,
+    ResponseQuota,
 };
 pub use timing::*;
 pub use vehicle_spawn::{

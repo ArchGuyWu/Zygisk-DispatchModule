@@ -256,18 +256,46 @@ pub fn classify_response_category(case: &CaseRecord, density: i32) -> ResponseCa
     }
 }
 
-fn pick_category_three_variant(case: &CaseRecord, density: i32) -> i32 {
-    let level = get_case_max_threat_level(case);
+/// Multi-criminal "gang / consolidated" bar for special units (SWAT/FBI).
+const GANG_CONSOLIDATED_MIN: i32 = 3;
+
+/// SWAT is rare: multi-offender consolidation **and** other severity, or extreme active threat.
+pub fn swat_warranted(case: &CaseRecord, density: i32) -> bool {
     let n = case.criminals.len() as i32;
-    if matches!(level, CriminalThreatLevel::FirearmActive)
-        && (n >= 2 || density >= DENSITY_BOOST_CAT3)
-    {
-        return 2;
+    let level = get_case_max_threat_level(case);
+    let score = compute_case_threat_score(case);
+    let gang = n >= GANG_CONSOLIDATED_MIN;
+    let severe = is_firearm_case(case)
+        || matches!(level, CriminalThreatLevel::FirearmActive)
+        || score >= 12
+        || density >= DENSITY_BOOST_CAT3;
+
+    // Typical path: multi-criminal case + severity.
+    if gang && severe {
+        return true;
     }
-    if is_firearm_case(case) && n >= 2 {
-        return 1;
+    // Exception: very high individual threat without full gang size.
+    if matches!(level, CriminalThreatLevel::FirearmActive) && (n >= 2 || score >= 16) {
+        return true;
     }
-    0
+    false
+}
+
+/// FBI is rarer than SWAT: gang-scale + high threat / Cat3 pressure.
+pub fn fbi_warranted(case: &CaseRecord, density: i32) -> bool {
+    let n = case.criminals.len() as i32;
+    let level = get_case_max_threat_level(case);
+    let score = compute_case_threat_score(case);
+    if n < GANG_CONSOLIDATED_MIN {
+        // Only extreme active multi-shooter without waiting for 3 IDs.
+        return matches!(level, CriminalThreatLevel::FirearmActive) && n >= 2 && score >= 16;
+    }
+    let high = matches!(
+        level,
+        CriminalThreatLevel::FirearmActive | CriminalThreatLevel::FirearmAirShoot
+    ) || score >= THREAT_SCORE_CAT3_MIN
+        || density >= DENSITY_BOOST_CAT3;
+    high && (is_firearm_case(case) || matches!(level, CriminalThreatLevel::FirearmActive))
 }
 
 pub fn build_category_spawn_plan(
@@ -278,49 +306,34 @@ pub fn build_category_spawn_plan(
     swat_already: bool,
 ) -> Vec<crate::models::PoliceSpawnUnit> {
     let mut plan = Vec::new();
+    let allow_swat = swat_warranted(case, density) && !swat_already;
+    let allow_fbi = fbi_warranted(case, density);
 
     match category {
+        // Default response: regional two-person patrol car(s). Never bike.
         ResponseCategory::One => push_patrol(&mut plan, loc),
         ResponseCategory::Two => {
-            // Firearm threat → SWAT-capable composition; melee multi only double patrol.
-            let prefer_swat = is_firearm_case(case)
-                || matches!(
-                    get_case_max_threat_level(case),
-                    CriminalThreatLevel::FirearmActive
-                        | CriminalThreatLevel::FirearmAirShoot
-                        | CriminalThreatLevel::FirearmInactive
-                );
-            if prefer_swat && !swat_already {
-                push_patrol(&mut plan, loc);
+            // Ordinary escalate: second patrol unit. SWAT only if gang+severity bar met.
+            push_patrol(&mut plan, loc);
+            if allow_swat {
                 push_swat(&mut plan, swat_already);
             } else {
-                push_patrol(&mut plan, loc);
                 push_patrol(&mut plan, loc);
             }
         }
         ResponseCategory::Three => {
-            let variant = pick_category_three_variant(case, density);
-            match variant {
-                2 => {
-                    push_swat(&mut plan, swat_already);
-                    push_fbi(&mut plan);
-                    push_fbi(&mut plan);
-                    if plan.is_empty() {
-                        push_patrol(&mut plan, loc);
-                        push_fbi(&mut plan);
-                        push_fbi(&mut plan);
-                    }
-                }
-                1 => {
-                    push_patrol(&mut plan, loc);
-                    push_swat(&mut plan, swat_already);
-                    push_fbi(&mut plan);
-                }
-                _ => {
-                    push_patrol(&mut plan, loc);
-                    push_patrol(&mut plan, loc);
-                    push_fbi(&mut plan);
-                }
+            // Heavy scene still starts with patrols; special units only if warranted.
+            push_patrol(&mut plan, loc);
+            push_patrol(&mut plan, loc);
+            if allow_swat {
+                push_swat(&mut plan, swat_already);
+            }
+            if allow_fbi {
+                push_fbi(&mut plan);
+            }
+            // If neither special unit unlocked, a third patrol for mass response.
+            if !allow_swat && !allow_fbi {
+                push_patrol(&mut plan, loc);
             }
         }
     }
@@ -328,6 +341,7 @@ pub fn build_category_spawn_plan(
     plan
 }
 
+/// Two-person regional patrol car only — never police bike (unsuitable for reinforce/spawn plan).
 fn push_patrol(plan: &mut Vec<PoliceSpawnUnit>, loc: WorldPos) {
     plan.push(PoliceSpawnUnit {
         model: crate::models::local_patrol_model(loc),
@@ -380,8 +394,8 @@ pub fn build_initial_spawn_plan(
     build_category_spawn_plan(category, case, loc, density, swat_already)
 }
 
-/// On-scene top-up unit from **current** threat config — not a wave index into initial plan.
-/// Returns at most one unit (what the scene still needs), or empty if nothing useful to add.
+/// On-scene top-up: default **one patrol car** (two officers). SWAT/FBI only if warranted.
+/// Never police bike.
 pub fn build_on_scene_topup_plan(
     case: &CaseRecord,
     loc: WorldPos,
@@ -392,33 +406,22 @@ pub fn build_on_scene_topup_plan(
     let category = classify_response_category(case, density);
     let mut plan = Vec::new();
 
-    match level {
-        CriminalThreatLevel::FirearmActive
-        | CriminalThreatLevel::FirearmAirShoot
-        | CriminalThreatLevel::FirearmInactive => {
-            if !swat_already {
-                push_swat(&mut plan, swat_already);
-            } else if category >= ResponseCategory::Three {
-                push_fbi(&mut plan);
-            } else {
-                push_patrol(&mut plan, loc);
-            }
-        }
-        CriminalThreatLevel::MeleeActive => {
-            push_patrol(&mut plan, loc);
-        }
-        _ => {
-            if category >= ResponseCategory::Two {
-                push_patrol(&mut plan, loc);
-            }
-        }
+    // Special units only when gang/threat bars are met — not for ordinary firearm calls.
+    if swat_warranted(case, density) && !swat_already {
+        push_swat(&mut plan, swat_already);
+    } else if fbi_warranted(case, density) && category >= ResponseCategory::Three {
+        push_fbi(&mut plan);
+    } else {
+        push_patrol(&mut plan, loc);
     }
 
     tracing::info!(
         category = category.name(),
         threat = ?level,
+        swat = swat_warranted(case, density),
+        fbi = fbi_warranted(case, density),
         units = plan.len(),
-        "on-scene top-up plan (threat-driven)"
+        "on-scene top-up (patrol default; special units gated)"
     );
     plan
 }
@@ -510,12 +513,35 @@ mod tests {
     }
 
     #[test]
-    fn on_scene_topup_prefers_swat_for_firearm() {
+    fn on_scene_topup_defaults_to_patrol_not_swat() {
         let mut case = sample_case(true);
         case.criminals = vec![dispatch_core::PedId::default()];
         let plan = build_on_scene_topup_plan(&case, WorldPos::default(), 2, false);
         assert_eq!(plan.len(), 1);
-        assert!(plan[0].register_swat);
+        assert!(!plan[0].register_swat);
+        assert!(!crate::models::is_swat_model(plan[0].model));
+        // Patrol car models only — never bike for top-up.
+        assert_ne!(plan[0].model, crate::models::MODEL_POLICE_BIKE);
+    }
+
+    #[test]
+    fn swat_requires_gang_scale_not_lone_firearm() {
+        let mut lone = sample_case(true);
+        lone.criminals = vec![dispatch_core::PedId::default()];
+        assert!(!swat_warranted(&lone, 2));
+
+        let mut gang = sample_case(true);
+        gang.criminals = vec![dispatch_core::PedId::default(); 3];
+        assert!(swat_warranted(&gang, 2));
+
+        let plan = build_category_spawn_plan(
+            ResponseCategory::Two,
+            &gang,
+            WorldPos::default(),
+            2,
+            false,
+        );
+        assert!(plan.iter().any(|u| u.register_swat));
     }
 
     #[test]
