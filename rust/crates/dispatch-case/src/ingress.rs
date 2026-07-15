@@ -120,8 +120,8 @@ mod tests {
     #[test]
     fn firearm_hit_emits_discharge_and_injury() {
         let signals = signals_from_weapon_hit(
-            ptr(0x100),
-            ptr(0x200),
+            ptr(0x10000),
+            ptr(0x20000),
             24,
             10.0,
             PedKind::Civilian,
@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn burning_vehicle_emits_burning_kind() {
         let signals = signals_from_vehicle_hit(
-            ptr(0x300),
-            ptr(0x200),
+            ptr(0x30000),
+            ptr(0x20000),
             51,
             1.0,
             WorldPos::default(),

@@ -158,4 +158,28 @@ mod tests {
         case.mark_live_kind(CausalKind::WeaponDischarge);
         assert!(case.police_scene_abnormal());
     }
+
+    #[test]
+    fn cleanup_waits_for_pending_fire_or_ems_spawn() {
+        let fire = 1 << CausalKind::FireOutbreak as u8;
+        let mut case = case_with_kinds(fire, vec![]);
+        case.report_channel = None;
+        // Fire needed, truck not yet dispatched → keep case.
+        assert!(case.fire_script_active());
+        assert!(!case.mod_firetruck_dispatched);
+        assert!(!case.should_enter_cleanup());
+
+        case.mod_firetruck_dispatched = true;
+        assert!(case.should_enter_cleanup());
+    }
+
+    #[test]
+    fn cleanup_ok_when_only_police_criminals_gone() {
+        let kinds = 1 << CausalKind::WeaponDischarge as u8;
+        let mut case = case_with_kinds(kinds, vec![dispatch_core::PedId::default()]);
+        case.report_channel = None;
+        case.criminals.clear();
+        // Firearm clues keep police need, but no pending EMS/fire spawn.
+        assert!(case.should_enter_cleanup());
+    }
 }

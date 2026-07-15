@@ -282,9 +282,9 @@ impl<'a> ExecEnv<'a> {
         target: WorldPos,
         driving_style: i32,
         set_cruise_speed: bool,
-    ) -> bool {
+    ) -> Option<f32> {
         if !self.vehicle_has_live_driver(vehicle) {
-            return false;
+            return None;
         }
         let ptr = self.vehicle_ptr(vehicle);
         self.symbols.try_get_car_to_go_to_coors(
@@ -297,6 +297,7 @@ impl<'a> ExecEnv<'a> {
 
     /// One-shot **drive** to scene coords (police / EMS / fire). Autopilot holds approach;
     /// when close, mission clears → vehicle stops (engine-side, not a timed dwell task).
+    /// Returns remaining distance if the command was issued.
     pub fn command_vehicle_to_scene(
         &self,
         vehicle: VehicleId,
@@ -310,13 +311,16 @@ impl<'a> ExecEnv<'a> {
             tracing::warn!(?vehicle, "vehicle has no live driver — blocked drive command");
             return false;
         }
-        let ok = self.try_get_car_to_go_to_coors(vehicle, target_loc, driving_style, true);
-        if ok {
-            tracing::info!(?vehicle, driving_style, "vehicle CarAI go-to scene");
-        } else {
-            tracing::warn!(?vehicle, "GetCarToGoToCoors failed");
+        match self.try_get_car_to_go_to_coors(vehicle, target_loc, driving_style, true) {
+            Some(dist) => {
+                tracing::info!(?vehicle, driving_style, dist, "vehicle CarAI go-to scene");
+                true
+            }
+            None => {
+                tracing::warn!(?vehicle, "GetCarToGoToCoors not issued");
+                false
+            }
         }
-        ok
     }
 
     /// Compatibility alias.

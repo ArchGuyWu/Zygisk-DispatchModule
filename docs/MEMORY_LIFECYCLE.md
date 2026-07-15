@@ -87,6 +87,16 @@
 
 ---
 
+### Applied hardenings (post-inventory)
+
+| Item | Change |
+|------|--------|
+| EntityRef | Reject implausible addresses; document non-owning lifetime |
+| Task assign | Re-validate live ped at commit before `AddTaskPrimary` |
+| GetCarToGoToCoors | Typed as `f32` distance; `Option` if no driver |
+| Case cleanup | Wait for pending EMS/fire spawn (`should_enter_cleanup`) |
+| Vehicle despawn | Purge exec globals + `case_vehicles` |
+
 ## 7. Priority if fixing later (not this goal)
 
 1. **EntityRef** → store PoolKey or drop raw ptr after frame (highest lasting stale-ptr risk).  

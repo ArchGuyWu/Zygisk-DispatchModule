@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use slotmap::SlotMap;
 use tracing::{debug, info};
 
-use dispatch_core::{CausalKind, CausalSignal, DespawnReason, PedId, PedKind};
+use dispatch_core::{CausalKind, CausalSignal, DespawnReason, PedId, PedKind, VehicleId};
 
 use crate::incident::{signal_pos, DepartmentSet, IncidentId};
 use crate::record::{CaseId, CaseRecord};
@@ -283,7 +283,7 @@ impl CaseStore {
             if record.primary.is_some_and(|primary| !ped_live(primary)) {
                 record.primary = record.criminals.first().copied();
             }
-            if record.criminals.is_empty() && record.report_channel.is_none() {
+            if record.should_enter_cleanup() {
                 record.state = DispatchState::Cleanup;
             }
             match record.state {
@@ -316,7 +316,7 @@ impl CaseStore {
             if record.primary.is_some_and(|primary| !ped_live(primary)) {
                 record.primary = record.criminals.first().copied();
             }
-            if record.criminals.is_empty() && record.report_channel.is_none() {
+            if record.should_enter_cleanup() {
                 record.state = DispatchState::Cleanup;
             }
             if matches!(record.state, DispatchState::Cleanup) {
@@ -325,6 +325,15 @@ impl CaseStore {
             }
         }
         self.remove_cancelled();
+    }
+
+    pub fn on_vehicle_despawned(&mut self, id: VehicleId) {
+        for record in self.cases.values_mut() {
+            if record.cancelled {
+                continue;
+            }
+            record.note_vehicle_gone(id);
+        }
     }
 
     fn remove_cancelled(&mut self) {

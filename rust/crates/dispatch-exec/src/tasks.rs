@@ -145,6 +145,28 @@ fn live_intel_for_assign(
     Some(intel)
 }
 
+/// Re-check live+intel after ctor work; only then hand task to engine (ownership transfer).
+fn commit_primary_task(
+    symbols: &ExecSymbols,
+    ped: *mut std::ffi::c_void,
+    task: *mut std::ffi::c_void,
+) -> bool {
+    if task.is_null() {
+        return false;
+    }
+    // Ped may have died between alloc and commit — do not attach task to dead intel.
+    let Some(intel) = live_intel_for_assign(symbols, ped) else {
+        // Engine `operator new` for CTask — if we never AddTask, leak is preferable to
+        // wrong free ABI; rare path (ped dies mid-assign).
+        tracing::warn!("task alloc discarded: ped not live at commit");
+        return false;
+    };
+    unsafe {
+        (symbols.add_task_primary_maybe_in_group)(intel, task, true);
+    }
+    true
+}
+
 pub fn assign_investigate_disturbance_task(
     symbols: &ExecSymbols,
     cop: *mut std::ffi::c_void,
@@ -169,7 +191,9 @@ pub fn assign_investigate_disturbance_task(
     };
     unsafe {
         (symbols.task_investigate_disturbance_ctor)(task, &pos as *const _, std::ptr::null_mut());
-        (symbols.add_task_primary_maybe_in_group)(intel, task, true);
+    }
+    if !commit_primary_task(symbols, cop, task) {
+        return false;
     }
     tracing::debug!(?cop, ?target, "CTaskComplexInvestigateDisturbance assigned");
     true
@@ -180,7 +204,7 @@ pub fn assign_arrest_task(
     cop: *mut std::ffi::c_void,
     criminal: *mut std::ffi::c_void,
 ) -> bool {
-    let Some(intel) = live_intel_for_assign(symbols, cop) else {
+    let Some(_intel) = live_intel_for_assign(symbols, cop) else {
         return false;
     };
     // Do not pass a non-live criminal into the arrest task ctor.
@@ -193,23 +217,27 @@ pub fn assign_arrest_task(
     }
     unsafe {
         (symbols.task_complex_arrest_ped_ctor)(task, criminal);
-        (symbols.add_task_primary_maybe_in_group)(intel, task, true);
+    }
+    if !commit_primary_task(symbols, cop, task) {
+        return false;
     }
     tracing::debug!(?cop, ?criminal, "CTaskComplexArrestPed assigned");
     true
 }
 
 pub fn assign_mobile_phone_task(symbols: &ExecSymbols, ped: *mut std::ffi::c_void) -> bool {
-    let Some(intel) = live_intel_for_assign(symbols, ped) else {
+    if live_intel_for_assign(symbols, ped).is_none() {
         return false;
-    };
+    }
     let task = unsafe { (symbols.task_new)(TASK_ALLOC_SIZE) };
     if task.is_null() {
         return false;
     }
     unsafe {
         (symbols.task_complex_use_mobile_phone_ctor)(task, 30_000);
-        (symbols.add_task_primary_maybe_in_group)(intel, task, true);
+    }
+    if !commit_primary_task(symbols, ped, task) {
+        return false;
     }
     tracing::debug!(?ped, "CTaskComplexUseMobilePhone assigned");
     true

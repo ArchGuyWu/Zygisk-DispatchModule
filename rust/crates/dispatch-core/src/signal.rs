@@ -37,22 +37,60 @@ pub enum CausalKind {
     CrimeReported,
 }
 
+/// Opaque engine entity pointer for **same-frame / identity compare only**.
+///
+/// Not a strong ref: the engine may free the object while a case still holds this value.
+/// Callers must not dereference without a fresh pool/live check. Construction rejects
+/// null and implausible user-space patterns (load-time sentinels).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntityRef(pub *const std::ffi::c_void);
 
 impl EntityRef {
+    /// ARM64 user VA heuristic (matches task-slot filtering in dispatch-exec).
+    #[inline]
+    pub fn is_plausible_addr(ptr: *const std::ffi::c_void) -> bool {
+        const MAX_USER_ADDR: usize = (1u64 << 52) as usize;
+        let addr = ptr as usize;
+        !ptr.is_null() && (addr & 0x00FF_FFFF_FFFF_FFFF) < MAX_USER_ADDR && addr >= 0x1000
+    }
+
     pub fn new(ptr: *const std::ffi::c_void) -> Option<Self> {
-        (!ptr.is_null()).then_some(Self(ptr))
+        Self::is_plausible_addr(ptr).then_some(Self(ptr))
     }
 
     pub fn ptr(self) -> *const std::ffi::c_void {
         self.0
+    }
+
+    /// True if this still looks like a user pointer (not a pool membership check).
+    pub fn still_plausible(self) -> bool {
+        Self::is_plausible_addr(self.0)
     }
 }
 
 impl std::fmt::Debug for EntityRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "EntityRef({:p})", self.0)
+    }
+}
+
+#[cfg(test)]
+mod entity_ref_tests {
+    use super::EntityRef;
+
+    #[test]
+    fn rejects_null_and_low_sentinels() {
+        assert!(EntityRef::new(std::ptr::null()).is_none());
+        assert!(EntityRef::new(0x8 as *const _).is_none());
+        assert!(EntityRef::new(0x00FF_FFFF_FFFF_FFFE_u64 as *const _).is_none());
+    }
+
+    #[test]
+    fn accepts_typical_user_range_addr() {
+        let p = 0x0000_0071_2345_6000_u64 as *const std::ffi::c_void;
+        let r = EntityRef::new(p).expect("plausible");
+        assert!(r.still_plausible());
+        assert_eq!(r.ptr(), p);
     }
 }
 

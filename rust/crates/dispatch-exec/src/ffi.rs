@@ -11,12 +11,13 @@ pub type SymbolIsPassenger =
     unsafe extern "C" fn(vehicle: *const std::ffi::c_void, ped: *const std::ffi::c_void) -> bool;
 pub type SymbolTellOccupantsToLeaveCar =
     unsafe extern "C" fn(vehicle: *mut std::ffi::c_void);
+/// Engine returns **distance** (float) to target, not a success bool.
 pub type SymbolGetCarToGoToCoors = unsafe extern "C" fn(
     vehicle: *mut std::ffi::c_void,
     coors: *mut CVector,
     driving_mode: i32,
-    flag: bool,
-) -> bool;
+    set_cruise_speed: bool,
+) -> f32;
 pub type SymbolAddCriminalToKill =
     unsafe extern "C" fn(cop: *mut std::ffi::c_void, criminal: *mut std::ffi::c_void);
 pub type SymbolTaskNew = unsafe extern "C" fn(size: usize) -> *mut std::ffi::c_void;
@@ -173,17 +174,22 @@ impl ExecSymbols {
         })
     }
 
+    /// Returns remaining 2D distance after issuing the mission, or `None` if vehicle null.
     pub fn try_get_car_to_go_to_coors(
         &self,
         vehicle: *mut std::ffi::c_void,
         target: CVector,
         driving_style: i32,
-        stop_after: bool,
-    ) -> bool {
+        set_cruise_speed: bool,
+    ) -> Option<f32> {
         if vehicle.is_null() {
-            return false;
+            return None;
         }
-        unsafe { (self.get_car_to_go_to_coors)(vehicle, &target as *const _ as *mut _, driving_style, stop_after) }
+        let mut t = target;
+        let dist = unsafe {
+            (self.get_car_to_go_to_coors)(vehicle, &mut t as *mut _, driving_style, set_cruise_speed)
+        };
+        Some(dist)
     }
 
     pub fn tell_occupants_to_leave_car(&self, vehicle: *mut std::ffi::c_void) {

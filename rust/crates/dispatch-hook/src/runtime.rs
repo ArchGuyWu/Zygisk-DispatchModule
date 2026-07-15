@@ -818,6 +818,17 @@ impl DispatchRuntime {
         if self.registry.release_vehicle(id).is_none() {
             return;
         }
+        // Drop stale VehicleId from exec globals and open cases (lifecycle hardening).
+        self.exec.globals.spawned_swats.remove(&id);
+        self.exec.globals.vehicles_ordered_to_scene.remove(&id);
+        self.exec.globals.vehicles_emptied.remove(&id);
+        self.exec.globals.vehicles_siren_awakened.remove(&id);
+        self.exec.globals.transport_vehicles.remove(&id);
+        self.exec
+            .globals
+            .cop_bindings
+            .retain(|b| b.vehicle != id);
+        self.cases.on_vehicle_despawned(id);
         debug!(?id, ?reason, "vehicle despawned");
     }
 

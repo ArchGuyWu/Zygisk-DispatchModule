@@ -145,8 +145,31 @@ impl CaseRecord {
         if self.primary == Some(criminal) {
             self.primary = self.criminals.first().copied();
         }
-        if self.criminals.is_empty() {
+        if self.should_enter_cleanup() {
             self.state = DispatchState::Cleanup;
+        }
+    }
+
+    /// Drop case only when police work is done **and** EMS/fire are not still waiting to spawn.
+    /// Avoids tearing down a multi-dept case the moment the last criminal despawns while
+    /// ambulance/firetruck has not been created yet.
+    pub fn should_enter_cleanup(&mut self) -> bool {
+        if !self.criminals.is_empty() {
+            return false;
+        }
+        if self.report_channel.is_some() {
+            return false;
+        }
+        self.refresh_department_needs();
+        let ems_pending = self.ems_script_active() && !self.mod_ambulance_dispatched;
+        let fire_pending = self.fire_script_active() && !self.mod_firetruck_dispatched;
+        !ems_pending && !fire_pending
+    }
+
+    pub fn note_vehicle_gone(&mut self, vehicle: VehicleId) {
+        self.case_vehicles.retain(|v| *v != vehicle);
+        if self.spawned_vehicle == Some(vehicle) {
+            self.spawned_vehicle = None;
         }
     }
 }
