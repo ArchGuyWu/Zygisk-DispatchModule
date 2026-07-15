@@ -6,12 +6,11 @@ use dispatch_core::{PedId, VehicleId, WorldPos};
 use dispatch_engine::dist_sq;
 
 use crate::dispatch_disturbance::{dispatch_ped_to_disturbance, dispatch_vehicle_to_disturbance};
-use crate::game::{crime_dispatch_position, ExecEnv, ExecGlobals};
+use crate::game::{crime_dispatch_position, ExecEnv};
 use crate::spawn::{build_initial_plan_for_case, schedule_police_vehicle_spawns};
 use crate::threat::compute_nearby_dispatch_quota;
 use crate::timing::{
-    av_range_for_firearm, should_attempt_nearby_dispatch, NEARBY_SEARCH_FIREARM_M,
-    NEARBY_SEARCH_MELEE_M,
+    should_attempt_nearby_dispatch, NEARBY_SEARCH_FIREARM_M, NEARBY_SEARCH_MELEE_M,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,31 +72,6 @@ pub fn setup_dispatched_cops(
     } else {
         tracing::warn!(?vehicle, "siren arm failed");
     }
-}
-
-pub fn should_prefer_foot_mobilization(
-    env: &ExecEnv<'_>,
-    globals: &ExecGlobals,
-    cop: PedId,
-    crime_pos: WorldPos,
-    bound_vehicle: Option<VehicleId>,
-) -> bool {
-    if let Some(veh) = env.find_vehicle_of_cop(cop) {
-        if env.cop_is_in_vehicle(cop, veh) {
-            return false;
-        }
-    }
-    if globals.is_cop_exiting(cop, 0) {
-        return true;
-    }
-    if let Some(veh) = bound_vehicle {
-        if globals.is_vehicle_emptied(veh) {
-            return true;
-        }
-    }
-    let cop_pos = env.ped_pos(cop);
-    let dist = (cop_pos.x - crime_pos.x).hypot(cop_pos.y - crime_pos.y);
-    dist <= crate::timing::NEARBY_FOOT_PREFER_DIST_M
 }
 
 pub fn dispatch_nearby_available_cops_to_crime(
@@ -292,16 +266,6 @@ pub fn try_mobilize_nearby_cops(
     true
 }
 
-pub fn make_cops_attack_criminal_immediate(
-    env: &mut ExecEnv<'_>,
-    case: &mut CaseRecord,
-    criminal: PedId,
-    now_ms: i64,
-    is_firearm: bool,
-) {
-    make_cops_attack_criminal(env, case, criminal, now_ms, is_firearm);
-}
-
 pub fn make_cops_attack_criminal(
     env: &mut ExecEnv<'_>,
     case: &mut CaseRecord,
@@ -365,7 +329,3 @@ pub fn cop_is_already_pursuing(env: &ExecEnv<'_>, cop: PedId, criminal: PedId) -
         .is_some_and(|target| target.as_ptr() == crim.as_ptr())
 }
 
-pub fn av_range_sq(case: &CaseRecord) -> f32 {
-    let range = av_range_for_firearm(case.is_firearm);
-    range * range
-}

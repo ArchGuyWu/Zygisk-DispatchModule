@@ -45,7 +45,7 @@ pub fn sync_custody_criminals(
     globals.custody_criminals.clear();
     for map in arrest_states.values() {
         for (&criminal, state) in map {
-            if state.apprehended {
+            if criminal_in_custody(Some(state)) {
                 globals.custody_criminals.insert(criminal);
             }
         }

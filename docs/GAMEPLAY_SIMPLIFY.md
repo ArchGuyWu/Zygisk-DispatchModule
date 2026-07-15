@@ -194,15 +194,22 @@ Branches on `FirearmAirShoot` / `FirearmActive` / `count_high_threats` (needs Ai
 
 ---
 
-## Suggested simplify order (when implementing later)
+## Applied (post-discussion)
 
-1. **Dead exports / never-used helpers** (escaper anti-spin, stand_still, unused models exports) — lowest risk.  
-2. **Wire or remove** hollow reinforcement (`ReinforcementNearby` + empty candidates + unused `build_reinforcement_spawn_plan`).  
-3. **Threat estimate vs Cat branches** — collapse dead levels or feed real weapon state.  
-4. **Attack quotas** use live `CaseRecord`.  
-5. **Perception** document single policy: native primary + geometric only when `needs_geometric_supplement`.
+| Decision | Landed |
+|----------|--------|
+| No mod force board/exit preference | `should_prefer_foot_mobilization` removed |
+| Escaper / anti-spin / temp closure later | `escaper.rs` removed; `temp_closures` dropped from globals |
+| Stand-still / engagement_near / staging_drive | Removed |
+| Pursuit config from **threat level** | `classify_response_category` threat-first; live discharge → `FirearmActive` |
+| On-scene top-up ≠ waves | `build_on_scene_topup_plan` + `ReinforcementTopUp { density }`; max **3 attempts** safety cap only |
+| Model kinds table | `DispatchVehicleKind` + `is_*` via kinds |
+| Arrest thin helpers | `criminal_in_custody` wired in `sync_custody_criminals` |
+| Attack quotas | `compute_quotas` uses live `CaseRecord` |
 
-Do **not** start by deleting Cat thresholds, phone phases, commit nearby-vs-spawn, or wanted/EMS hooks.
+Remaining optional: dual perception policy doc only; further dead export hygiene.
+
+Do **not** reintroduce skip-orig gates, foot-prefer overrides of engine enter/exit, or wave-indexed reinforcement.
 
 ---
 

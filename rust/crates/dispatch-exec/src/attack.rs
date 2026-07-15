@@ -81,7 +81,7 @@ pub fn run_attack_pass(
         let r = av_range_for_firearm(ctx.is_active_firearm);
         r * r
     };
-    compute_quotas(&mut ctx);
+    compute_quotas(&mut ctx, case);
     let entries = build_cop_pool_entries(env, &ctx);
     ctx.snapshot_globals(env);
     count_active_from_entries(&mut ctx, &entries, &env.globals);
@@ -92,17 +92,9 @@ pub fn run_attack_pass(
     ctx.commit_pending(env);
 }
 
-fn compute_quotas(ctx: &mut CopAttackContext) {
-    let quota = compute_response_quota(&dispatch_case::CaseRecord::new(
-        0,
-        None,
-        None,
-        None,
-        Default::default(),
-        vec![ctx.criminal],
-        0,
-        8000,
-    ));
+fn compute_quotas(ctx: &mut CopAttackContext, case: &dispatch_case::CaseRecord) {
+    // Quotas from the live case threat, not a blank CaseRecord.
+    let quota = compute_response_quota(case);
     ctx.max_vehicles = quota.max_vehicles;
     ctx.max_foot_cops = quota.max_foot_cops;
 }

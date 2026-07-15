@@ -1,9 +1,6 @@
-//! Vehicle model IDs and map-region helpers (from `game_config.hpp` + `dispatch_police_spawn`).
+//! Vehicle model IDs, map-region helpers, and dispatch vehicle kind table.
 
 use dispatch_core::WorldPos;
-
-pub const PED_TYPE_COP: i32 = 6;
-pub const PED_TYPE_PLAYER: i32 = 0;
 
 pub const MODEL_POLICE_CAR: u32 = 596;
 pub const MODEL_POLICE_CAR_SF: u32 = 597;
@@ -13,9 +10,50 @@ pub const MODEL_POLICE_BIKE: u32 = 523;
 pub const MODEL_SWAT_VAN: u32 = 427;
 pub const MODEL_SWAT_WATER: u32 = 601;
 pub const MODEL_FBI_RANCHER: u32 = 490;
-pub const MODEL_POLICE_HELI: u32 = 497;
 pub const MODEL_AMBULANCE: u32 = 416;
 pub const MODEL_FIRETRUCK: u32 = 407;
+
+/// Single source of truth for which role a vehicle model plays in dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchVehicleKind {
+    Patrol,
+    PoliceBike,
+    Swat,
+    Fbi,
+    Ambulance,
+    Firetruck,
+}
+
+impl DispatchVehicleKind {
+    pub fn from_model(model: u32) -> Option<Self> {
+        match model {
+            MODEL_POLICE_CAR | MODEL_POLICE_CAR_SF | MODEL_POLICE_CAR_LV | MODEL_POLICE_RANGER => {
+                Some(Self::Patrol)
+            }
+            MODEL_POLICE_BIKE => Some(Self::PoliceBike),
+            MODEL_SWAT_VAN | MODEL_SWAT_WATER => Some(Self::Swat),
+            MODEL_FBI_RANCHER => Some(Self::Fbi),
+            MODEL_AMBULANCE => Some(Self::Ambulance),
+            MODEL_FIRETRUCK => Some(Self::Firetruck),
+            _ => None,
+        }
+    }
+
+    pub fn is_police_dispatch(self) -> bool {
+        matches!(
+            self,
+            Self::Patrol | Self::PoliceBike | Self::Swat | Self::Fbi
+        )
+    }
+
+    pub fn is_mod_ems(self) -> bool {
+        matches!(self, Self::Ambulance | Self::Firetruck)
+    }
+
+    pub fn is_swat(self) -> bool {
+        matches!(self, Self::Swat)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MapRegion {
@@ -62,30 +100,16 @@ pub fn local_patrol_model(pos: WorldPos) -> u32 {
     }
 }
 
-pub fn is_swat_model(model: u32) -> bool {
-    model == MODEL_SWAT_VAN || model == MODEL_SWAT_WATER
-}
-
 pub fn is_police_dispatch_model(model: u32) -> bool {
-    matches!(
-        model,
-        MODEL_POLICE_CAR
-            | MODEL_POLICE_CAR_SF
-            | MODEL_POLICE_CAR_LV
-            | MODEL_POLICE_RANGER
-            | MODEL_POLICE_BIKE
-            | MODEL_SWAT_VAN
-            | MODEL_SWAT_WATER
-            | MODEL_FBI_RANCHER
-    )
+    DispatchVehicleKind::from_model(model).is_some_and(|k| k.is_police_dispatch())
 }
 
 pub fn is_ems_dispatch_model(model: u32) -> bool {
-    matches!(model, MODEL_AMBULANCE | MODEL_FIRETRUCK)
+    DispatchVehicleKind::from_model(model).is_some_and(|k| k.is_mod_ems())
 }
 
-pub fn is_police_bike(model: u32) -> bool {
-    model == MODEL_POLICE_BIKE
+pub fn is_swat_model(model: u32) -> bool {
+    DispatchVehicleKind::from_model(model).is_some_and(|k| k.is_swat())
 }
 
 /// Re-export for exec callers; canonical definition in `dispatch-case::spawn_policy`.
@@ -122,6 +146,11 @@ mod model_tests {
         assert!(is_police_dispatch_model(MODEL_SWAT_VAN));
         assert!(!is_police_dispatch_model(MODEL_AMBULANCE));
         assert!(is_ems_dispatch_model(MODEL_AMBULANCE));
+        assert!(is_swat_model(MODEL_SWAT_VAN));
+        assert_eq!(
+            DispatchVehicleKind::from_model(MODEL_FBI_RANCHER),
+            Some(DispatchVehicleKind::Fbi)
+        );
     }
 }
 
@@ -148,9 +177,19 @@ pub struct PoliceSpawnUnit {
     pub register_swat: bool,
 }
 
+impl PoliceSpawnUnit {
+    pub fn kind(&self) -> Option<DispatchVehicleKind> {
+        DispatchVehicleKind::from_model(self.model)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum SpawnTask {
     BeginChain { chain_id: u64 },
-    SpawnUnit { chain_id: u64, index: usize, attempt: u32 },
+    SpawnUnit {
+        chain_id: u64,
+        index: usize,
+        attempt: u32,
+    },
     BatchReleaseTimeout { chain_id: u64 },
 }

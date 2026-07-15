@@ -9,7 +9,6 @@ mod attack_vehicle;
 mod case_inputs;
 mod coordinator;
 mod emergency_services;
-mod escaper;
 mod ffi;
 mod game;
 mod models;
@@ -25,11 +24,10 @@ mod threat;
 pub mod timing;
 mod vehicle_spawn;
 
-pub use arrest::{criminal_combat_blocked, try_dispatch_arrest, CriminalExecState};
+pub use arrest::{criminal_combat_blocked, criminal_in_custody, try_dispatch_arrest, CriminalExecState};
 pub use case_inputs::{CaseExecInputs, FrameInputs};
 pub use coordinator::{ExecCaseView, ExecCoordinator, PendingTask};
 pub use emergency_services::EmergencyCoordinator;
-pub use escaper::{StuckTracker, TemporaryRoadClosure};
 pub use dispatch_engine::TARGET_LIB;
 pub use ffi::{ExecSymbolError, ExecSymbols};
 pub use game::{
@@ -37,9 +35,9 @@ pub use game::{
 };
 pub use dispatch_disturbance::{dispatch_ped_to_disturbance, dispatch_vehicle_to_disturbance};
 pub use models::{
-    is_native_ems_emergency_model, is_police_dispatch_model, local_patrol_model, MapRegion,
-    PoliceSpawnUnit, ResponseCategory, MODEL_AMBULANCE, MODEL_FBI_RANCHER, MODEL_FIRETRUCK,
-    MODEL_POLICE_CAR, MODEL_SWAT_VAN,
+    is_ems_dispatch_model, is_native_ems_emergency_model, is_police_dispatch_model, is_swat_model,
+    local_patrol_model, DispatchVehicleKind, MapRegion, PoliceSpawnUnit, ResponseCategory,
+    MODEL_AMBULANCE, MODEL_FBI_RANCHER, MODEL_FIRETRUCK, MODEL_POLICE_CAR, MODEL_SWAT_VAN,
 };
 pub use reroute::{apply_enroute_vehicle_reroutes, find_higher_threat_case_in_av, try_reroute_foot_cop};
 pub use response::{
@@ -63,12 +61,11 @@ pub use tasks::{
 };
 pub use staging::{compute_vehicle_staging_decoy, is_police_engagement_at, StagingState};
 pub use threat::{
-    build_category_spawn_plan, build_initial_spawn_plan, build_reinforcement_spawn_plan,
-    classify_response_category, compute_case_threat_score,
-    compute_dispatch_anchor, compute_nearby_dispatch_quota, compute_response_quota,
-    count_active_threats, count_high_threats, get_case_max_threat_level, get_case_threat_tier,
-    is_firearm_case, on_scene_needs_reinforcement, pick_criminal_target_for_cop,
-    CriminalThreatLevel, ResponseQuota,
+    build_category_spawn_plan, build_initial_spawn_plan, build_on_scene_topup_plan,
+    classify_response_category, compute_case_threat_score, compute_dispatch_anchor,
+    compute_nearby_dispatch_quota, compute_response_quota, count_active_threats, count_high_threats,
+    get_case_max_threat_level, get_case_threat_tier, is_firearm_case, on_scene_needs_reinforcement,
+    pick_criminal_target_for_cop, CriminalThreatLevel, ResponseQuota,
 };
 pub use timing::*;
 pub use vehicle_spawn::{

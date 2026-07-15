@@ -4,8 +4,8 @@ use dispatch_case::CaseRecord;
 use dispatch_core::WorldPos;
 
 use crate::timing::{
-    DRIVE_STYLE_RESPONSE_EMERGENCY, STAGING_AREA_CLOSURE_DEDUP_M, STAGING_AREA_CLOSURE_RADIUS_M,
-    VEHICLE_STAGING_EXIT_MARGIN_M, VEHICLE_STAGING_OFFSET_M,
+    STAGING_AREA_CLOSURE_DEDUP_M, STAGING_AREA_CLOSURE_RADIUS_M, VEHICLE_STAGING_EXIT_MARGIN_M,
+    VEHICLE_STAGING_OFFSET_M,
 };
 use crate::threat::count_active_threats;
 
@@ -77,19 +77,6 @@ pub fn is_police_engagement_at(case: &CaseRecord) -> bool {
     count_active_threats(case) > 0 || case.is_firearm
 }
 
-pub fn is_police_engagement_near(
-    pos: WorldPos,
-    range_m: f32,
-    cases: &[(&CaseRecord, WorldPos)],
-) -> bool {
-    if range_m <= 0.0 {
-        return false;
-    }
-    cases.iter().any(|(case, anchor)| {
-        !case.cancelled && is_police_engagement_at(case) && distance_3d(pos, *anchor) <= range_m
-    })
-}
-
 pub fn compute_vehicle_staging_decoy(crime_pos: WorldPos, vehicle_pos: WorldPos) -> WorldPos {
     let dx = vehicle_pos.x - crime_pos.x;
     let dy = vehicle_pos.y - crime_pos.y;
@@ -114,10 +101,6 @@ pub fn compute_vehicle_staging_decoy(crime_pos: WorldPos, vehicle_pos: WorldPos)
         y: crime_pos.y + ny * offset,
         z: crime_pos.z,
     }
-}
-
-pub fn staging_drive_style() -> i32 {
-    DRIVE_STYLE_RESPONSE_EMERGENCY
 }
 
 fn staging_arrival_radius_m() -> f32 {

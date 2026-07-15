@@ -8,7 +8,6 @@ use dispatch_core::PedId;
 use crate::ffi::ExecSymbols;
 
 pub const TASK_COMPLEX_INVESTIGATE_DISTURBANCE: i32 = 935;
-pub const TASK_SIMPLE_STAND_STILL: i32 = 254;
 pub const TASK_COMPLEX_USE_MOBILE_PHONE: i32 = 1600;
 pub const TASK_SIMPLE_PHONE_TALK: i32 = 1601;
 pub const TASK_SIMPLE_PHONE_IN: i32 = 1602;
@@ -176,30 +175,6 @@ pub fn assign_investigate_disturbance_task(
     true
 }
 
-pub fn assign_stand_still_task(
-    symbols: &ExecSymbols,
-    cop: *mut std::ffi::c_void,
-    duration_ms: i32,
-) -> bool {
-    let Some(intel) = live_intel_for_assign(symbols, cop) else {
-        return false;
-    };
-    let task_mgr = ped_task_manager(cop);
-    if !find_active_task_by_type_safe(symbols, task_mgr, TASK_SIMPLE_STAND_STILL).is_null() {
-        return true;
-    }
-    let task = unsafe { (symbols.task_new)(TASK_ALLOC_SIZE) };
-    if task.is_null() {
-        return false;
-    }
-    unsafe {
-        (symbols.task_simple_stand_still_ctor)(task, duration_ms, true, false, 0.0);
-        (symbols.add_task_primary_maybe_in_group)(intel, task, true);
-    }
-    tracing::debug!(?cop, duration_ms, "CTaskSimpleStandStill assigned");
-    true
-}
-
 pub fn assign_arrest_task(
     symbols: &ExecSymbols,
     cop: *mut std::ffi::c_void,
@@ -347,15 +322,4 @@ pub fn poll_report_task_phase(symbols: &ExecSymbols, ped: *const std::ffi::c_voi
     ReportTaskPhase::None
 }
 
-pub fn ped_ptr_for_id(
-    symbols: &ExecSymbols,
-    registry: &dispatch_core::ResourceRegistry,
-    id: PedId,
-) -> *const std::ffi::c_void {
-    let Some(record) = registry.ped(id) else {
-        return std::ptr::null();
-    };
-    symbols
-        .entity_from_ped_key(record.pool_key)
-        .unwrap_or(std::ptr::null())
-}
+

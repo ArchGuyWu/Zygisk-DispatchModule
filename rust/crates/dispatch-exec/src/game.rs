@@ -2,14 +2,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use dispatch_core::{EntityRef, PedId, ResourceRegistry, VehicleId, WorldPos};
+use dispatch_core::{PedId, ResourceRegistry, VehicleId, WorldPos};
 use dispatch_engine::{dist_sq, CVector};
 
 use dispatch_case::CaseId;
 
-use crate::escaper::TemporaryRoadClosure;
 use crate::ffi::ExecSymbols;
-use crate::models::{is_police_dispatch_model, PoliceSpawnUnit};
+use crate::models::{is_police_dispatch_model, is_swat_model, PoliceSpawnUnit};
 use crate::models::SpawnTask;
 use crate::staging::StagingState;
 use crate::timing::driving_style_for_case;
@@ -63,7 +62,6 @@ pub struct ExecGlobals {
     pub spawned_swats: HashSet<VehicleId>,
     pub cop_bindings: Vec<CopVehicleBinding>,
     pub cop_exits: Vec<CopExitRecord>,
-    pub temp_closures: Vec<TemporaryRoadClosure>,
     pub staging: StagingState,
     pub spawn_chains: HashMap<u64, PoliceSpawnChain>,
     pub next_chain_id: u64,
@@ -373,6 +371,9 @@ impl<'a> ExecEnv<'a> {
             if !self.registry.contains_vehicle(id) {
                 return false;
             }
+            if !is_swat_model(self.vehicle_model(id)) {
+                return false;
+            }
             dist_sq(self.vehicle_pos(id), pos) <= radius_sq
         })
     }
@@ -402,6 +403,3 @@ pub fn crime_dispatch_position(case: &dispatch_case::CaseRecord) -> WorldPos {
     }
 }
 
-pub fn entity_ref_from_ped(env: &ExecEnv<'_>, id: PedId) -> Option<EntityRef> {
-    EntityRef::new(env.ped_ptr(id))
-}

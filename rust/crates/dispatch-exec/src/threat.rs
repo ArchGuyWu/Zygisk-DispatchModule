@@ -53,11 +53,22 @@ pub fn get_case_max_threat_level(case: &CaseRecord) -> CriminalThreatLevel {
     max_level
 }
 
+/// Case-level threat estimate from clues + live signals (pursuit config input).
 fn estimate_criminal_threat(case: &CaseRecord) -> CriminalThreatLevel {
-    if case.is_firearm {
-        CriminalThreatLevel::FirearmInactive
+    let firearm = case.is_firearm
+        || case.reported_clues.has_kind(CausalKind::WeaponDischarge)
+        || case.has_live_kind(CausalKind::WeaponDischarge);
+    if firearm {
+        // Ongoing discharge is active firearm threat; otherwise armed but not currently firing.
+        if case.has_live_kind(CausalKind::WeaponDischarge) {
+            CriminalThreatLevel::FirearmActive
+        } else {
+            CriminalThreatLevel::FirearmInactive
+        }
     } else if case.reported_clues.has_kind(CausalKind::PedCasualty)
         || case.reported_clues.has_kind(CausalKind::PedInjury)
+        || case.has_live_kind(CausalKind::PedCasualty)
+        || case.has_live_kind(CausalKind::PedInjury)
     {
         CriminalThreatLevel::MeleeActive
     } else {
@@ -195,68 +206,65 @@ pub fn pick_criminal_target_for_cop(
 }
 
 mod response_thresholds {
-    pub const DENSITY_CAT2_MIN: i32 = 5;
-    pub const DENSITY_CAT3_MIN: i32 = 8;
+    /// Density only *boosts* multi-offender / firearm scenes — threat level is primary.
+    pub const DENSITY_BOOST_CAT2: i32 = 5;
+    pub const DENSITY_BOOST_CAT3: i32 = 7;
     pub const CONSOLIDATED_CAT2_MIN: i32 = 3;
-    pub const ACTIVE_THREATS_CAT2_MIN: i32 = 3;
-    pub const HIGH_THREATS_CAT3_MIN: i32 = 2;
     pub const THREAT_SCORE_CAT3_MIN: i32 = 22;
-    pub const CAT2_SWAT_DENSITY_MIN: i32 = 7;
 }
 
 use response_thresholds::*;
 
+/// Pursuit / offscreen composition from **criminal threat first**, density/count as boost only.
 pub fn classify_response_category(case: &CaseRecord, density: i32) -> ResponseCategory {
-    let max_threat = threat_level_score(get_case_max_threat_level(case));
-    let high_threats = count_high_threats(case);
-    let active_threats = count_active_threats(case);
+    let level = get_case_max_threat_level(case);
+    let n = case.criminals.len() as i32;
     let threat_score = compute_case_threat_score(case);
-    let consolidated = case.criminals.len() as i32;
-    let firearm_active = threat_level_score(CriminalThreatLevel::FirearmActive);
-    let firearm_air = threat_level_score(CriminalThreatLevel::FirearmAirShoot);
-    let melee_active = threat_level_score(CriminalThreatLevel::MeleeActive);
-    let firearm = is_firearm_case(case);
 
-    if max_threat >= firearm_active && density >= 6 {
-        return ResponseCategory::Three;
+    match level {
+        CriminalThreatLevel::FirearmActive => {
+            if n >= 2 || threat_score >= 12 || density >= DENSITY_BOOST_CAT3 {
+                ResponseCategory::Three
+            } else {
+                ResponseCategory::Two
+            }
+        }
+        CriminalThreatLevel::FirearmAirShoot | CriminalThreatLevel::FirearmInactive => {
+            if n >= 3 || threat_score >= THREAT_SCORE_CAT3_MIN || density >= DENSITY_BOOST_CAT3 {
+                ResponseCategory::Three
+            } else {
+                // Any firearm pursuit is at least Cat2 configuration.
+                ResponseCategory::Two
+            }
+        }
+        CriminalThreatLevel::MeleeActive => {
+            if n >= CONSOLIDATED_CAT2_MIN || density >= DENSITY_BOOST_CAT2 {
+                ResponseCategory::Two
+            } else {
+                ResponseCategory::One
+            }
+        }
+        CriminalThreatLevel::MeleeInactive
+        | CriminalThreatLevel::UnarmedActive
+        | CriminalThreatLevel::UnarmedInactive => {
+            if n >= CONSOLIDATED_CAT2_MIN || density >= DENSITY_BOOST_CAT2 {
+                ResponseCategory::Two
+            } else {
+                ResponseCategory::One
+            }
+        }
     }
-    if high_threats >= HIGH_THREATS_CAT3_MIN && density >= 4 {
-        return ResponseCategory::Three;
-    }
-    if density >= DENSITY_CAT3_MIN && firearm && max_threat >= firearm_air {
-        return ResponseCategory::Three;
-    }
-    if threat_score >= THREAT_SCORE_CAT3_MIN {
-        return ResponseCategory::Three;
-    }
-
-    if density >= DENSITY_CAT2_MIN && density < DENSITY_CAT3_MIN {
-        return ResponseCategory::Two;
-    }
-    if consolidated >= CONSOLIDATED_CAT2_MIN {
-        return ResponseCategory::Two;
-    }
-    if active_threats >= ACTIVE_THREATS_CAT2_MIN {
-        return ResponseCategory::Two;
-    }
-    if max_threat >= firearm_air && density >= 4 {
-        return ResponseCategory::Two;
-    }
-    if consolidated >= 2 && max_threat >= melee_active && density >= 3 {
-        return ResponseCategory::Two;
-    }
-
-    ResponseCategory::One
 }
 
 fn pick_category_three_variant(case: &CaseRecord, density: i32) -> i32 {
-    let max_threat = threat_level_score(get_case_max_threat_level(case));
-    let firearm_active = threat_level_score(CriminalThreatLevel::FirearmActive);
-
-    if count_high_threats(case) >= 2 && density >= 7 {
+    let level = get_case_max_threat_level(case);
+    let n = case.criminals.len() as i32;
+    if matches!(level, CriminalThreatLevel::FirearmActive)
+        && (n >= 2 || density >= DENSITY_BOOST_CAT3)
+    {
         return 2;
     }
-    if count_high_threats(case) >= 2 && density >= 6 {
+    if is_firearm_case(case) && n >= 2 {
         return 1;
     }
     0
@@ -274,11 +282,14 @@ pub fn build_category_spawn_plan(
     match category {
         ResponseCategory::One => push_patrol(&mut plan, loc),
         ResponseCategory::Two => {
-            let max_threat = threat_level_score(get_case_max_threat_level(case));
-            let firearm_active = threat_level_score(CriminalThreatLevel::FirearmActive);
-            let prefer_swat = max_threat >= firearm_active
-                || is_firearm_case(case)
-                || density >= CAT2_SWAT_DENSITY_MIN;
+            // Firearm threat → SWAT-capable composition; melee multi only double patrol.
+            let prefer_swat = is_firearm_case(case)
+                || matches!(
+                    get_case_max_threat_level(case),
+                    CriminalThreatLevel::FirearmActive
+                        | CriminalThreatLevel::FirearmAirShoot
+                        | CriminalThreatLevel::FirearmInactive
+                );
             if prefer_swat && !swat_already {
                 push_patrol(&mut plan, loc);
                 push_swat(&mut plan, swat_already);
@@ -369,59 +380,72 @@ pub fn build_initial_spawn_plan(
     build_category_spawn_plan(category, case, loc, density, swat_already)
 }
 
-pub fn build_reinforcement_spawn_plan(
+/// On-scene top-up unit from **current** threat config — not a wave index into initial plan.
+/// Returns at most one unit (what the scene still needs), or empty if nothing useful to add.
+pub fn build_on_scene_topup_plan(
     case: &CaseRecord,
     loc: WorldPos,
-    reinforcement_wave: i32,
     density: i32,
     swat_already: bool,
 ) -> Vec<crate::models::PoliceSpawnUnit> {
+    let level = get_case_max_threat_level(case);
     let category = classify_response_category(case, density);
-    let composition = build_category_spawn_plan(category, case, loc, density, swat_already);
-    if composition.is_empty() {
-        return composition;
+    let mut plan = Vec::new();
+
+    match level {
+        CriminalThreatLevel::FirearmActive
+        | CriminalThreatLevel::FirearmAirShoot
+        | CriminalThreatLevel::FirearmInactive => {
+            if !swat_already {
+                push_swat(&mut plan, swat_already);
+            } else if category >= ResponseCategory::Three {
+                push_fbi(&mut plan);
+            } else {
+                push_patrol(&mut plan, loc);
+            }
+        }
+        CriminalThreatLevel::MeleeActive => {
+            push_patrol(&mut plan, loc);
+        }
+        _ => {
+            if category >= ResponseCategory::Two {
+                push_patrol(&mut plan, loc);
+            }
+        }
     }
-    let pick = (reinforcement_wave.saturating_sub(1).max(0) as usize) % composition.len();
+
     tracing::info!(
         category = category.name(),
-        pick,
-        total = composition.len(),
-        wave = reinforcement_wave,
-        "reinforcement spawn unit"
+        threat = ?level,
+        units = plan.len(),
+        "on-scene top-up plan (threat-driven)"
     );
-    vec![composition[pick].clone()]
+    plan
 }
 
-/// On-scene reinforcement when the situation still feels under-resourced — not tied to cop deaths.
+/// Scene still under-resourced (ongoing threat) — not cop deaths, not pursuit "waves".
 pub fn on_scene_needs_reinforcement(case: &CaseRecord, density: i32) -> bool {
     if case.criminals.is_empty() || !case.police_script_active() {
         return false;
     }
 
-    let max_threat = threat_level_score(get_case_max_threat_level(case));
-    let active_threats = count_active_threats(case);
-    let high_threats = count_high_threats(case);
-    let threat_score = compute_case_threat_score(case);
-    let firearm_active = threat_level_score(CriminalThreatLevel::FirearmActive);
-    let firearm_air = threat_level_score(CriminalThreatLevel::FirearmAirShoot);
+    let level = get_case_max_threat_level(case);
+    let n = case.criminals.len() as i32;
     let ongoing_gunfire = case.has_live_kind(CausalKind::WeaponDischarge);
 
-    if ongoing_gunfire && active_threats >= 1 {
+    if ongoing_gunfire {
         return true;
     }
-    if is_firearm_case(case) && case.criminals.len() >= 2 && density >= 3 {
+    if is_firearm_case(case) && n >= 2 {
         return true;
     }
-    if max_threat >= firearm_active && active_threats >= 2 && density >= 4 {
+    if matches!(level, CriminalThreatLevel::FirearmActive) {
         return true;
     }
-    if high_threats >= 1 && threat_score >= 12 && density >= 5 {
+    if matches!(level, CriminalThreatLevel::MeleeActive) && n >= 2 && density >= 3 {
         return true;
     }
-    if classify_response_category(case, density) >= ResponseCategory::Two
-        && active_threats >= 3
-        && max_threat >= firearm_air
-    {
+    if classify_response_category(case, density) >= ResponseCategory::Two && n >= 3 {
         return true;
     }
 
@@ -462,19 +486,36 @@ mod tests {
     }
 
     #[test]
-    fn firearm_case_escalates_with_density() {
-        // Empty criminals + is_firearm → max_threat = FirearmInactive.
-        // Density mid-band [5, 8) is Cat2; Cat3 needs score ≥ 22 or higher max_threat.
+    fn firearm_threat_sets_pursuit_config() {
+        // Firearm (not live) → at least Cat2 regardless of low density.
         let case = sample_case(true);
-        assert_eq!(classify_response_category(&case, 5), ResponseCategory::Two);
+        assert_eq!(classify_response_category(&case, 1), ResponseCategory::Two);
 
-        // Six FirearmInactive criminals → threat_score 24 ≥ THREAT_SCORE_CAT3_MIN (22).
+        // Six FirearmInactive criminals → high threat_score → Cat3.
         let mut dense = sample_case(true);
         dense.criminals = vec![dispatch_core::PedId::default(); 6];
         assert_eq!(
             classify_response_category(&dense, 1),
             ResponseCategory::Three
         );
+
+        // Live discharge elevates to FirearmActive.
+        let mut live = sample_case(true);
+        live.criminals = vec![dispatch_core::PedId::default()];
+        live.mark_live_kind(CausalKind::WeaponDischarge);
+        assert_eq!(
+            get_case_max_threat_level(&live),
+            CriminalThreatLevel::FirearmActive
+        );
+    }
+
+    #[test]
+    fn on_scene_topup_prefers_swat_for_firearm() {
+        let mut case = sample_case(true);
+        case.criminals = vec![dispatch_core::PedId::default()];
+        let plan = build_on_scene_topup_plan(&case, WorldPos::default(), 2, false);
+        assert_eq!(plan.len(), 1);
+        assert!(plan[0].register_swat);
     }
 
     #[test]
@@ -487,7 +528,6 @@ mod tests {
 
     #[test]
     fn reinforcement_triggers_on_ongoing_gunfire_not_cop_death() {
-        // Gate: non-empty criminals + police_script_active (department_needs.police).
         let mut case = sample_case(true);
         case.criminals = vec![dispatch_core::PedId::default()];
         case.mark_live_kind(CausalKind::WeaponDischarge);

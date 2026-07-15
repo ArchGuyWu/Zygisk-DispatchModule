@@ -19,8 +19,13 @@ use crate::snapshot::read_reroute_snapshots_for_eval;
 use crate::models::SpawnTask;
 use crate::emergency_services::EmergencyCoordinator;
 
-use crate::spawn::{begin_police_spawn_chain, execute_spawn_unit, handle_batch_release_timeout};
-use crate::threat::{compute_dispatch_anchor, on_scene_needs_reinforcement};
+use crate::spawn::{
+    begin_police_spawn_chain, execute_spawn_unit, handle_batch_release_timeout,
+    schedule_police_vehicle_spawns,
+};
+use crate::threat::{
+    build_on_scene_topup_plan, compute_dispatch_anchor, on_scene_needs_reinforcement,
+};
 use crate::timing::{
     elapsed_since_dispatch_timer, ON_SCENE_DISPATCH_INTERVAL_MS, REINFORCEMENT_EVAL_INTERVAL_MS,
     REINFORCE_NEARBY_ATTEMPT_MS, REROUTE_EVAL_INTERVAL_MS,
@@ -60,7 +65,8 @@ impl ExecCaseView for CaseRecord {
 #[derive(Debug, Clone)]
 pub enum PendingTask {
     Spawn(SpawnTask),
-    ReinforcementNearby { wave: i32 },
+    /// On-scene top-up (threat-driven config). Max attempts gated on the case, not a wave ladder.
+    ReinforcementTopUp { density: i32 },
 }
 
 pub struct ExecCoordinator {
@@ -341,30 +347,32 @@ impl ExecCoordinator {
             env.globals.arrest_dispatched_criminals.clear();
         }
 
+        // Cap attempts so one scene cannot pull unbounded units (not a pursuit "wave" ladder).
+        const MAX_ON_SCENE_TOPUP_ATTEMPTS: i32 = 3;
         if record.police_script_active()
             && !record.criminals.is_empty()
-            && record.reinforcements_sent < 3
+            && record.reinforcements_sent < MAX_ON_SCENE_TOPUP_ATTEMPTS
             && now_ms.saturating_sub(record.last_reinforcement_eval_ms)
                 >= REINFORCEMENT_EVAL_INTERVAL_MS
         {
             record.last_reinforcement_eval_ms = now_ms;
             if on_scene_needs_reinforcement(record, _frame.density) {
                 record.reinforcements_sent += 1;
-                let wave = record.reinforcements_sent;
                 self.pending.push((
                     case_id,
                     now_ms + REINFORCE_NEARBY_ATTEMPT_MS,
-                    PendingTask::ReinforcementNearby { wave },
+                    PendingTask::ReinforcementTopUp {
+                        density: _frame.density,
+                    },
                 ));
                 tracing::info!(
                     case = record.serial,
-                    wave,
+                    attempt = record.reinforcements_sent,
                     density = _frame.density,
-                    "reinforcement queued (on-scene situation)"
+                    "on-scene top-up queued (threat-driven, attempt cap)"
                 );
             }
         }
-
     }
 
     fn flush_globals_pending(&mut self, now_ms: i64) {
@@ -402,20 +410,28 @@ impl ExecCoordinator {
                 continue;
             };
             match task {
-                PendingTask::ReinforcementNearby { wave } => {
-                    let mut env = ExecEnv {
-                        symbols,
-                        registry,
-                        globals: &mut self.globals,
-                    };
-                    let _ = crate::response::dispatch_nearby_available_cops_for_crime_auto(
-                        &mut env,
-                        record,
-                        &[],
-                        1,
-                        now_ms,
-                    );
-                    tracing::info!(case = record.serial, wave, "reinforcement nearby attempt");
+                PendingTask::ReinforcementTopUp { density } => {
+                    let loc = crime_dispatch_position(record);
+                    let swat_already = !self.globals.spawned_swats.is_empty();
+                    let units = build_on_scene_topup_plan(record, loc, density, swat_already);
+                    if !units.is_empty() {
+                        schedule_police_vehicle_spawns(
+                            &mut self.globals,
+                            record,
+                            case_id,
+                            loc,
+                            loc,
+                            record.primary,
+                            units,
+                            "on_scene_topup",
+                            now_ms,
+                        );
+                        record.vehicle_spawn_pending = true;
+                        tracing::info!(
+                            case = record.serial,
+                            "on-scene top-up spawn scheduled from threat config"
+                        );
+                    }
                 }
                 PendingTask::Spawn(spawn_task) => {
                     self.handle_spawn_task(
