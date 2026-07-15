@@ -8,6 +8,7 @@ mod attack_foot;
 mod attack_vehicle;
 mod case_inputs;
 mod coordinator;
+mod effect_apply;
 mod emergency_services;
 mod ffi;
 mod game;
@@ -27,6 +28,10 @@ mod vehicle_spawn;
 pub use arrest::{criminal_combat_blocked, criminal_in_custody, try_dispatch_arrest, CriminalExecState};
 pub use case_inputs::{CaseExecInputs, FrameInputs};
 pub use coordinator::{ExecCaseView, ExecCoordinator, PendingTask};
+pub use effect_apply::{
+    apply_effects, is_valid_case_id, EffectSink, NoopEffectSink, TracingEffectSink,
+};
+pub use dispatch_model::Effect;
 pub use emergency_services::EmergencyCoordinator;
 pub use dispatch_engine::TARGET_LIB;
 pub use ffi::{ExecSymbolError, ExecSymbols};

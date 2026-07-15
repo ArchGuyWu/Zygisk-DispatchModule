@@ -59,6 +59,7 @@ dependencies = [
  "dispatch-case",
  "dispatch-core",
  "dispatch-engine",
+ "dispatch-model",
  "slotmap",
  "thiserror",
  "tracing",
