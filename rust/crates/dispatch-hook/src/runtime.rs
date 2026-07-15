@@ -858,6 +858,24 @@ impl DispatchRuntime {
         cache.remove(&addr);
     }
 
+    /// Attach pool generation when the pointer is a live ped/vehicle.
+    pub(crate) fn entity_ref_enriched(
+        &self,
+        ptr: *const std::ffi::c_void,
+    ) -> Option<dispatch_core::EntityRef> {
+        use dispatch_core::EntityRef;
+        if ptr.is_null() {
+            return None;
+        }
+        if let Some(key) = self
+            .resolve_ped_pool_key(ptr)
+            .or_else(|| self.resolve_vehicle_pool_key(ptr))
+        {
+            return EntityRef::with_pool(ptr, key);
+        }
+        EntityRef::new(ptr)
+    }
+
     pub(crate) fn resolve_ped_pool_key(&self, ped: *const std::ffi::c_void) -> Option<PoolKey> {
         resolve_ped_pool_key_cached(&self.symbols, self.ped_ptr_cache_mut(), ped)
     }

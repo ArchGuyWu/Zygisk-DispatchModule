@@ -1,22 +1,23 @@
-use std::mem::MaybeUninit;
+//! Native event-group perception: track vptrs, queue classified events for the tick.
 
-use dispatch_case::{SenseChannel, WitnessObservation, MAX_WITNESS_ENTITIES, MAX_WITNESS_PERPETRATORS};
+use std::sync::Mutex;
+
+use dispatch_case::{
+    SenseChannel, WitnessObservation, MAX_WITNESS_ENTITIES, MAX_WITNESS_PERPETRATORS,
+};
 use dispatch_core::{CausalKind, EntityRef};
 use dispatch_engine::{event_vptr_identity, NativeEventRegistry, ResolvedNativeEvent};
 
 use crate::gate::hook_logic_allowed;
 use crate::orig_slot::OrigSlot;
 use crate::witness::witness_ped_type_eligible;
+
 const MAX_TRACKED_EVENTS: usize = 12;
 const PENDING_NATIVE_CAP: usize = 64;
 
 type OrigEventGroupAdd = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, bool);
 
 static ORIG_EVENT_GROUP_ADD: OrigSlot<OrigEventGroupAdd> = OrigSlot::new();
-static mut TRACKED_EVENTS: [Option<ResolvedNativeEvent>; MAX_TRACKED_EVENTS] =
-    [None; MAX_TRACKED_EVENTS];
-static mut TRACKED_VPTR_KEYS: [usize; MAX_TRACKED_EVENTS] = [0; MAX_TRACKED_EVENTS];
-static mut TRACKED_EVENT_COUNT: usize = 0;
 
 #[derive(Clone, Copy)]
 pub(crate) struct PendingNativeEvent {
@@ -25,43 +26,66 @@ pub(crate) struct PendingNativeEvent {
     classified: ResolvedNativeEvent,
 }
 
-static mut PENDING_NATIVE: [MaybeUninit<PendingNativeEvent>; PENDING_NATIVE_CAP] =
-    [UNINIT_PENDING; PENDING_NATIVE_CAP];
-static mut PENDING_NATIVE_LEN: usize = 0;
+struct NativeEventBus {
+    tracked_keys: [usize; MAX_TRACKED_EVENTS],
+    tracked_events: [Option<ResolvedNativeEvent>; MAX_TRACKED_EVENTS],
+    tracked_count: usize,
+    pending: Vec<PendingNativeEvent>,
+}
 
-const UNINIT_PENDING: MaybeUninit<PendingNativeEvent> = MaybeUninit::uninit();
+// SAFETY: only game-thread hook/tick use this bus; raw event ptrs are not sent across threads in practice.
+// Mutex still serializes push (detour) vs drain (tick) if re-entered.
+unsafe impl Send for NativeEventBus {}
+
+impl NativeEventBus {
+    const fn new() -> Self {
+        Self {
+            tracked_keys: [0; MAX_TRACKED_EVENTS],
+            tracked_events: [None; MAX_TRACKED_EVENTS],
+            tracked_count: 0,
+            pending: Vec::new(),
+        }
+    }
+}
+
+static NATIVE_BUS: Mutex<NativeEventBus> = Mutex::new(NativeEventBus::new());
 
 pub fn set_orig_event_group_add(f: OrigEventGroupAdd) {
     ORIG_EVENT_GROUP_ADD.set(f);
 }
 
 pub fn init_tracked_vptrs(registry: &NativeEventRegistry) {
-    unsafe {
-        PENDING_NATIVE_LEN = 0;
-        TRACKED_EVENT_COUNT = 0;
-        for resolved in registry.tracked_entries() {
-            if TRACKED_EVENT_COUNT >= MAX_TRACKED_EVENTS {
-                break;
-            }
-            TRACKED_EVENTS[TRACKED_EVENT_COUNT] = Some(resolved);
-            TRACKED_VPTR_KEYS[TRACKED_EVENT_COUNT] = resolved.vptr_id as usize;
-            TRACKED_EVENT_COUNT += 1;
+    let Ok(mut bus) = NATIVE_BUS.lock() else {
+        return;
+    };
+    bus.pending.clear();
+    bus.tracked_count = 0;
+    for resolved in registry.tracked_entries() {
+        if bus.tracked_count >= MAX_TRACKED_EVENTS {
+            break;
         }
+        let i = bus.tracked_count;
+        bus.tracked_events[i] = Some(resolved);
+        bus.tracked_keys[i] = resolved.vptr_id as usize;
+        bus.tracked_count += 1;
     }
 }
 
 pub fn reset_pending_native_queue() {
-    unsafe {
-        PENDING_NATIVE_LEN = 0;
+    if let Ok(mut bus) = NATIVE_BUS.lock() {
+        bus.pending.clear();
     }
 }
 
 pub fn drain_pending_native_events<F: FnMut(PendingNativeEvent)>(mut f: F) {
-    unsafe {
-        for slot in PENDING_NATIVE[..PENDING_NATIVE_LEN].iter_mut() {
-            f(slot.assume_init_read());
-        }
-        PENDING_NATIVE_LEN = 0;
+    let batch = {
+        let Ok(mut bus) = NATIVE_BUS.lock() else {
+            return;
+        };
+        std::mem::take(&mut bus.pending)
+    };
+    for ev in batch {
+        f(ev);
     }
 }
 
@@ -71,11 +95,12 @@ fn lookup_tracked_event(event: *const std::ffi::c_void) -> Option<ResolvedNative
     }
     let vptr = unsafe { *(event as *const *const std::ffi::c_void) };
     let key = event_vptr_identity(vptr) as usize;
-    unsafe {
-        for i in 0..TRACKED_EVENT_COUNT {
-            if TRACKED_VPTR_KEYS[i] == key {
-                return TRACKED_EVENTS[i];
-            }
+    let Ok(bus) = NATIVE_BUS.lock() else {
+        return None;
+    };
+    for i in 0..bus.tracked_count {
+        if bus.tracked_keys[i] == key {
+            return bus.tracked_events[i];
         }
     }
     None
@@ -95,27 +120,23 @@ pub unsafe extern "C" fn detour_event_group_add(
     let Some(classified) = lookup_tracked_event(event as *const _) else {
         return;
     };
-    unsafe {
-        if PENDING_NATIVE_LEN >= PENDING_NATIVE_CAP {
-            return;
-        }
-        PENDING_NATIVE[PENDING_NATIVE_LEN].write(PendingNativeEvent {
-            event_group: event_group as *const _,
-            event: event as *const _,
-            classified,
-        });
-        PENDING_NATIVE_LEN += 1;
+    let Ok(mut bus) = NATIVE_BUS.lock() else {
+        return;
+    };
+    if bus.pending.len() >= PENDING_NATIVE_CAP {
+        return;
     }
+    bus.pending.push(PendingNativeEvent {
+        event_group: event_group as *const _,
+        event: event as *const _,
+        classified,
+    });
 }
 
 impl crate::runtime::DispatchRuntime {
     pub fn drain_pending_native_events(&mut self) {
         drain_pending_native_events(|pending| {
-            self.ingest_native_event(
-                pending.event_group,
-                pending.event,
-                pending.classified,
-            );
+            self.ingest_native_event(pending.event_group, pending.event, pending.classified);
         });
     }
 
@@ -142,12 +163,7 @@ impl crate::runtime::DispatchRuntime {
         let mut perp_count = 0u8;
         if let Some(offset) = classified.def.primary_entity_offset {
             let entity_ptr = self.native_events.read_entity(event, offset);
-            // Prefer pool generation when entity is a live ped/vehicle.
-            let entity = self
-                .resolve_ped_pool_key(entity_ptr)
-                .or_else(|| self.resolve_vehicle_pool_key(entity_ptr))
-                .and_then(|key| EntityRef::with_pool(entity_ptr, key))
-                .or_else(|| EntityRef::new(entity_ptr));
+            let entity = self.entity_ref_enriched(entity_ptr);
             if let Some(entity) = entity {
                 if entity_count < MAX_WITNESS_ENTITIES as u8 {
                     entities[entity_count as usize] = entity;
@@ -172,10 +188,7 @@ impl crate::runtime::DispatchRuntime {
             None
         };
 
-        if !self.should_collect_witness_observation(
-            &entities,
-            entity_count as usize,
-        ) {
+        if !self.should_collect_witness_observation(&entities, entity_count as usize) {
             return;
         }
 
@@ -213,11 +226,11 @@ fn witness_ped_eligible(
     ped: *const std::ffi::c_void,
     symbols: &dispatch_exec::ExecSymbols,
 ) -> bool {
-    if !symbols.ped_alive(ped) {
+    if ped.is_null() {
         return false;
     }
-    let Some(pool_ped) = symbols.validate_pool_ped(ped) else {
+    if symbols.validate_pool_ped(ped).is_none() {
         return false;
-    };
-    witness_ped_type_eligible(symbols.ped_type_of_pool(pool_ped))
+    }
+    witness_ped_type_eligible(symbols.ped_type_of(ped))
 }

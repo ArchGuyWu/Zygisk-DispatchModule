@@ -18,14 +18,17 @@ pub(crate) fn geometric_scan(rt: &mut DispatchRuntime, signal: CausalSignal) {
     let heard_sq = heard_range * heard_range;
     let saw_sq = saw_range * saw_range;
     let kind_bit = 1 << signal.kind() as u8;
+    // Enrich signal entity refs with pool generation when possible (lifecycle-safe identity).
     let entities: Vec<_> = signal_entity_refs(signal)
         .into_iter()
-        .filter(|entity| entity.ptr() != std::ptr::null())
+        .filter(|entity| !entity.is_empty() && !entity.ptr().is_null())
+        .map(|e| rt.entity_ref_enriched(e.ptr()).unwrap_or(e))
         .collect();
     let (entity_buf, entity_count) = pack_entity_refs::<MAX_WITNESS_ENTITIES>(&entities);
     let perpetrators: Vec<_> = perpetrator_entity_refs(signal)
         .into_iter()
-        .filter(|entity| entity.ptr() != std::ptr::null())
+        .filter(|entity| !entity.is_empty() && !entity.ptr().is_null())
+        .map(|e| rt.entity_ref_enriched(e.ptr()).unwrap_or(e))
         .collect();
     let (perp_buf, perp_count) = pack_entity_refs::<MAX_WITNESS_PERPETRATORS>(&perpetrators);
     let mut perp_ptrs = [0usize; MAX_WITNESS_PERPETRATORS];

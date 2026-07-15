@@ -98,6 +98,8 @@
 | Vehicle despawn | Purge exec globals + `case_vehicles` |
 | Hook ORIG slots | `OrigSlot` (`AtomicUsize`) replaces `static mut Option<fn>` |
 | Native witness entities | Prefer `EntityRef::with_pool` when pool key resolves |
+| Geometric scan entities | Enrich refs with pool keys via `entity_ref_enriched` |
+| PENDING_NATIVE / TRACKED | `Mutex<NativeEventBus>` (no static mut queue) |
 
 ## 7. Priority if fixing later (not this goal)
 
