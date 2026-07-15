@@ -59,8 +59,9 @@ engine housekeeping.
 - Re-entrancy during tick: fail-closed skip nested mod logic.
 - Model holds `PedId` / `VehicleId` (or gen handles), never raw engine pointers.
 
-Layers above are the rewrite skeleton; this file’s authority is **§2–§5 product
-logic**. Hook symbol names may change; roles do not.
+Layers above are the rewrite skeleton; this file’s authority is **§0 hard rules
+and §2–§7 product model** (vocabulary, rules, Light/Full, Effects, deliberate
+omissions). Hook symbol names may change; roles do not.
 
 ---
 
