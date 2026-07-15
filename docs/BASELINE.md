@@ -73,3 +73,5 @@ bash pack_module.sh
 ```
 
 Verification notes live under `scratch/` (`deps_inventory.md`, `hooks_surface.md`, `cargo_unit_tests.log`, `so_symbols.txt`).
+
+Gameplay simplify inventory (core keep vs candidates, analysis only): [`docs/GAMEPLAY_SIMPLIFY.md`](GAMEPLAY_SIMPLIFY.md).
