@@ -8,9 +8,10 @@ This document partitions **current** gameplay logic into:
 
 1. **Core keep** — defining dispatch chain; preserve behavior and details.  
 2. **Simplify candidates** — concrete complexity with call-site / warning evidence; after simplify, stated remainder must still hold.  
-3. **Defer / non-core** — out of ship, historical, or intentionally not this inventory’s rewrite targets.
+3. **Defer / non-core** — out of ship, historical, or intentionally not this inventory’s rewrite targets.  
+4. **Low-value / hard to notice** — over-fine tiers, dual policies, and tick cost with little live-play signal (**practical audit**, not only dead code).
 
-No code deletion is required to accept this inventory.
+Analysis goals do not require implementing deletions.
 
 ---
 
@@ -180,6 +181,82 @@ Branches on `FirearmAirShoot` / `FirearmActive` / `count_high_threats` (needs Ai
 
 ---
 
+## Low-value / hard to notice (practical audit)
+
+Focus: **player-visible outcome** vs **CPU/complexity**.  
+Action labels: **coarsen/merge** | **remove if unused** | **keep as core detail**.
+
+### L1. Threat enum over-fine — **coarsen/merge** (high priority)
+
+| Now | Path | Why low-value in live play | Coarser keep |
+|-----|------|----------------------------|--------------|
+| 7-level `CriminalThreatLevel` (Unarmed×2, Melee×2, Firearm×3) | `threat.rs` | `estimate_criminal_threat` only ever returns **4**: `FirearmActive/Inactive`, `MeleeActive/Inactive`. **Never** produces `UnarmedActive`, `FirearmAirShoot`. Player only sees patrol count / SWAT or not. | 3 buckets: `UnarmedOrMelee` / `Armed` / `ActiveGunfire` (or even 2: non-gun / gun) |
+| `threat_level_score` 0–6 + sum `compute_case_threat_score` | same | Score thresholds 12 / 16 / 20 / 22 are invisible; mostly re-encode “how many criminals × gun”. | Use `n_criminals` + `is_firearm` + `live_gunfire` bools |
+| `count_high_threats` (AirShoot+) | same | With no AirShoot production, only `FirearmActive` hits; redundant with live discharge. | Drop; use `has_live_kind(WeaponDischarge)` |
+| Loop in `get_case_max_threat_level` over criminals calling same case-level estimate | same | Every criminal gets **identical** level (case-wide estimate, not per-ped). Wastes iterations, false precision. | Estimate once per case |
+
+**Player-visible remainders after coarsen:** gun vs not, ongoing fire vs not, 1 vs many offenders → Cat1/2/3 and SWAT gates.
+
+### L2. Parallel scoring systems that collapse to the same cars — **coarsen/merge**
+
+| Now | Path | Why low-value | Coarser keep |
+|-----|------|---------------|--------------|
+| `classify_response_category` (Cat1–3) | `threat.rs` | Dense branches on score/density/level that often still end in **1–3 patrols** after SWAT/FBI gates. | Cat from: firearm? multi? live fire? only |
+| `compute_response_quota` (max vehicles/foot) | `threat.rs` + `attack::compute_quotas` | Multi-branch 1/2/3/4 caps; foot/vehicle mix barely readable on device. | Fixed small caps: e.g. 2 veh / 4 foot for gun, 1/2 otherwise |
+| `compute_nearby_dispatch_quota` (1/2/4) | `threat.rs` + `response` | Same as above for nearby mobilize. | 1 nearby default, 2 if multi or gun |
+| `get_case_threat_tier` (1/2) | `threat.rs` + `snapshot`/reroute | Third encoding of “gun or not”. | Reuse firearm bool |
+
+### L3. Cat3 / density knobs with weak visual delta — **coarsen/merge**
+
+| Now | Path | Why low-value | Coarser keep |
+|-----|------|---------------|--------------|
+| Density boosts 5 / 7 for Cat | `response_thresholds` | Density is a frame heuristic; player doesn’t see “density 5 vs 7”, only another car sometimes. | Single “busy area” bool or drop density from classify |
+| Cat3 “third patrol if no SWAT/FBI” | `build_category_spawn_plan` | Third car vs two is subtle; special units already gated tightly. | Cap initial plan at 2 patrols unless SWAT/FBI warranted |
+| Threat-weighted `compute_dispatch_anchor` | `threat.rs` | Weight by threat score then average positions — same as centroid if all criminals share case-level threat. | Plain average / primary position |
+
+### L4. Dual witness / perception cost — **coarsen/merge** (CPU)
+
+| Now | Path | Why costly / low extra signal | Coarser keep |
+|-----|------|------------------------------|--------------|
+| EventGroup observe + deferred `geometric_scan` full ped pool | `event_perception`, `witness_scan`, `runtime` | Geometric path walks **entire ped pool** (capped candidates) for range; often overlaps native kinds. | Geometric **only** when `needs_geometric_supplement`; hard cap scan slots earlier |
+| `clue_score` multi-weights (+3 entity, +2 kind, +1 saw/heard) | `witness_report::elect_reporter` | Elects one reporter; ranking fineness rarely changes who phones. | Prefer nearest non-panic who heard/saw |
+
+### L5. On-scene tick weight — **coarsen/merge** carefully
+
+| Now | Path | Why low-value or heavy | Coarser keep |
+|-----|------|------------------------|--------------|
+| Attack pass every `ON_SCENE_DISPATCH_INTERVAL_MS` (2.5s) + pool build | `coordinator`, `attack*` | Necessary for combat, but quota fineness (L2) adds little. | Keep pass; simplify quotas only |
+| Reroute eval on ordered vehicles | `reroute`, `snapshot`, coordinator interval | Higher-threat case steal mid-route: rare multi-case; subtle. | **Keep as core detail** if multi-case pursuits matter; else interval↑ or disable for single-case sessions |
+| Staging cordon begin/end around spawn hold | `staging` + `spawn` | Closure list; weak player-facing unless ambient blocked. | Keep begin/end if spawn hold stays; drop unused helpers (already partly done) |
+| Many timing constants (stagger urban/rural, batch timeout 50s, multiple scene timeouts) | `timing.rs` | Rural vs urban stagger is mild; many timeouts are safety not flavor. | One stagger; keep 1–2 safety timeouts |
+
+### L6. Still wired but fine to leave — **keep as core detail**
+
+| Piece | Why keep despite complexity |
+|-------|----------------------------|
+| Ingress → incident → case → phone Active open | Whole product spine |
+| Nearby first, then offscreen spawn chain | Clear player beat |
+| `swat_warranted` / `fbi_warranted` gang bars | User-visible special units; gates already intentional |
+| Top-up ≤3 attempts + default patrol car | Anti-absorb + simple reinforce |
+| Wanted suppress + native EMS block + mod EMS spawn | Prevents vanilla fighting mod |
+| Arrest / combat blocked when apprehended | Stops infinite shoot after cuffs |
+
+### L7. Prior dead-export pass — **remove if unused** (already partly applied)
+
+See earlier “Simplify candidates” + **Applied** table (escaper, foot-prefer, stand_still, wave reinforce). Not the focus of this practical audit.
+
+### Suggested coarsen order (if implementing later)
+
+1. Collapse threat enum + kill dead AirShoot/UnarmedActive branches + single case-level estimate.  
+2. Merge Cat/quota/nearby into one “response size” function.  
+3. Drop density from classify or single threshold.  
+4. Gate geometric witness scan strictly.  
+5. Only then touch attack/reroute cadence.
+
+Do **not** coarsen by deleting SWAT gates, phone open-on-Active, or nearby-vs-spawn.
+
+---
+
 ## Defer / non-core
 
 | Item | Bucket | Why |
@@ -188,9 +265,8 @@ Branches on `FirearmAirShoot` / `FirearmActive` / `count_high_threats` (needs Ai
 | Crash skip-orig gates / unwalkable scans | Removed | Must not return |
 | Phone **model** streaming | Non-goal | Engine task owns model; not in ship logic |
 | Full 911 multi-line busy/redial redesign | Non-goal | Not in Rust baseline |
-| Threat score **redesign** as feature work | Core detail unless product asks | Inventory only marks unreachable levels |
-| Heli / pursuit roadblock / tow radio from old docs | Not in ship modules | No `MODEL_POLICE_HELI` use |
-| Implementing this inventory’s deletions | Out of band | This goal is analysis-only |
+| Implementing coarsen/deletes from L1–L5 | Out of band for analysis goals | Ship code change is a separate task |
+| Heli / pursuit roadblock / tow radio from old docs | Not in ship modules | Not in current spawn kinds |
 
 ---
 
