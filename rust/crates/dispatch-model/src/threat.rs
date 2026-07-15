@@ -96,16 +96,18 @@ pub fn threat_from_kinds(kinds: &[SignalKind]) -> Threat {
 }
 
 /// Scene is "severe" for EMS/Fire reinforcement (view-cap path).
+///
+/// Product rule (MODEL §4.4): default **1** vehicle/case/dept; severe **may**
+/// reinforce up to ≤2 same dept in view. Plain [`SignalKind::Fire`] alone is
+/// **not** severe (so the default-1 path is used). Severe is reserved for
+/// police threat Armed/ActiveFire and high-impact clues Explosion / Casualty.
 pub fn scene_is_severe(kinds: &[SignalKind], threat: Threat) -> bool {
     if matches!(threat, Threat::ActiveFire | Threat::Armed) {
         return true;
     }
-    kinds.iter().any(|k| {
-        matches!(
-            k,
-            SignalKind::Fire | SignalKind::Explosion | SignalKind::Casualty
-        )
-    })
+    kinds
+        .iter()
+        .any(|k| matches!(k, SignalKind::Explosion | SignalKind::Casualty))
 }
 
 /// Single function of Threat + criminal count (MODEL.md §3 ResponseSize).
@@ -130,10 +132,14 @@ impl Default for ResponseSize {
     }
 }
 
-/// Multi-offender bar for SWAT/FBI eligibility.
+/// Multi-offender bar for SWAT/FBI on Armed (gang / consolidated).
 const GANG_MIN: u32 = 3;
 
 /// Pure mapping: Threat + criminal count → nearby slots, patrols, special units.
+///
+/// Intentional threshold split:
+/// - **ActiveFire**: SWAT/FBI at pair (`n ≥ 2`) — live gunfire escalates earlier.
+/// - **Armed**: SWAT/FBI only at gang bar (`n ≥ `[`GANG_MIN`]).
 pub fn response_size(threat: Threat, criminal_count: u32) -> ResponseSize {
     let n = criminal_count;
     let multi = n >= GANG_MIN;
@@ -141,14 +147,15 @@ pub fn response_size(threat: Threat, criminal_count: u32) -> ResponseSize {
 
     match threat {
         Threat::ActiveFire => ResponseSize {
-            nearby_slots: if pair || multi { 2 } else { 2 },
+            nearby_slots: 2,
             patrol_count: if pair { 3 } else { 2 },
-            swat: multi || pair,
-            fbi: multi || (pair && n >= 2),
+            // Live fire: specials from a pair upward (not only GANG_MIN).
+            swat: pair,
+            fbi: pair,
         },
         Threat::Armed => ResponseSize {
             nearby_slots: 2,
-            patrol_count: if multi { 2 } else { 2 },
+            patrol_count: 2,
             swat: multi,
             fbi: multi,
         },
@@ -167,10 +174,13 @@ pub const EMS_FIRE_VIEW_CAP: u8 = 2;
 /// Default vehicles per case per EMS/Fire department.
 pub const EMS_FIRE_DEFAULT_PER_CASE: u8 = 1;
 
-/// How many EMS or Fire vehicles this case still wants to spawn.
+/// How many EMS or Fire vehicles this case may still order **this Full tick**.
 ///
-/// - Default: 1 per case per dept.
-/// - Severe: may go to 2, but never past `view_count` room under [`EMS_FIRE_VIEW_CAP`].
+/// - Default (non-severe): target 1 per case/dept.
+/// - Severe: target up to [`EMS_FIRE_VIEW_CAP`], but at most **one new unit per
+///   FullDispatch** so reinforcement is optional over time ("may"), not a
+///   same-frame fill-to-2.
+/// - Never past view room under the hard cap of 2.
 pub fn ems_fire_spawn_budget(
     already_spawned: u8,
     severe: bool,
@@ -183,5 +193,5 @@ pub fn ems_fire_spawn_budget(
     };
     let remaining_for_case = target.saturating_sub(already_spawned);
     let room_in_view = EMS_FIRE_VIEW_CAP.saturating_sub(view_count);
-    remaining_for_case.min(room_in_view)
+    remaining_for_case.min(room_in_view).min(1)
 }

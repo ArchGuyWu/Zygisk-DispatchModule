@@ -4,9 +4,7 @@ use crate::case::{Case, Phase};
 use crate::effects::Effect;
 use crate::report::ReportPhase;
 use crate::signal::{ReporterKind, Signal};
-use crate::threat::{
-    ems_fire_spawn_budget, scene_is_severe, EMS_FIRE_DEFAULT_PER_CASE,
-};
+use crate::threat::scene_is_severe;
 use crate::world::{Commit, Inputs, World};
 
 /// Whether this frame should run FullDispatch instead of LightStep.
@@ -47,12 +45,17 @@ pub fn should_full_dispatch(world: &World, inputs: &Inputs) -> bool {
 }
 
 /// Default most frames: account inputs, advance clocks, no geometry / spawn.
+///
+/// MODEL §5: **no** threat/needs recompute, **no** spawn/attack decisions.
 /// Effects default to `[]`.
 pub fn light_step_tx(world: World, inputs: Inputs) -> Commit {
     let mut world = world;
-    account_signals(&mut world, &inputs.signals, inputs.now_ms);
-    // Despawns are acknowledged (bookkeeping); no case mutation required yet.
-    let _ = &inputs.despawns;
+    // Light: book clues without recompute; Full owns merge + needs/threat/size.
+    account_signals_light(&mut world, &inputs.signals, inputs.now_ms);
+    // TODO(runtime): detach despawn handles / GC bindings on Case or World when
+    // unit ownership lands. MODEL §5 drains despawns each frame; model has no
+    // pool bindings yet so we only acknowledge the field for future wiring.
+    let _despawns = &inputs.despawns;
 
     advance_report_clocks(&mut world, inputs.now_ms);
     advance_case_clocks_light(&mut world, inputs.now_ms);
@@ -70,7 +73,9 @@ pub fn full_dispatch_tx(world: World, inputs: Inputs) -> Commit {
     let mut effects = Vec::new();
     let now = inputs.now_ms;
 
-    account_signals(&mut world, &inputs.signals, now);
+    account_signals_full(&mut world, &inputs.signals, now);
+    // Same despawn gap as Light — see TODO on light_step_tx.
+    let _despawns = &inputs.despawns;
     advance_report_clocks(&mut world, now);
 
     // Open cases only at Connected.
@@ -83,7 +88,6 @@ pub fn full_dispatch_tx(world: World, inputs: Inputs) -> Commit {
         if matches!(world.cases[i].phase, Phase::Done) {
             continue;
         }
-        // Snapshot fields we need without holding a borrow across effects.
         world.cases[i].recompute_size_and_needs();
         world.cases[i].last_full_ms = now;
         world.cases[i].ready_for_full = false;
@@ -109,35 +113,49 @@ pub fn full_dispatch_tx(world: World, inputs: Inputs) -> Commit {
     Commit { world, effects }
 }
 
-fn account_signals(world: &mut World, signals: &[Signal], now_ms: u64) {
+/// Light: absorb clues into cases **without** needs/threat recompute; book pending reports.
+fn account_signals_light(world: &mut World, signals: &[Signal], now_ms: u64) {
     for sig in signals {
-        // Merge into an existing open case near the same scene if any police case
-        // is live; otherwise into pending reports.
+        if let Some(case) = world.cases.iter_mut().find(|c| {
+            !matches!(c.phase, Phase::Done) && roughly_same_scene(c.pos, sig.pos)
+        }) {
+            case.absorb_clues_no_recompute(&[sig.kind], sig.criminal_count);
+            continue;
+        }
+        book_pending_report(world, sig, now_ms);
+    }
+}
+
+/// Full: merge into cases **with** recompute; book pending reports.
+fn account_signals_full(world: &mut World, signals: &[Signal], now_ms: u64) {
+    for sig in signals {
         if let Some(case) = world.cases.iter_mut().find(|c| {
             !matches!(c.phase, Phase::Done) && roughly_same_scene(c.pos, sig.pos)
         }) {
             case.merge_kinds(&[sig.kind], sig.criminal_count);
             continue;
         }
-
-        if let Some(rep) = world.pending_reports.iter_mut().find(|r| {
-            r.phase != ReportPhase::Ended && roughly_same_scene(r.pos, sig.pos)
-        }) {
-            rep.merge_signal(sig);
-            // Police signal can upgrade a civilian report to Connected.
-            if matches!(sig.reporter, ReporterKind::Police) {
-                rep.phase = ReportPhase::Connected;
-                rep.reporter = ReporterKind::Police;
-                rep.ready_to_open = true;
-                rep.phase_started_ms = now_ms;
-            }
-            continue;
-        }
-
-        world
-            .pending_reports
-            .push(crate::report::PendingReport::from_signal(sig, now_ms));
+        book_pending_report(world, sig, now_ms);
     }
+}
+
+fn book_pending_report(world: &mut World, sig: &Signal, now_ms: u64) {
+    if let Some(rep) = world.pending_reports.iter_mut().find(|r| {
+        r.phase != ReportPhase::Ended && roughly_same_scene(r.pos, sig.pos)
+    }) {
+        rep.merge_signal(sig);
+        if matches!(sig.reporter, ReporterKind::Police) {
+            rep.phase = ReportPhase::Connected;
+            rep.reporter = ReporterKind::Police;
+            rep.ready_to_open = true;
+            rep.phase_started_ms = now_ms;
+        }
+        return;
+    }
+
+    world
+        .pending_reports
+        .push(crate::report::PendingReport::from_signal(sig, now_ms));
 }
 
 fn roughly_same_scene(a: crate::signal::WorldPos, b: crate::signal::WorldPos) -> bool {
@@ -180,20 +198,15 @@ fn advance_case_clocks_light(world: &mut World, now_ms: u64) {
 }
 
 fn open_connected_reports(world: &mut World, now_ms: u64, effects: &mut Vec<Effect>) {
-    let mut opened = Vec::new();
-    let mut to_remove = Vec::new();
+    let mut opened: Vec<usize> = world
+        .pending_reports
+        .iter()
+        .enumerate()
+        .filter(|(_, rep)| rep.ready_to_open && rep.phase.opens_case())
+        .map(|(idx, _)| idx)
+        .collect();
 
-    for (idx, rep) in world.pending_reports.iter().enumerate() {
-        if rep.ready_to_open && rep.phase.opens_case() {
-            opened.push(idx);
-        } else if !rep.phase.opens_case() {
-            // Pre-Connected: do not open.
-            continue;
-        }
-    }
-
-    for idx in opened {
-        to_remove.push(idx);
+    for &idx in &opened {
         let rep = world.pending_reports[idx].clone();
         let id = world.alloc_case_id();
         let case = Case::new(id, rep.kinds, rep.pos, rep.criminal_count, now_ms);
@@ -202,8 +215,8 @@ fn open_connected_reports(world: &mut World, now_ms: u64, effects: &mut Vec<Effe
     }
 
     // Remove opened reports (highest index first).
-    to_remove.sort_unstable();
-    for idx in to_remove.into_iter().rev() {
+    opened.sort_unstable();
+    for idx in opened.into_iter().rev() {
         world.pending_reports.remove(idx);
     }
 }
@@ -216,20 +229,27 @@ fn dispatch_case(
     effects: &mut Vec<Effect>,
 ) {
     // Phase advance Open → Responding after open delay.
+    // Response Effects are gated on phase != Open so delay is real.
     if matches!(case.phase, Phase::Open)
         && now_ms.saturating_sub(case.opened_ms) >= cfg.open_delay_ms
     {
         case.phase = Phase::Responding;
     }
 
+    if matches!(case.phase, Phase::Open | Phase::Done) {
+        // Still in open delay (or done): no mobilize/spawn/EMS/Fire yet.
+        return;
+    }
+
     // Police response: nearby first, then spawn.
-    if case.needs.police && !matches!(case.phase, Phase::Done) {
-        if !case.mobilized {
+    if case.needs.police {
+        let want_cap = case.response_size.nearby_slots;
+        if want_cap > case.mobilized_cap {
             effects.push(Effect::MobilizeNearby {
                 case_id: case.id,
-                cap: case.response_size.nearby_slots,
+                cap: want_cap,
             });
-            case.mobilized = true;
+            case.mobilized_cap = want_cap;
         }
         while case.patrol_spawned < case.response_size.patrol_count {
             effects.push(Effect::SpawnPatrol { case_id: case.id });
@@ -245,20 +265,18 @@ fn dispatch_case(
         }
     }
 
-    // EMS / Fire: default 1/case/dept; severe may fill to view-cap ≤2.
+    // EMS / Fire: default 1/case/dept; severe may add a second on a later Full (≤2 view).
     let severe = scene_is_severe(&case.kinds, case.threat);
 
     if case.needs.ems {
-        let budget = ems_fire_spawn_budget(case.ems_spawned, severe, view.ems);
-        // On non-severe, still ensure default 1 if none spawned (budget handles it).
-        let _ = EMS_FIRE_DEFAULT_PER_CASE;
+        let budget = crate::threat::ems_fire_spawn_budget(case.ems_spawned, severe, view.ems);
         for _ in 0..budget {
             effects.push(Effect::SpawnAmbulance { case_id: case.id });
             case.ems_spawned = case.ems_spawned.saturating_add(1);
         }
     }
     if case.needs.fire {
-        let budget = ems_fire_spawn_budget(case.fire_spawned, severe, view.fire);
+        let budget = crate::threat::ems_fire_spawn_budget(case.fire_spawned, severe, view.fire);
         for _ in 0..budget {
             effects.push(Effect::SpawnFiretruck { case_id: case.id });
             case.fire_spawned = case.fire_spawned.saturating_add(1);
@@ -283,7 +301,7 @@ fn dispatch_case(
 
     // Auto-promote Responding → OnScene once we have ordered response (simple pure rule).
     if matches!(case.phase, Phase::Responding)
-        && (case.mobilized || case.ems_spawned > 0 || case.fire_spawned > 0)
+        && (case.mobilized_cap > 0 || case.ems_spawned > 0 || case.fire_spawned > 0)
     {
         case.phase = Phase::OnScene;
     }

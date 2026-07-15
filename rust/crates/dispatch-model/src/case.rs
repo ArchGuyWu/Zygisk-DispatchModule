@@ -38,7 +38,8 @@ pub struct Case {
     pub patrol_spawned: u8,
     pub swat_spawned: bool,
     pub fbi_spawned: bool,
-    pub mobilized: bool,
+    /// Highest nearby mobilize cap already requested (0 = never mobilized).
+    pub mobilized_cap: u8,
     pub last_attack_ms: u64,
     pub last_arrest_ms: u64,
 }
@@ -72,25 +73,36 @@ impl Case {
             patrol_spawned: 0,
             swat_spawned: false,
             fbi_spawned: false,
-            mobilized: false,
+            mobilized_cap: 0,
             last_attack_ms: 0,
             last_arrest_ms: 0,
         }
     }
 
+    /// FullDispatch owns needs / threat / ResponseSize recompute (MODEL §5).
     pub fn recompute_size_and_needs(&mut self) {
         self.needs = crate::threat::needs_from_kinds(&self.kinds);
         self.threat = crate::threat::threat_from_kinds(&self.kinds);
         self.response_size = crate::threat::response_size(self.threat, self.criminal_count);
     }
 
-    pub fn merge_kinds(&mut self, kinds: &[crate::signal::SignalKind], criminal_count: u32) {
+    /// Book clues without recompute — LightStep only (MODEL §5: no threat/needs recompute).
+    pub fn absorb_clues_no_recompute(
+        &mut self,
+        kinds: &[crate::signal::SignalKind],
+        criminal_count: u32,
+    ) {
         for k in kinds {
             if !self.kinds.contains(k) {
                 self.kinds.push(*k);
             }
         }
         self.criminal_count = self.criminal_count.max(criminal_count);
+    }
+
+    /// Merge clues and recompute — FullDispatch path only.
+    pub fn merge_kinds(&mut self, kinds: &[crate::signal::SignalKind], criminal_count: u32) {
+        self.absorb_clues_no_recompute(kinds, criminal_count);
         self.recompute_size_and_needs();
     }
 }

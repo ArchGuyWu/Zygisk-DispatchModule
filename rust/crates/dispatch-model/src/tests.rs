@@ -2,6 +2,10 @@
 
 use crate::*;
 
+fn count_effect(effects: &[Effect], pred: impl Fn(&Effect) -> bool) -> usize {
+    effects.iter().filter(|e| pred(e)).count()
+}
+
 // ---------------------------------------------------------------------------
 // Department needs from signal kinds
 // ---------------------------------------------------------------------------
@@ -92,7 +96,21 @@ fn connected_opens_case_pre_connected_does_not() {
     );
     world = commit.world;
     assert_eq!(world.pending_reports[0].phase, ReportPhase::Calling);
-    // Calling → Connected
+
+    // Calling phase: Full must still not OpenCase.
+    let commit = full_dispatch_tx(world, Inputs::empty(1_000 + DEFAULT_SEEKING_MS + 1));
+    assert!(
+        !commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::OpenCase { .. })),
+        "Calling must not OpenCase: {:?}",
+        commit.effects
+    );
+    world = commit.world;
+    assert_eq!(world.pending_reports[0].phase, ReportPhase::Calling);
+
+    // Calling → Connected via Light
     let commit = light_step_tx(
         world,
         Inputs::empty(1_000 + DEFAULT_SEEKING_MS + DEFAULT_CALLING_MS),
@@ -100,7 +118,10 @@ fn connected_opens_case_pre_connected_does_not() {
     world = commit.world;
     assert_eq!(world.pending_reports[0].phase, ReportPhase::Connected);
     assert!(world.pending_reports[0].ready_to_open);
-    assert!(should_full_dispatch(&world, &Inputs::empty(1_000 + DEFAULT_SEEKING_MS + DEFAULT_CALLING_MS)));
+    assert!(should_full_dispatch(
+        &world,
+        &Inputs::empty(1_000 + DEFAULT_SEEKING_MS + DEFAULT_CALLING_MS)
+    ));
     let now = 1_000 + DEFAULT_SEEKING_MS + DEFAULT_CALLING_MS + 1;
     let commit = full_dispatch_tx(world, Inputs::empty(now));
     assert!(
@@ -128,6 +149,7 @@ fn response_size_from_threat_and_criminal_count() {
         (Threat::Armed, 1, 2, 2, false, false),
         (Threat::Armed, 3, 2, 2, true, true),
         (Threat::ActiveFire, 1, 2, 2, false, false),
+        // ActiveFire: intentional pair threshold for specials (not GANG_MIN).
         (Threat::ActiveFire, 2, 2, 3, true, true),
         (Threat::ActiveFire, 3, 2, 3, true, true),
     ];
@@ -144,6 +166,11 @@ fn response_size_from_threat_and_criminal_count() {
     assert_eq!(threat_from_kinds(&[SignalKind::Gunfire]), Threat::ActiveFire);
     assert_eq!(threat_from_kinds(&[SignalKind::Injury]), Threat::Low);
     assert_eq!(threat_from_kinds(&[SignalKind::Casualty]), Threat::Armed);
+
+    // Plain Fire is not severe; Explosion/Casualty are.
+    assert!(!scene_is_severe(&[SignalKind::Fire], Threat::Low));
+    assert!(scene_is_severe(&[SignalKind::Explosion], Threat::Low));
+    assert!(scene_is_severe(&[SignalKind::Casualty], Threat::Armed));
 }
 
 // ---------------------------------------------------------------------------
@@ -152,17 +179,18 @@ fn response_size_from_threat_and_criminal_count() {
 
 #[test]
 fn ems_fire_default_one_and_severe_view_cap() {
-    // Budget helper table
+    // Budget helper: at most one new unit per Full; severe target 2 over time.
     let budget_table: &[(u8, bool, u8, u8)] = &[
         // already, severe, view, expected_budget
-        (0, false, 0, 1), // default 1
+        (0, false, 0, 1), // default first tick
         (1, false, 0, 0), // already at default
-        (0, true, 0, 2),  // severe, empty view → 2
+        (0, true, 0, 1),  // severe first Full → only 1 this tick ("may")
+        (1, true, 0, 1),  // severe second Full → may add second
         (0, true, 1, 1),  // severe, 1 in view → room 1
         (0, true, 2, 0),  // view full at cap
         (1, true, 1, 1),  // case has 1, view 1 → can order 1 more
         (2, true, 1, 0),  // case already at 2
-        (0, false, 2, 0), // default but view full — still no room past cap
+        (0, false, 2, 0), // default but view full
     ];
     for &(already, severe, view, expect) in budget_table {
         let b = ems_fire_spawn_budget(already, severe, view);
@@ -176,29 +204,25 @@ fn ems_fire_default_one_and_severe_view_cap() {
 
     let pos = WorldPos::default();
 
-    // Non-severe injury → 1 ambulance
+    // Non-severe injury → exactly 1 ambulance
     let world = World::default();
     let mut inputs = Inputs::empty(100);
-    inputs.signals.push(
-        Signal::new(SignalKind::Injury, pos, ReporterKind::Police),
-    );
+    inputs
+        .signals
+        .push(Signal::new(SignalKind::Injury, pos, ReporterKind::Police));
     let commit = full_dispatch_tx(world, inputs);
-    let ambs: Vec<_> = commit
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SpawnAmbulance { .. }))
-        .collect();
-    assert_eq!(ambs.len(), 1, "default EMS 1: {:?}", commit.effects);
-    assert!(
-        !commit
-            .effects
-            .iter()
-            .any(|e| matches!(e, Effect::SpawnFiretruck { .. }))
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnAmbulance { .. })),
+        1,
+        "default EMS 1: {:?}",
+        commit.effects
+    );
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnFiretruck { .. })),
+        0
     );
 
-    // Fire signal → 1 firetruck (Fire is severe for reinforcement path; first full still
-    // can request up to 2 if view empty — Fire/Explosion are severe).
-    // MODEL: default 1; severe *may* dispatch more. Fire kind is severe.
+    // Plain Fire is not severe → exactly 1 firetruck on first Full
     let world = World::default();
     let mut inputs = Inputs::empty(200);
     inputs.view_counts = ViewCounts { ems: 0, fire: 0 };
@@ -206,20 +230,22 @@ fn ems_fire_default_one_and_severe_view_cap() {
         .signals
         .push(Signal::new(SignalKind::Fire, pos, ReporterKind::Police));
     let commit = full_dispatch_tx(world, inputs);
-    let trucks: Vec<_> = commit
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SpawnFiretruck { .. }))
-        .collect();
-    // Severe fire with empty view → up to 2
-    assert!(
-        trucks.len() <= EMS_FIRE_VIEW_CAP as usize,
-        "firetruck count {} exceeds cap",
-        trucks.len()
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnFiretruck { .. })),
+        1,
+        "plain Fire default 1: {:?}",
+        commit.effects
     );
-    assert!(!trucks.is_empty(), "expected firetruck: {:?}", commit.effects);
+    // Second Full still non-severe → no second truck
+    let commit = full_dispatch_tx(commit.world, Inputs::empty(200 + 500));
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnFiretruck { .. })),
+        0,
+        "plain Fire must not reinforce: {:?}",
+        commit.effects
+    );
 
-    // View already at 2 → no more same-dept spawns
+    // View already at 2 → no firetruck
     let world = World::default();
     let mut inputs = Inputs::empty(300);
     inputs.view_counts = ViewCounts { ems: 0, fire: 2 };
@@ -227,18 +253,14 @@ fn ems_fire_default_one_and_severe_view_cap() {
         .signals
         .push(Signal::new(SignalKind::Fire, pos, ReporterKind::Police));
     let commit = full_dispatch_tx(world, inputs);
-    let trucks: Vec<_> = commit
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SpawnFiretruck { .. }))
-        .collect();
-    assert!(
-        trucks.is_empty(),
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnFiretruck { .. })),
+        0,
         "view cap blocks firetruck: {:?}",
         commit.effects
     );
 
-    // Severe EMS with view=0 → 2 ambulances max
+    // Severe Casualty: first Full → exactly 1 amb; second Full empty view → exactly 1 more
     let world = World::default();
     let mut inputs = Inputs::empty(400);
     inputs.view_counts = ViewCounts { ems: 0, fire: 0 };
@@ -246,18 +268,33 @@ fn ems_fire_default_one_and_severe_view_cap() {
         Signal::new(SignalKind::Casualty, pos, ReporterKind::Police).with_criminals(1),
     );
     let commit = full_dispatch_tx(world, inputs);
-    let ambs: Vec<_> = commit
-        .effects
-        .iter()
-        .filter(|e| matches!(e, Effect::SpawnAmbulance { .. }))
-        .collect();
-    assert!(
-        ambs.len() <= 2 && !ambs.is_empty(),
-        "severe EMS ≤2: {:?}",
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnAmbulance { .. })),
+        1,
+        "severe first Full → 1: {:?}",
         commit.effects
     );
+    assert_eq!(commit.world.cases[0].ems_spawned, 1);
 
-    // Independent caps: fire view full must not block EMS
+    let mut inputs = Inputs::empty(400 + 500);
+    inputs.view_counts = ViewCounts { ems: 0, fire: 0 };
+    let commit = full_dispatch_tx(commit.world, inputs);
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnAmbulance { .. })),
+        1,
+        "severe second Full → +1: {:?}",
+        commit.effects
+    );
+    assert_eq!(commit.world.cases[0].ems_spawned, 2);
+
+    // Third Full: at case target 2 → no more
+    let commit = full_dispatch_tx(commit.world, Inputs::empty(400 + 1000));
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnAmbulance { .. })),
+        0
+    );
+
+    // Independent caps: fire view full must not block EMS (Explosion)
     let world = World::default();
     let mut inputs = Inputs::empty(500);
     inputs.view_counts = ViewCounts { ems: 0, fire: 2 };
@@ -267,26 +304,22 @@ fn ems_fire_default_one_and_severe_view_cap() {
         ReporterKind::Police,
     ));
     let commit = full_dispatch_tx(world, inputs);
-    assert!(
-        commit
-            .effects
-            .iter()
-            .any(|e| matches!(e, Effect::SpawnAmbulance { .. })),
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnAmbulance { .. })),
+        1,
         "EMS still allowed when fire view full: {:?}",
         commit.effects
     );
-    assert!(
-        !commit
-            .effects
-            .iter()
-            .any(|e| matches!(e, Effect::SpawnFiretruck { .. })),
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::SpawnFiretruck { .. })),
+        0,
         "fire blocked at view 2: {:?}",
         commit.effects
     );
 }
 
 // ---------------------------------------------------------------------------
-// LightStep produces empty effects by default
+// LightStep produces empty effects; no needs recompute on case merge
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -298,7 +331,6 @@ fn light_step_produces_empty_effects() {
     };
     let world = World::default();
     let mut inputs = Inputs::empty(50);
-    // Even with a civilian signal, Light only books in + clocks — no Effects.
     inputs
         .signals
         .push(Signal::new(SignalKind::Gunfire, pos, ReporterKind::Civilian));
@@ -311,10 +343,162 @@ fn light_step_produces_empty_effects() {
     assert_eq!(commit.world.pending_reports.len(), 1);
     assert!(commit.world.cases.is_empty());
 
-    // Light with empty world + empty inputs
     let commit = light_step_tx(World::default(), Inputs::empty(1));
     assert!(commit.effects.is_empty());
     assert!(commit.world.cases.is_empty());
+}
+
+#[test]
+fn light_step_does_not_recompute_needs_on_case_merge() {
+    let pos = WorldPos::default();
+    // Open a police gunfire case first.
+    let mut inputs = Inputs::empty(10);
+    inputs.signals.push(
+        Signal::new(SignalKind::Gunfire, pos, ReporterKind::Police).with_criminals(1),
+    );
+    let commit = full_dispatch_tx(World::default(), inputs);
+    let mut world = commit.world;
+    assert_eq!(world.cases.len(), 1);
+    assert!(world.cases[0].needs.police);
+    assert!(!world.cases[0].needs.ems);
+    let threat_before = world.cases[0].threat;
+    let needs_before = world.cases[0].needs;
+
+    // Light absorbs injury clue without recompute (MODEL §5).
+    let mut inputs = Inputs::empty(20);
+    inputs
+        .signals
+        .push(Signal::new(SignalKind::Injury, pos, ReporterKind::Civilian));
+    let commit = light_step_tx(world, inputs);
+    world = commit.world;
+    assert!(commit.effects.is_empty());
+    assert!(
+        world.cases[0].kinds.contains(&SignalKind::Injury),
+        "clue absorbed: {:?}",
+        world.cases[0].kinds
+    );
+    assert_eq!(
+        world.cases[0].needs, needs_before,
+        "Light must not recompute needs"
+    );
+    assert_eq!(
+        world.cases[0].threat, threat_before,
+        "Light must not recompute threat"
+    );
+
+    // Full recompute picks up EMS need.
+    let commit = full_dispatch_tx(world, Inputs::empty(20 + 500));
+    assert!(commit.world.cases[0].needs.ems);
+    assert!(commit.world.cases[0].needs.police);
+}
+
+// ---------------------------------------------------------------------------
+// open_delay gates response Effects
+// ---------------------------------------------------------------------------
+
+#[test]
+fn open_delay_blocks_response_effects_until_elapsed() {
+    let pos = WorldPos::default();
+    let cfg = ModelConfig {
+        open_delay_ms: 1_000,
+        ..ModelConfig::default()
+    };
+    let world = World::new(cfg);
+    let mut inputs = Inputs::empty(100);
+    inputs.signals.push(
+        Signal::new(SignalKind::Gunfire, pos, ReporterKind::Police).with_criminals(1),
+    );
+    let commit = full_dispatch_tx(world, inputs);
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::OpenCase { .. })),
+        "still opens: {:?}",
+        commit.effects
+    );
+    assert_eq!(
+        count_effect(&commit.effects, |e| matches!(e, Effect::MobilizeNearby { .. })),
+        0,
+        "no mobilize during open delay: {:?}",
+        commit.effects
+    );
+    assert_eq!(
+        count_effect(&commit.effects, |e| {
+            matches!(
+                e,
+                Effect::SpawnPatrol { .. }
+                    | Effect::SpawnSwat { .. }
+                    | Effect::SpawnFbi { .. }
+                    | Effect::SpawnAmbulance { .. }
+                    | Effect::SpawnFiretruck { .. }
+            )
+        }),
+        0,
+        "no spawns during open delay: {:?}",
+        commit.effects
+    );
+    assert!(matches!(commit.world.cases[0].phase, Phase::Open));
+
+    // After delay: response Effects appear.
+    let commit = full_dispatch_tx(commit.world, Inputs::empty(100 + 1_000));
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::MobilizeNearby { .. })),
+        "mobilize after delay: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnPatrol { .. })),
+        "patrol after delay: {:?}",
+        commit.effects
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MobilizeNearby re-emits when nearby_slots increases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mobilize_nearby_top_up_when_cap_increases() {
+    let pos = WorldPos::default();
+    let mut inputs = Inputs::empty(10);
+    // Low threat single → nearby_slots = 1
+    inputs.signals.push(
+        Signal::new(SignalKind::PropertyDamage, pos, ReporterKind::Police).with_criminals(1),
+    );
+    let commit = full_dispatch_tx(World::default(), inputs);
+    let caps: Vec<u8> = commit
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::MobilizeNearby { cap, .. } => Some(*cap),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(caps, vec![1], "initial mobilize cap 1: {:?}", commit.effects);
+
+    // Escalate: more criminals on Low → nearby 2 (gang)
+    let mut inputs = Inputs::empty(10 + 500);
+    inputs.signals.push(
+        Signal::new(SignalKind::PropertyDamage, pos, ReporterKind::Police).with_criminals(3),
+    );
+    let commit = full_dispatch_tx(commit.world, inputs);
+    let caps: Vec<u8> = commit
+        .effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::MobilizeNearby { cap, .. } => Some(*cap),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(caps, vec![2], "top-up mobilize cap 2: {:?}", commit.effects);
+    assert_eq!(commit.world.cases[0].mobilized_cap, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -340,40 +524,113 @@ fn full_dispatch_produces_open_and_spawn_effects() {
     assert!(should_full_dispatch(&world, &inputs));
     let commit = full_dispatch_tx(world, inputs);
 
-    let has_open = commit
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::OpenCase { .. }));
-    let has_mobilize = commit
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::MobilizeNearby { .. }));
-    let has_patrol = commit
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnPatrol { .. }));
-    let has_swat = commit
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnSwat { .. }));
-    let has_amb = commit
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::SpawnAmbulance { .. }));
-    let has_suppress = commit
-        .effects
-        .iter()
-        .any(|e| matches!(e, Effect::SuppressWanted));
-
-    assert!(has_open, "OpenCase: {:?}", commit.effects);
-    assert!(has_mobilize, "MobilizeNearby: {:?}", commit.effects);
-    assert!(has_patrol, "SpawnPatrol: {:?}", commit.effects);
-    assert!(has_swat, "SpawnSwat for gang gunfire: {:?}", commit.effects);
-    assert!(has_amb, "SpawnAmbulance for injury: {:?}", commit.effects);
-    assert!(has_suppress, "SuppressWanted: {:?}", commit.effects);
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::OpenCase { .. })),
+        "OpenCase: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::MobilizeNearby { .. })),
+        "MobilizeNearby: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnPatrol { .. })),
+        "SpawnPatrol: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnSwat { .. })),
+        "SpawnSwat for gang gunfire: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnFbi { .. })),
+        "SpawnFbi alongside SWAT: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SpawnAmbulance { .. })),
+        "SpawnAmbulance for injury: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::SuppressWanted)),
+        "SuppressWanted: {:?}",
+        commit.effects
+    );
     assert_eq!(commit.world.cases.len(), 1);
     assert!(commit.world.cases[0].needs.police);
     assert!(commit.world.cases[0].needs.ems);
+}
+
+// ---------------------------------------------------------------------------
+// OnScene AttackPass / ArrestPass + CloseCase
+// ---------------------------------------------------------------------------
+
+#[test]
+fn onscene_attack_arrest_and_close_case() {
+    let pos = WorldPos::default();
+    let mut inputs = Inputs::empty(1_000);
+    inputs.signals.push(
+        Signal::new(SignalKind::Gunfire, pos, ReporterKind::Police).with_criminals(1),
+    );
+    let commit = full_dispatch_tx(World::default(), inputs);
+    // First Full promotes to OnScene after response; AttackPass runs only when
+    // already OnScene at start of response block — so second Full emits passes.
+    assert!(matches!(commit.world.cases[0].phase, Phase::OnScene));
+
+    let commit = full_dispatch_tx(commit.world, Inputs::empty(1_000 + 2_000));
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::AttackPass { .. })),
+        "AttackPass: {:?}",
+        commit.effects
+    );
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::ArrestPass { .. })),
+        "ArrestPass: {:?}",
+        commit.effects
+    );
+
+    let mut world = commit.world;
+    world.cases[0].should_close = true;
+    let commit = full_dispatch_tx(world, Inputs::empty(1_000 + 3_000));
+    assert!(
+        commit
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::CloseCase { .. })),
+        "CloseCase: {:?}",
+        commit.effects
+    );
+    assert!(matches!(commit.world.cases[0].phase, Phase::Done));
 }
 
 #[test]
