@@ -1,4 +1,4 @@
-//! Assign `CTaskComplexInvestigateDisturbance` once — native engine goes to the scene.
+//! Scene approach: foot uses InvestigateDisturbance; vehicles use CarAI go-to.
 
 use dispatch_case::CaseRecord;
 use dispatch_core::{PedId, VehicleId, WorldPos};
@@ -6,7 +6,9 @@ use dispatch_core::{PedId, VehicleId, WorldPos};
 use crate::game::ExecEnv;
 use crate::response::setup_dispatched_cops;
 use crate::tasks::assign_investigate_disturbance_task;
+use crate::timing::{driving_style_for_case, DRIVE_STYLE_RESPONSE_EMERGENCY};
 
+/// On-foot: `CTaskComplexInvestigateDisturbance` to anchor (walk → stand → look).
 pub fn dispatch_ped_to_disturbance(
     env: &mut ExecEnv<'_>,
     record: &mut CaseRecord,
@@ -21,10 +23,23 @@ pub fn dispatch_ped_to_disturbance(
         return false;
     }
     record.register_scene_responder(ped);
-    tracing::info!(?ped, ?anchor, case = record.serial, "ped dispatched via investigate disturbance");
+    tracing::info!(
+        ?ped,
+        ?anchor,
+        case = record.serial,
+        "ped: InvestigateDisturbance to scene"
+    );
     true
 }
 
+/// In-vehicle response: **drive** via `CCarAI::GetCarToGoToCoors` to the anchor.
+///
+/// Does **not** force InvestigateDisturbance on seated occupants (that fights autopilot
+/// and turns long approaches into walk-outs). Occupants are registered as responders only.
+///
+/// Engine behaviour near the point: goto mission completes / clears → vehicle stops.
+/// There is no separate "park and idle for N ms" CarAI entry used here; `GetCarToParkAtCoors`
+/// only sets `bCanPark` + low cruise and is not sufficient alone.
 pub fn dispatch_vehicle_to_disturbance(
     env: &mut ExecEnv<'_>,
     record: &mut CaseRecord,
@@ -50,6 +65,17 @@ pub fn dispatch_vehicle_to_disturbance(
         env.arm_vehicle_siren(vehicle);
     }
 
+    let style = if arm_police_siren {
+        driving_style_for_case(record.is_firearm)
+    } else {
+        // Ambulance / firetruck: emergency response style.
+        DRIVE_STYLE_RESPONSE_EMERGENCY
+    };
+
+    if !env.command_vehicle_to_scene(vehicle, anchor, style) {
+        return 0;
+    }
+
     let occupants: Vec<PedId> = env
         .globals
         .cop_bindings
@@ -58,22 +84,24 @@ pub fn dispatch_vehicle_to_disturbance(
         .map(|b| b.cop)
         .collect();
 
-    let mut assigned = 0;
+    let mut assigned = 0i32;
     for ped in occupants {
-        if dispatch_ped_to_disturbance(env, record, ped, anchor) {
-            assigned += 1;
-        }
+        record.register_scene_responder(ped);
+        assigned += 1;
+    }
+    // Count the vehicle as dispatched even if occupant bind missed (driver still drives).
+    if assigned == 0 {
+        assigned = 1;
     }
 
-    if assigned > 0 {
-        env.globals.add_vehicle_ordered_to_scene(vehicle);
-        tracing::info!(
-            ?vehicle,
-            assigned,
-            ?anchor,
-            case = record.serial,
-            "vehicle occupants dispatched via investigate disturbance"
-        );
-    }
+    env.globals.add_vehicle_ordered_to_scene(vehicle);
+    tracing::info!(
+        ?vehicle,
+        assigned,
+        ?anchor,
+        style,
+        case = record.serial,
+        "vehicle: CarAI go-to scene (no foot InvestigateDisturbance on crew)"
+    );
     assigned
 }

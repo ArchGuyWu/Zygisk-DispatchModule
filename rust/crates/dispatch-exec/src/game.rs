@@ -273,12 +273,15 @@ impl<'a> ExecEnv<'a> {
         }
     }
 
+    /// `CCarAI::GetCarToGoToCoors` — 4th arg is **set cruise speed**, not a dwell timer.
+    /// Near the destination the autopilot mission ends / slows; there is no separate
+    /// "park and wait N ms" mission API in SA CarAI (see GetCarToParkAtCoors — flag only).
     pub fn try_get_car_to_go_to_coors(
         &self,
         vehicle: VehicleId,
         target: WorldPos,
         driving_style: i32,
-        stop_after: bool,
+        set_cruise_speed: bool,
     ) -> bool {
         if !self.vehicle_has_live_driver(vehicle) {
             return false;
@@ -288,27 +291,43 @@ impl<'a> ExecEnv<'a> {
             ptr,
             vector_from_pos(target),
             driving_style,
-            stop_after,
+            set_cruise_speed,
         )
     }
 
-    /// One-shot drive to the crime scene — no staging decoy, no hold, no re-command.
+    /// One-shot **drive** to scene coords (police / EMS / fire). Autopilot holds approach;
+    /// when close, mission clears → vehicle stops (engine-side, not a timed dwell task).
+    pub fn command_vehicle_to_scene(
+        &self,
+        vehicle: VehicleId,
+        target_loc: WorldPos,
+        driving_style: i32,
+    ) -> bool {
+        if self.globals.paused {
+            return false;
+        }
+        if !self.vehicle_has_live_driver(vehicle) {
+            tracing::warn!(?vehicle, "vehicle has no live driver — blocked drive command");
+            return false;
+        }
+        let ok = self.try_get_car_to_go_to_coors(vehicle, target_loc, driving_style, true);
+        if ok {
+            tracing::info!(?vehicle, driving_style, "vehicle CarAI go-to scene");
+        } else {
+            tracing::warn!(?vehicle, "GetCarToGoToCoors failed");
+        }
+        ok
+    }
+
+    /// Compatibility alias.
     pub fn command_cop_vehicle_to_scene(
         &self,
         vehicle: VehicleId,
         target_loc: WorldPos,
         is_firearm: bool,
     ) {
-        if self.globals.paused {
-            return;
-        }
-        if !self.vehicle_has_live_driver(vehicle) {
-            tracing::warn!(?vehicle, "vehicle has no live driver — blocked drive command");
-            return;
-        }
         let style = driving_style_for_case(is_firearm);
-        self.try_get_car_to_go_to_coors(vehicle, target_loc, style, true);
-        tracing::info!(?vehicle, style, "vehicle dispatched to scene");
+        let _ = self.command_vehicle_to_scene(vehicle, target_loc, style);
     }
 
     pub fn bind_vehicle_occupants_from_vehicle(&mut self, vehicle: VehicleId) {
