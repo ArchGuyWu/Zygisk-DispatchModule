@@ -23,9 +23,13 @@ use dispatch_exec::{
 use tracing::debug;
 
 use crate::civilian_report::CivilianReportDriver;
-use crate::gate::{zone_active_cached};
+use crate::gate::zone_active_cached;
+use crate::model_bridge::{
+    model_signal_from_causal, ped_despawn, pool_key_handle, vehicle_despawn, ModelRuntime,
+};
 use crate::witness_scan;
 use dispatch_core::LoaderInputs;
+use dispatch_model::{ReporterKind, ViewCounts};
 
 const PED_INTEL_OFFSET: usize = 0x5e8;
 const EVENT_GROUP_OFFSET: usize = 0xc8;
@@ -62,6 +66,9 @@ pub struct DispatchRuntime {
     cop_vehicle_scratch: HashMap<PedId, VehicleId>,
     seen_cops_scratch: HashSet<PedId>,
     boot: Instant,
+    /// Pure-logic product model (MODEL.md): World + input queues; driven only from
+    /// script-frame `frame_tick`. Engine apply via TracingEffectSink until case-id map lands.
+    pub model: ModelRuntime,
 }
 
 struct RuntimeSlot(UnsafeCell<Option<DispatchRuntime>>);
@@ -131,6 +138,7 @@ pub fn init(symbols: ExecSymbols, native_events: NativeEventRegistry) {
         cop_vehicle_scratch: HashMap::new(),
         seen_cops_scratch: HashSet::new(),
         boot: Instant::now(),
+        model: ModelRuntime::default(),
         });
     }
 }
@@ -150,15 +158,42 @@ impl DispatchRuntime {
     }
 
     pub fn frame_tick(&mut self) {
+        // `dispatch_enabled` ≈ zone_active && MOD_LOGIC (see gate + scripts detour).
         if self.symbols.engine_transition_blocks_dispatch() {
             crate::gate::set_zone_active(false);
+            // Soft-pause: drop backlog so re-enable does not burst spawn from model queue.
+            self.model.drain_discard();
             return;
         }
         self.refresh_zone_gate();
         if !zone_active_cached() {
+            self.model.drain_discard();
             return;
         }
+        // Model Light/Full first (product state machine); legacy path still drives engine.
+        self.model_frame_tick();
         self.tick_active();
+    }
+
+    /// Drain model queues → should_full? Full : Light → apply_effects (Tracing sink).
+    fn model_frame_tick(&mut self) {
+        let now_ms = self.now_ms().max(0) as u64;
+        // ViewCounts stub: real EMS/fire in-view counts need pool scan; model enforces
+        // budget with zeros → default 1/case until engine sink is wired.
+        let view = ViewCounts::default();
+        self.model.frame_tick_traced(now_ms, view);
+    }
+
+    /// Enqueue a pure-model signal (no phone/radio anim required for progression).
+    pub fn enqueue_model_signal_from_causal(
+        &mut self,
+        signal: CausalSignal,
+        reporter: ReporterKind,
+        criminal_count: u32,
+    ) {
+        if let Some(sig) = model_signal_from_causal(signal, reporter, criminal_count) {
+            self.model.enqueue_signal(sig);
+        }
     }
 
     fn tick_active(&mut self) {
@@ -617,6 +652,9 @@ impl DispatchRuntime {
     }
 
     pub fn publish_signal(&mut self, signal: CausalSignal) {
+        // Model queue only (logical report timers; no phone/radio anim gate).
+        // Reporter defaults to Civilian; Full/Light open cases at Connected.
+        self.enqueue_model_signal_from_causal(signal, ReporterKind::Civilian, 0);
         let now = self.now_ms();
         let active = self.witness_reports.active_incident();
         let incident_id = self.incidents.ingest(signal, now, active);
@@ -788,6 +826,11 @@ impl DispatchRuntime {
 
     fn release_ped(&mut self, id: PedId, reason: DespawnReason) {
         let now = self.now_ms();
+        // Model despawn queue (opaque pool handle) before registry release.
+        if let Some(record) = self.registry.ped(id) {
+            let handle = pool_key_handle(record.pool_key.slot, record.pool_key.generation);
+            self.model.enqueue_despawn(ped_despawn(handle));
+        }
         let registry = &self.registry;
         let symbols = &self.symbols;
         let ped_cache_ptr = self.ped_ptr_cache.get();
@@ -815,6 +858,10 @@ impl DispatchRuntime {
     }
 
     fn release_vehicle(&mut self, id: VehicleId, reason: DespawnReason) {
+        if let Some(record) = self.registry.vehicle(id) {
+            let handle = pool_key_handle(record.pool_key.slot, record.pool_key.generation);
+            self.model.enqueue_despawn(vehicle_despawn(handle));
+        }
         if self.registry.release_vehicle(id).is_none() {
             return;
         }

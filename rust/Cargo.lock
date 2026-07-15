@@ -74,6 +74,7 @@ dependencies = [
  "dispatch-core",
  "dispatch-engine",
  "dispatch-exec",
+ "dispatch-model",
  "libc",
  "tracing",
 ]

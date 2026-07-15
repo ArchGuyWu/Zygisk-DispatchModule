@@ -7,6 +7,7 @@ mod event_perception;
 mod gate;
 mod install;
 mod lifecycle;
+mod model_bridge;
 mod runtime;
 mod scripts;
 mod spawn;
@@ -16,4 +17,5 @@ mod witness_scan;
 
 pub use config::{HOOKS_ENABLED, MOD_LOGIC_ENABLED};
 pub use install::install_lifecycle_hooks;
+pub use model_bridge::ModelRuntime;
 pub use runtime::{with_runtime, DispatchRuntime};
