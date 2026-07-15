@@ -10,6 +10,7 @@ mod gate;
 mod install;
 mod lifecycle;
 mod manage_tasks_gate;
+mod record_relationship_gate;
 mod runtime;
 mod scripts;
 mod spawn;

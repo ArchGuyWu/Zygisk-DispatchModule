@@ -30,6 +30,9 @@ use crate::control_sub_task_gate::{
 use crate::manage_tasks_gate::{
     detour_manage_tasks, set_orig_manage_tasks,
 };
+use crate::record_relationship_gate::{
+    detour_record_relationship, set_orig_record_relationship,
+};
 use crate::wanted_population::{
     detour_report_crime, detour_report_crime_now, detour_set_wanted_level,
     detour_set_wanted_level_no_drop, set_orig_report_crime, set_orig_report_crime_now,
@@ -87,6 +90,7 @@ pub fn install_lifecycle_hooks() -> Result<()> {
     hook_bit(13, hook_process_static_counter_gate(&lib));
     hook_bit(14, hook_control_sub_task_gate(&lib));
     hook_bit(15, hook_manage_tasks_gate(&lib));
+    hook_bit(16, hook_record_relationship_gate(&lib));
     std::mem::forget(lib);
     info!(hooks = installed, failed, "rust dispatch hooks installed");
     let logic = if crate::config::MOD_LOGIC_ENABLED {
@@ -356,6 +360,20 @@ fn hook_manage_tasks_gate(lib: &Library) -> Result<usize> {
         "ManageTasksGate",
     )?;
     set_orig_manage_tasks(unsafe { std::mem::transmute(orig) });
+    Ok(1)
+}
+
+/// Fail-closed gate: null vtable on CPlayerRelationshipRecorder → skip RecordRelationshipWithPlayer.
+fn hook_record_relationship_gate(lib: &Library) -> Result<usize> {
+    let mut orig: *mut std::ffi::c_void = std::ptr::null_mut();
+    install_hook(
+        lib,
+        "_ZN27CPlayerRelationshipRecorder28RecordRelationshipWithPlayerEPK4CPed",
+        detour_record_relationship as *const () as usize,
+        &mut orig,
+        "RecordRelationshipGate",
+    )?;
+    set_orig_record_relationship(unsafe { std::mem::transmute(orig) });
     Ok(1)
 }
 
