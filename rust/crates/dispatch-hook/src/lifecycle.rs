@@ -1,6 +1,7 @@
 use dispatch_core::DespawnReason;
 
 use crate::gate::hook_logic_allowed;
+use crate::orig_slot::OrigSlot;
 use crate::runtime::with_runtime;
 
 type OrigRegisterKill = unsafe extern "C" fn(
@@ -13,20 +14,20 @@ type OrigRegisterKill = unsafe extern "C" fn(
 type OrigRemovePed = unsafe extern "C" fn(*mut std::ffi::c_void);
 type OrigRemoveVehicle = unsafe extern "C" fn(*mut std::ffi::c_void);
 
-static mut ORIG_REGISTER_KILL: Option<OrigRegisterKill> = None;
-static mut ORIG_REMOVE_PED: Option<OrigRemovePed> = None;
-static mut ORIG_REMOVE_VEHICLE: Option<OrigRemoveVehicle> = None;
+static ORIG_REGISTER_KILL: OrigSlot<OrigRegisterKill> = OrigSlot::new();
+static ORIG_REMOVE_PED: OrigSlot<OrigRemovePed> = OrigSlot::new();
+static ORIG_REMOVE_VEHICLE: OrigSlot<OrigRemoveVehicle> = OrigSlot::new();
 
 pub fn set_orig_register_kill(f: OrigRegisterKill) {
-    unsafe { ORIG_REGISTER_KILL = Some(f) };
+    ORIG_REGISTER_KILL.set(f);
 }
 
 pub fn set_orig_remove_ped(f: OrigRemovePed) {
-    unsafe { ORIG_REMOVE_PED = Some(f) };
+    ORIG_REMOVE_PED.set(f);
 }
 
 pub fn set_orig_remove_vehicle(f: OrigRemoveVehicle) {
-    unsafe { ORIG_REMOVE_VEHICLE = Some(f) };
+    ORIG_REMOVE_VEHICLE.set(f);
 }
 
 /// Engine death registration.
@@ -43,11 +44,6 @@ pub unsafe extern "C" fn detour_register_kill(
     weapon: i32,
     unk: bool,
 ) {
-    // Do not call engine ClearTasks here — engine owns ped death task
-    // teardown and will clean up tasks during its own death sequence.
-    // Premature cleanup creates dangling task slots (non-null pointer, null
-    // vtable) that crash subsequent task-graph walkers (ManageTasks,
-    // FindActiveTaskByType, ProcessBuoyancy, etc.).
     if hook_logic_allowed() {
         with_runtime(|rt| {
             if rt.symbols.validate_pool_ped(dead).is_some() {
@@ -56,15 +52,12 @@ pub unsafe extern "C" fn detour_register_kill(
             }
         });
     }
-    if let Some(orig) = ORIG_REGISTER_KILL {
+    if let Some(orig) = ORIG_REGISTER_KILL.get() {
         orig(this, dead, killer, weapon, unk);
     }
 }
 
-/// Engine pool recycle: registry release only. Do not call engine ClearTasks
-/// — the engine owns ped death teardown and will clean up tasks during its
-/// own recycling sequence. Premature cleanup creates dangling task slots.
-/// Fail-closed: validate pool membership before releasing from our registry.
+/// Engine pool recycle: registry release only.
 pub unsafe extern "C" fn detour_population_remove_ped(ped: *mut std::ffi::c_void) {
     if hook_logic_allowed() {
         with_runtime(|rt| {
@@ -73,7 +66,7 @@ pub unsafe extern "C" fn detour_population_remove_ped(ped: *mut std::ffi::c_void
             }
         });
     }
-    if let Some(orig) = ORIG_REMOVE_PED {
+    if let Some(orig) = ORIG_REMOVE_PED.get() {
         orig(ped);
     }
 }
@@ -86,7 +79,7 @@ pub unsafe extern "C" fn detour_possibly_remove_vehicle(vehicle: *mut std::ffi::
             }
         });
     }
-    if let Some(orig) = ORIG_REMOVE_VEHICLE {
+    if let Some(orig) = ORIG_REMOVE_VEHICLE.get() {
         orig(vehicle);
     }
 }

@@ -1,5 +1,6 @@
 mod config;
 mod inline;
+mod orig_slot;
 mod causation;
 mod civilian_report;
 mod event_perception;

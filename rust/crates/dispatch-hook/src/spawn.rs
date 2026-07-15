@@ -3,26 +3,27 @@ use dispatch_engine::CVector;
 use dispatch_exec::is_custom_spawn_active;
 
 use crate::gate::hook_logic_allowed;
+use crate::orig_slot::OrigSlot;
 
 type OrigGenerateEmergency = unsafe extern "C" fn(model: u32, pos: CVector);
 type OrigScriptGenerateEmergency = unsafe extern "C" fn(model: u32, pos: CVector);
 type OrigCreateCarForScript =
     unsafe extern "C" fn(model: i32, pos: CVector, created_by: u8) -> *mut std::ffi::c_void;
 
-static mut ORIG_GENERATE_EMERGENCY: Option<OrigGenerateEmergency> = None;
-static mut ORIG_SCRIPT_GENERATE_EMERGENCY: Option<OrigScriptGenerateEmergency> = None;
-static mut ORIG_CREATE_CAR_FOR_SCRIPT: Option<OrigCreateCarForScript> = None;
+static ORIG_GENERATE_EMERGENCY: OrigSlot<OrigGenerateEmergency> = OrigSlot::new();
+static ORIG_SCRIPT_GENERATE_EMERGENCY: OrigSlot<OrigScriptGenerateEmergency> = OrigSlot::new();
+static ORIG_CREATE_CAR_FOR_SCRIPT: OrigSlot<OrigCreateCarForScript> = OrigSlot::new();
 
 pub fn set_orig_generate_emergency(f: OrigGenerateEmergency) {
-    unsafe { ORIG_GENERATE_EMERGENCY = Some(f) };
+    ORIG_GENERATE_EMERGENCY.set(f);
 }
 
 pub fn set_orig_script_generate_emergency(f: OrigScriptGenerateEmergency) {
-    unsafe { ORIG_SCRIPT_GENERATE_EMERGENCY = Some(f) };
+    ORIG_SCRIPT_GENERATE_EMERGENCY.set(f);
 }
 
 pub fn set_orig_create_car_for_script(f: OrigCreateCarForScript) {
-    unsafe { ORIG_CREATE_CAR_FOR_SCRIPT = Some(f) };
+    ORIG_CREATE_CAR_FOR_SCRIPT.set(f);
 }
 
 /// Zone gate: block vanilla ambulance / firetruck while mod dispatch is active.
@@ -41,10 +42,10 @@ unsafe fn forward_vanilla_ems_spawn(model: u32, pos: CVector, script_path: bool)
         return;
     }
     if script_path {
-        if let Some(orig) = ORIG_SCRIPT_GENERATE_EMERGENCY {
+        if let Some(orig) = ORIG_SCRIPT_GENERATE_EMERGENCY.get() {
             orig(model, pos);
         }
-    } else if let Some(orig) = ORIG_GENERATE_EMERGENCY {
+    } else if let Some(orig) = ORIG_GENERATE_EMERGENCY.get() {
         orig(model, pos);
     }
 }
@@ -63,7 +64,7 @@ pub unsafe extern "C" fn detour_create_car_for_script(
     created_by: u8,
 ) -> *mut std::ffi::c_void {
     if is_custom_spawn_active() {
-        if let Some(orig) = ORIG_CREATE_CAR_FOR_SCRIPT {
+        if let Some(orig) = ORIG_CREATE_CAR_FOR_SCRIPT.get() {
             return orig(model, pos, created_by);
         }
         return std::ptr::null_mut();
@@ -71,7 +72,7 @@ pub unsafe extern "C" fn detour_create_car_for_script(
     if should_block_native_ems_spawn(model as u32) {
         return std::ptr::null_mut();
     }
-    if let Some(orig) = ORIG_CREATE_CAR_FOR_SCRIPT {
+    if let Some(orig) = ORIG_CREATE_CAR_FOR_SCRIPT.get() {
         orig(model, pos, created_by)
     } else {
         std::ptr::null_mut()

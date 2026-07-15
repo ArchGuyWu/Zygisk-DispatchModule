@@ -72,7 +72,7 @@ impl Incident {
 }
 
 pub fn signal_entity_refs(signal: CausalSignal) -> [EntityRef; MAX_SIGNAL_ENTITIES] {
-    let mut out = [EntityRef(std::ptr::null()); MAX_SIGNAL_ENTITIES];
+    let mut out = [EntityRef::EMPTY; MAX_SIGNAL_ENTITIES];
     let mut count = 0usize;
 
     let mut push = |ptr: *const std::ffi::c_void| {
@@ -120,7 +120,7 @@ pub fn signal_entity_refs(signal: CausalSignal) -> [EntityRef; MAX_SIGNAL_ENTITI
 
 /// Perpetrator-side entities only (not victims / vehicles unless sole actor).
 pub fn perpetrator_entity_refs(signal: CausalSignal) -> [EntityRef; 4] {
-    let mut out = [EntityRef(std::ptr::null()); 4];
+    let mut out = [EntityRef::EMPTY; 4];
     let mut count = 0usize;
     let mut push = |ptr: *const std::ffi::c_void| {
         let Some(entity) = EntityRef::new(ptr) else {

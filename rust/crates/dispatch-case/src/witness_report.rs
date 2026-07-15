@@ -77,7 +77,7 @@ impl WitnessObservation {
 }
 
 pub fn pack_entity_refs<const N: usize>(src: &[EntityRef]) -> ([EntityRef; N], u8) {
-    let mut out = [EntityRef(std::ptr::null()); N];
+    let mut out = [EntityRef::EMPTY; N];
     let count = src.len().min(N) as u8;
     for (i, &entity) in src.iter().take(N).enumerate() {
         out[i] = entity;

@@ -91,11 +91,13 @@
 
 | Item | Change |
 |------|--------|
-| EntityRef | Reject implausible addresses; document non-owning lifetime |
-| Task assign | Re-validate live ped at commit before `AddTaskPrimary` |
+| EntityRef | Plausible-addr filter; optional **PoolKey** generation; eq prefers gen on same slot |
+| Task assign | Live re-check at commit; **discard_unowned_task** via optional `CTask::operator delete` |
 | GetCarToGoToCoors | Typed as `f32` distance; `Option` if no driver |
 | Case cleanup | Wait for pending EMS/fire spawn (`should_enter_cleanup`) |
 | Vehicle despawn | Purge exec globals + `case_vehicles` |
+| Hook ORIG slots | `OrigSlot` (`AtomicUsize`) replaces `static mut Option<fn>` |
+| Native witness entities | Prefer `EntityRef::with_pool` when pool key resolves |
 
 ## 7. Priority if fixing later (not this goal)
 

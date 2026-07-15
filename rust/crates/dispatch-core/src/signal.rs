@@ -1,3 +1,5 @@
+use crate::registry::PoolKey;
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct WorldPos {
     pub x: f32,
@@ -37,16 +39,23 @@ pub enum CausalKind {
     CrimeReported,
 }
 
-/// Opaque engine entity pointer for **same-frame / identity compare only**.
+/// Non-owning engine entity identity for incident correlation.
 ///
-/// Not a strong ref: the engine may free the object while a case still holds this value.
-/// Callers must not dereference without a fresh pool/live check. Construction rejects
-/// null and implausible user-space patterns (load-time sentinels).
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EntityRef(pub *const std::ffi::c_void);
+/// Prefer [`EntityRef::with_pool`] when a pool generation is known so recycled
+/// slots are not mistaken for the old entity. Raw address alone is same-frame
+/// / soft identity only — never dereference without a live pool check.
+#[derive(Clone, Copy, Default)]
+pub struct EntityRef {
+    addr: usize,
+    pool: Option<PoolKey>,
+}
 
 impl EntityRef {
-    /// ARM64 user VA heuristic (matches task-slot filtering in dispatch-exec).
+    pub const EMPTY: Self = Self {
+        addr: 0,
+        pool: None,
+    };
+
     #[inline]
     pub fn is_plausible_addr(ptr: *const std::ffi::c_void) -> bool {
         const MAX_USER_ADDR: usize = (1u64 << 52) as usize;
@@ -55,28 +64,86 @@ impl EntityRef {
     }
 
     pub fn new(ptr: *const std::ffi::c_void) -> Option<Self> {
-        Self::is_plausible_addr(ptr).then_some(Self(ptr))
+        if !Self::is_plausible_addr(ptr) {
+            return None;
+        }
+        Some(Self {
+            addr: ptr as usize,
+            pool: None,
+        })
+    }
+
+    /// Stronger identity: address + pool slot generation.
+    pub fn with_pool(ptr: *const std::ffi::c_void, key: PoolKey) -> Option<Self> {
+        let mut e = Self::new(ptr)?;
+        e.pool = Some(key);
+        Some(e)
     }
 
     pub fn ptr(self) -> *const std::ffi::c_void {
-        self.0
+        self.addr as *const std::ffi::c_void
     }
 
-    /// True if this still looks like a user pointer (not a pool membership check).
+    pub fn pool_key(self) -> Option<PoolKey> {
+        self.pool
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.addr == 0
+    }
+
     pub fn still_plausible(self) -> bool {
-        Self::is_plausible_addr(self.0)
+        self.addr != 0 && Self::is_plausible_addr(self.ptr())
+    }
+}
+
+impl PartialEq for EntityRef {
+    fn eq(&self, other: &Self) -> bool {
+        if self.addr == 0 || other.addr == 0 {
+            return self.addr == other.addr;
+        }
+        // Same pool generation ⇒ same entity even across soft address reuse debates.
+        if let (Some(a), Some(b)) = (self.pool, other.pool) {
+            if a.slot == b.slot {
+                return a.generation == b.generation;
+            }
+        }
+        self.addr == other.addr
+    }
+}
+
+impl Eq for EntityRef {}
+
+impl std::hash::Hash for EntityRef {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Always include addr so Eq-by-addr pairs share hashes when pool is missing.
+        self.addr.hash(state);
+        if let Some(k) = self.pool {
+            k.slot.hash(state);
+            k.generation.hash(state);
+        }
     }
 }
 
 impl std::fmt::Debug for EntityRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EntityRef({:p})", self.0)
+        match self.pool {
+            Some(k) => write!(
+                f,
+                "EntityRef({:p}, slot={}, gen={})",
+                self.ptr(),
+                k.slot,
+                k.generation
+            ),
+            None => write!(f, "EntityRef({:p})", self.ptr()),
+        }
     }
 }
 
 #[cfg(test)]
 mod entity_ref_tests {
     use super::EntityRef;
+    use crate::registry::PoolKey;
 
     #[test]
     fn rejects_null_and_low_sentinels() {
@@ -91,6 +158,16 @@ mod entity_ref_tests {
         let r = EntityRef::new(p).expect("plausible");
         assert!(r.still_plausible());
         assert_eq!(r.ptr(), p);
+    }
+
+    #[test]
+    fn pool_generation_distinguishes_slot_reuse() {
+        let p = 0x0000_0071_2345_6000_u64 as *const std::ffi::c_void;
+        let a = EntityRef::with_pool(p, PoolKey::from_slot_flag(3, 1)).unwrap();
+        let b = EntityRef::with_pool(p, PoolKey::from_slot_flag(3, 2)).unwrap();
+        assert_ne!(a, b);
+        let c = EntityRef::with_pool(p, PoolKey::from_slot_flag(3, 1)).unwrap();
+        assert_eq!(a, c);
     }
 }
 
@@ -165,4 +242,3 @@ impl CausalSignal {
         }
     }
 }
-

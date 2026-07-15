@@ -3,6 +3,7 @@ use dispatch_core::PedKind;
 use dispatch_engine::CVector;
 
 use crate::gate::hook_logic_allowed;
+use crate::orig_slot::OrigSlot;
 use crate::runtime::with_runtime;
 
 type OrigGenerateDamage = unsafe extern "C" fn(
@@ -21,15 +22,15 @@ type OrigVehicleInflictDamage = unsafe extern "C" fn(
     CVector,
 );
 
-static mut ORIG_GENERATE_DAMAGE: Option<OrigGenerateDamage> = None;
-static mut ORIG_VEHICLE_INFlict: Option<OrigVehicleInflictDamage> = None;
+static ORIG_GENERATE_DAMAGE: OrigSlot<OrigGenerateDamage> = OrigSlot::new();
+static ORIG_VEHICLE_INFLICT: OrigSlot<OrigVehicleInflictDamage> = OrigSlot::new();
 
 pub fn set_orig_generate_damage(f: OrigGenerateDamage) {
-    unsafe { ORIG_GENERATE_DAMAGE = Some(f) };
+    ORIG_GENERATE_DAMAGE.set(f);
 }
 
 pub fn set_orig_vehicle_inflict_damage(f: OrigVehicleInflictDamage) {
-    unsafe { ORIG_VEHICLE_INFlict = Some(f) };
+    ORIG_VEHICLE_INFLICT.set(f);
 }
 
 pub unsafe extern "C" fn detour_generate_damage_event(
@@ -75,7 +76,7 @@ unsafe fn forward_generate_damage(
     ped_piece: i32,
     direction: i32,
 ) -> bool {
-    if let Some(orig) = ORIG_GENERATE_DAMAGE {
+    if let Some(orig) = ORIG_GENERATE_DAMAGE.get() {
         orig(victim, source, weapon, damage, ped_piece, direction)
     } else {
         false
@@ -100,7 +101,7 @@ pub unsafe extern "C" fn detour_vehicle_inflict_damage(
             );
         });
     }
-    if let Some(orig) = ORIG_VEHICLE_INFlict {
+    if let Some(orig) = ORIG_VEHICLE_INFLICT.get() {
         orig(vehicle, source, weapon, damage, impact_pos);
     }
 }

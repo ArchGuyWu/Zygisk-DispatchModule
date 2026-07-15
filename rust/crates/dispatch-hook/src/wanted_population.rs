@@ -1,6 +1,7 @@
 use dispatch_engine::CVector;
 
 use crate::gate::hook_logic_allowed;
+use crate::orig_slot::OrigSlot;
 
 type OrigSetWantedLevel = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
 type OrigReportCrimeNow =
@@ -8,25 +9,25 @@ type OrigReportCrimeNow =
 type OrigReportCrime =
     unsafe extern "C" fn(i32, *mut std::ffi::c_void, *mut std::ffi::c_void);
 
-static mut ORIG_SET_WANTED_LEVEL: Option<OrigSetWantedLevel> = None;
-static mut ORIG_SET_WANTED_LEVEL_NO_DROP: Option<OrigSetWantedLevel> = None;
-static mut ORIG_REPORT_CRIME_NOW: Option<OrigReportCrimeNow> = None;
-static mut ORIG_REPORT_CRIME: Option<OrigReportCrime> = None;
+static ORIG_SET_WANTED_LEVEL: OrigSlot<OrigSetWantedLevel> = OrigSlot::new();
+static ORIG_SET_WANTED_LEVEL_NO_DROP: OrigSlot<OrigSetWantedLevel> = OrigSlot::new();
+static ORIG_REPORT_CRIME_NOW: OrigSlot<OrigReportCrimeNow> = OrigSlot::new();
+static ORIG_REPORT_CRIME: OrigSlot<OrigReportCrime> = OrigSlot::new();
 
 pub fn set_orig_set_wanted_level(f: OrigSetWantedLevel) {
-    unsafe { ORIG_SET_WANTED_LEVEL = Some(f) };
+    ORIG_SET_WANTED_LEVEL.set(f);
 }
 
 pub fn set_orig_set_wanted_level_no_drop(f: OrigSetWantedLevel) {
-    unsafe { ORIG_SET_WANTED_LEVEL_NO_DROP = Some(f) };
+    ORIG_SET_WANTED_LEVEL_NO_DROP.set(f);
 }
 
 pub fn set_orig_report_crime_now(f: OrigReportCrimeNow) {
-    unsafe { ORIG_REPORT_CRIME_NOW = Some(f) };
+    ORIG_REPORT_CRIME_NOW.set(f);
 }
 
 pub fn set_orig_report_crime(f: OrigReportCrime) {
-    unsafe { ORIG_REPORT_CRIME = Some(f) };
+    ORIG_REPORT_CRIME.set(f);
 }
 
 /// C++ `dispatch_active()` — true while mod dispatch zone is playable.
@@ -39,7 +40,7 @@ pub unsafe extern "C" fn detour_set_wanted_level(wanted: *mut std::ffi::c_void, 
     if swallow_wanted() {
         return;
     }
-    if let Some(orig) = ORIG_SET_WANTED_LEVEL {
+    if let Some(orig) = ORIG_SET_WANTED_LEVEL.get() {
         orig(wanted, level);
     }
 }
@@ -51,7 +52,7 @@ pub unsafe extern "C" fn detour_set_wanted_level_no_drop(
     if swallow_wanted() {
         return;
     }
-    if let Some(orig) = ORIG_SET_WANTED_LEVEL_NO_DROP {
+    if let Some(orig) = ORIG_SET_WANTED_LEVEL_NO_DROP.get() {
         orig(wanted, level);
     }
 }
@@ -65,7 +66,7 @@ pub unsafe extern "C" fn detour_report_crime_now(
     if swallow_wanted() {
         return;
     }
-    if let Some(orig) = ORIG_REPORT_CRIME_NOW {
+    if let Some(orig) = ORIG_REPORT_CRIME_NOW.get() {
         orig(wanted, crime_type, pos, unk);
     }
 }
@@ -78,7 +79,7 @@ pub unsafe extern "C" fn detour_report_crime(
     if swallow_wanted() {
         return;
     }
-    if let Some(orig) = ORIG_REPORT_CRIME {
+    if let Some(orig) = ORIG_REPORT_CRIME.get() {
         orig(crime_type, victim, perp);
     }
 }

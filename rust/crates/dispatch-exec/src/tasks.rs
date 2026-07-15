@@ -156,9 +156,8 @@ fn commit_primary_task(
     }
     // Ped may have died between alloc and commit — do not attach task to dead intel.
     let Some(intel) = live_intel_for_assign(symbols, ped) else {
-        // Engine `operator new` for CTask — if we never AddTask, leak is preferable to
-        // wrong free ABI; rare path (ped dies mid-assign).
         tracing::warn!("task alloc discarded: ped not live at commit");
+        symbols.discard_unowned_task(task);
         return false;
     };
     unsafe {

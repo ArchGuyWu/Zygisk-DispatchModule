@@ -5,13 +5,14 @@ use dispatch_core::{CausalKind, EntityRef};
 use dispatch_engine::{event_vptr_identity, NativeEventRegistry, ResolvedNativeEvent};
 
 use crate::gate::hook_logic_allowed;
+use crate::orig_slot::OrigSlot;
 use crate::witness::witness_ped_type_eligible;
 const MAX_TRACKED_EVENTS: usize = 12;
 const PENDING_NATIVE_CAP: usize = 64;
 
 type OrigEventGroupAdd = unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, bool);
 
-static mut ORIG_EVENT_GROUP_ADD: Option<OrigEventGroupAdd> = None;
+static ORIG_EVENT_GROUP_ADD: OrigSlot<OrigEventGroupAdd> = OrigSlot::new();
 static mut TRACKED_EVENTS: [Option<ResolvedNativeEvent>; MAX_TRACKED_EVENTS] =
     [None; MAX_TRACKED_EVENTS];
 static mut TRACKED_VPTR_KEYS: [usize; MAX_TRACKED_EVENTS] = [0; MAX_TRACKED_EVENTS];
@@ -31,7 +32,7 @@ static mut PENDING_NATIVE_LEN: usize = 0;
 const UNINIT_PENDING: MaybeUninit<PendingNativeEvent> = MaybeUninit::uninit();
 
 pub fn set_orig_event_group_add(f: OrigEventGroupAdd) {
-    unsafe { ORIG_EVENT_GROUP_ADD = Some(f) };
+    ORIG_EVENT_GROUP_ADD.set(f);
 }
 
 pub fn init_tracked_vptrs(registry: &NativeEventRegistry) {
@@ -85,7 +86,7 @@ pub unsafe extern "C" fn detour_event_group_add(
     event: *mut std::ffi::c_void,
     write_log: bool,
 ) {
-    if let Some(orig) = ORIG_EVENT_GROUP_ADD {
+    if let Some(orig) = ORIG_EVENT_GROUP_ADD.get() {
         orig(event_group, event, write_log);
     }
     if !hook_logic_allowed() {
@@ -135,13 +136,19 @@ impl crate::runtime::DispatchRuntime {
         let kind_bit = 1 << classified.def.kind as u8;
         let (heard, saw) = channel_flags(classified.def.channel);
 
-        let mut entities = [EntityRef(std::ptr::null()); MAX_WITNESS_ENTITIES];
+        let mut entities = [EntityRef::EMPTY; MAX_WITNESS_ENTITIES];
         let mut entity_count = 0u8;
-        let mut perpetrators = [EntityRef(std::ptr::null()); MAX_WITNESS_PERPETRATORS];
+        let mut perpetrators = [EntityRef::EMPTY; MAX_WITNESS_PERPETRATORS];
         let mut perp_count = 0u8;
         if let Some(offset) = classified.def.primary_entity_offset {
             let entity_ptr = self.native_events.read_entity(event, offset);
-            if let Some(entity) = EntityRef::new(entity_ptr) {
+            // Prefer pool generation when entity is a live ped/vehicle.
+            let entity = self
+                .resolve_ped_pool_key(entity_ptr)
+                .or_else(|| self.resolve_vehicle_pool_key(entity_ptr))
+                .and_then(|key| EntityRef::with_pool(entity_ptr, key))
+                .or_else(|| EntityRef::new(entity_ptr));
+            if let Some(entity) = entity {
                 if entity_count < MAX_WITNESS_ENTITIES as u8 {
                     entities[entity_count as usize] = entity;
                     entity_count += 1;

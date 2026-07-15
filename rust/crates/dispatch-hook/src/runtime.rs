@@ -858,11 +858,11 @@ impl DispatchRuntime {
         cache.remove(&addr);
     }
 
-    fn resolve_ped_pool_key(&self, ped: *const std::ffi::c_void) -> Option<PoolKey> {
+    pub(crate) fn resolve_ped_pool_key(&self, ped: *const std::ffi::c_void) -> Option<PoolKey> {
         resolve_ped_pool_key_cached(&self.symbols, self.ped_ptr_cache_mut(), ped)
     }
 
-    fn resolve_vehicle_pool_key(&self, vehicle: *const std::ffi::c_void) -> Option<PoolKey> {
+    pub(crate) fn resolve_vehicle_pool_key(&self, vehicle: *const std::ffi::c_void) -> Option<PoolKey> {
         if vehicle.is_null() {
             return None;
         }

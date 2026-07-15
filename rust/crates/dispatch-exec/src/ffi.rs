@@ -21,6 +21,8 @@ pub type SymbolGetCarToGoToCoors = unsafe extern "C" fn(
 pub type SymbolAddCriminalToKill =
     unsafe extern "C" fn(cop: *mut std::ffi::c_void, criminal: *mut std::ffi::c_void);
 pub type SymbolTaskNew = unsafe extern "C" fn(size: usize) -> *mut std::ffi::c_void;
+/// Optional `CTask::operator delete(void*)` for discarding unowned task allocs.
+pub type SymbolTaskDelete = unsafe extern "C" fn(task: *mut std::ffi::c_void);
 pub type SymbolTaskComplexArrestPedCtor =
     unsafe extern "C" fn(task: *mut std::ffi::c_void, criminal: *mut std::ffi::c_void);
 pub type SymbolAddTaskPrimaryMaybeInGroup = unsafe extern "C" fn(
@@ -78,6 +80,8 @@ pub struct ExecSymbols {
     pub get_car_to_go_to_coors: SymbolGetCarToGoToCoors,
     pub add_criminal_to_kill: SymbolAddCriminalToKill,
     pub task_new: SymbolTaskNew,
+    /// Optional; used only to free tasks never handed to AddTaskPrimary.
+    pub task_delete: Option<SymbolTaskDelete>,
     pub task_complex_arrest_ped_ctor: SymbolTaskComplexArrestPedCtor,
     pub add_task_primary_maybe_in_group: SymbolAddTaskPrimaryMaybeInGroup,
     pub get_weapon_lock_on_target: SymbolGetWeaponLockOnTarget,
@@ -119,6 +123,11 @@ impl ExecSymbols {
             )?,
             add_criminal_to_kill: resolve_sym(lib, "_ZN7CCopPed17AddCriminalToKillEP4CPed")?,
             task_new: resolve_sym(lib, "_ZN5CTasknwEm")?,
+            // Prefer sized delete if present; else plain `operator delete`.
+            task_delete: lib
+                .sym("_ZN5CTaskdlEPv")
+                .or_else(|| lib.sym("_ZdlPv"))
+                .map(|ptr| unsafe { std::mem::transmute_copy(&ptr) }),
             task_complex_arrest_ped_ctor: resolve_sym(
                 lib,
                 "_ZN21CTaskComplexArrestPedC2EP4CPed",
@@ -172,6 +181,16 @@ impl ExecSymbols {
                 "_ZN6CCarAI21AddFiretruckOccupantsEP8CVehicle",
             )?,
         })
+    }
+
+    /// Free a task buffer that was never attached via AddTaskPrimary (best-effort).
+    pub fn discard_unowned_task(&self, task: *mut std::ffi::c_void) {
+        if task.is_null() {
+            return;
+        }
+        if let Some(del) = self.task_delete {
+            unsafe { del(task) };
+        }
     }
 
     /// Returns remaining 2D distance after issuing the mission, or `None` if vehicle null.
