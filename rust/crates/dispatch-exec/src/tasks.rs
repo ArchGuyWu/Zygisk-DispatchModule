@@ -268,84 +268,10 @@ pub fn ped_has_phone_task(symbols: &ExecSymbols, ped: *const std::ffi::c_void) -
     false
 }
 
-/// Read-only: any non-null task slot whose engine-walked vtable slots are unusable.
-///
-/// Covers:
-/// - `+0x18` — GetSubTask / ProcessBuoyancy / ProcessStaticCounter (`fault 0x18`)
-/// - `+0x28` — Process / type-query (`fault 0x28`)
-///
-/// Does **not** require vtable+0x20: that check (02bf580) false-positived healthy
-/// tasks and starved ManageTasks / ScanForEvents / Buoyancy gates (gameplay freeze).
-/// Null vtable is already caught via the 0x18 / 0x28 probes.
-///
-/// Fail-closed gate only — never writes engine memory.
-pub fn ped_has_unwalkable_task(ped: *const std::ffi::c_void) -> bool {
-    if ped.is_null() {
-        return true;
-    }
-    let intel = ped_intelligence(ped);
-    if intel.is_null() {
-        return true;
-    }
-    intelligence_has_unwalkable_task(intel)
-}
-
-/// Same as [`ped_has_unwalkable_task`] but for a `CPedIntelligence*` (e.g. ProcessStaticCounter `this`).
-pub fn intelligence_has_unwalkable_task(intel: *const std::ffi::c_void) -> bool {
-    if intel.is_null() {
-        return true;
-    }
-    let mgr = unsafe { (intel as *const u8).add(TASK_MANAGER_OFFSET) };
-    // Primary CTaskManager slots 0..10 only (matches C++ hooks_stability RE usage).
-    // The 32-slot + intel 0x100..0x180 overscan treated non-task words as tasks and
-    // false-positive skipped engine walks.
-    for i in 0..11 {
-        let task = read_ptr(mgr as *const _, i * 8);
-        if task_slot_unwalkable(task) {
-            return true;
-        }
-    }
-    // Secondary intel task pointers (C++ FindTaskByType path: intel+0x20 / +0x28).
-    for off in [0x20usize, 0x28] {
-        let task = read_ptr(intel, off);
-        if task_slot_unwalkable(task) {
-            return true;
-        }
-    }
-    false
-}
-
-/// CTaskManager slots only — used by the `ManageTasks` gate (this = CTaskManager*).
-/// Scans slots 0..10 only.
-pub fn task_manager_has_unwalkable_task(mgr: *const std::ffi::c_void) -> bool {
-    if mgr.is_null() {
-        return true;
-    }
-    for i in 0..11 {
-        let task = read_ptr(mgr, i * 8);
-        if task_slot_unwalkable(task) {
-            return true;
-        }
-    }
-    false
-}
-
-#[inline]
-fn task_slot_unwalkable(task: *const std::ffi::c_void) -> bool {
-    if task.is_null() {
-        return false;
-    }
-    // Non-null task with null/missing vtable fn at either hot offset is unsafe.
-    !task_vtable_fn_ok(task, TASK_VT_WALK_OFFSET)
-        || !task_vtable_fn_ok(task, TASK_VT_PROCESS_OFFSET)
-}
-
 /// Engine `CPedIntelligence::ClearTasks(primary, secondary)` — legitimate teardown.
 ///
-/// Fail-closed:
-/// - non-pool ped → no call
-/// - already-unwalkable tasks → no call (ClearTasks would also fault on null vtable)
-/// - never hand-nulls task slots
+/// Only validates pool membership / intel presence. Does **not** scan task-manager
+/// slots (deepseek 11/32-slot "unwalkable" scans removed — they false-positive).
 pub fn clear_ped_tasks(symbols: &ExecSymbols, ped: *mut std::ffi::c_void) -> bool {
     if ped.is_null() {
         return false;
@@ -355,10 +281,6 @@ pub fn clear_ped_tasks(symbols: &ExecSymbols, ped: *mut std::ffi::c_void) -> boo
     }
     let intel = ped_intelligence(ped);
     if intel.is_null() {
-        return false;
-    }
-    // If slots already hold zeroed tasks, do not enter ClearTasks (same 0x18 fault class).
-    if ped_has_unwalkable_task(ped) {
         return false;
     }
     unsafe {
@@ -380,10 +302,6 @@ pub fn abort_phone_tasks(symbols: &ExecSymbols, ped: *mut std::ffi::c_void) -> b
     }
     let intel = ped_intelligence(ped);
     if intel.is_null() {
-        return false;
-    }
-    // Same gate as clear_ped_tasks: do not walk/destroy already-zeroed task objects.
-    if ped_has_unwalkable_task(ped) {
         return false;
     }
 
@@ -440,66 +358,4 @@ pub fn ped_ptr_for_id(
     symbols
         .entity_from_ped_key(record.pool_key)
         .unwrap_or(std::ptr::null())
-}
-
-#[cfg(test)]
-mod unwalkable_slot_tests {
-    use super::*;
-    use std::mem::size_of;
-
-    struct FakeTask {
-        task_words: Box<[usize; 8]>,
-        vtable_words: Box<[usize; 8]>,
-    }
-
-    impl FakeTask {
-        fn new(fill_0x18: bool, fill_0x28: bool) -> Self {
-            let mut vtable_words = Box::new([0usize; 8]);
-            if fill_0x18 {
-                vtable_words[0x18 / size_of::<usize>()] = 0xDEAD_0001;
-            }
-            if fill_0x28 {
-                vtable_words[0x28 / size_of::<usize>()] = 0xDEAD_0003;
-            }
-            let mut task_words = Box::new([0usize; 8]);
-            task_words[0] = vtable_words.as_ptr() as usize;
-            Self {
-                task_words,
-                vtable_words,
-            }
-        }
-
-        fn task_ptr(&self) -> *const std::ffi::c_void {
-            self.task_words.as_ptr() as *const _
-        }
-    }
-
-    #[test]
-    fn healthy_task_without_0x20_is_walkable() {
-        // Regression: 02bf580 required vtable+0x20 and froze AI.
-        let task = FakeTask::new(true, true);
-        let mut mgr = [0usize; 11];
-        mgr[0] = task.task_ptr() as usize;
-        assert!(!task_manager_has_unwalkable_task(mgr.as_ptr() as *const _));
-        let _keep = task;
-    }
-
-    #[test]
-    fn null_vtable_is_unwalkable() {
-        let task_words = Box::new([0usize; 8]);
-        let mut mgr = [0usize; 11];
-        mgr[0] = task_words.as_ptr() as usize;
-        assert!(task_manager_has_unwalkable_task(mgr.as_ptr() as *const _));
-        drop(task_words);
-    }
-
-    #[test]
-    fn slot_11_not_scanned() {
-        // Regression: 32-slot overscan treated non-task words as tasks.
-        let task_words = Box::new([0usize; 8]);
-        let mut mgr = [0usize; 16];
-        mgr[11] = task_words.as_ptr() as usize;
-        assert!(!task_manager_has_unwalkable_task(mgr.as_ptr() as *const _));
-        drop(task_words);
-    }
 }

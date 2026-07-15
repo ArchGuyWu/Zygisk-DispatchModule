@@ -58,10 +58,8 @@ pub use snapshot::{
     CaseRerouteSnap,
 };
 pub use tasks::{
-    abort_phone_tasks, assign_mobile_phone_task, clear_ped_tasks,
-    intelligence_has_unwalkable_task, ped_has_phone_task, ped_has_unwalkable_task,
-    poll_report_task_phase, task_manager_has_unwalkable_task, ReportTaskPhase,
-    TASK_COMPLEX_USE_MOBILE_PHONE,
+    abort_phone_tasks, assign_mobile_phone_task, clear_ped_tasks, ped_has_phone_task,
+    poll_report_task_phase, ReportTaskPhase, TASK_COMPLEX_USE_MOBILE_PHONE,
 };
 pub use staging::{compute_vehicle_staging_decoy, is_police_engagement_at, StagingState};
 pub use threat::{
